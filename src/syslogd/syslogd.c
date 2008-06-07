@@ -836,7 +836,7 @@ dispatch_read_funix(struct kevent *ev)
                 return;
         }
 
-        dprintf("Unix socket (%s) active\n", myname.sun_path);
+        dprintf("Unix socket (%.*s) active\n", myname.sun_len, myname.sun_path);
 
         sunlen = sizeof(fromunix);
         rv = recvfrom(fd, linebuf, MAXLINE, 0,
@@ -845,7 +845,7 @@ dispatch_read_funix(struct kevent *ev)
                 linebuf[rv] = '\0';
                 printline(LocalHostName, linebuf, 0);
         } else if (rv < 0 && errno != EINTR) {
-                logerror("recvfrom() unix `%s'", myname.sun_path);
+                logerror("recvfrom() unix `%.*s'", myname.sun_len, myname.sun_path);
         }
 }
 

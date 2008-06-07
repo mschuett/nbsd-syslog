@@ -101,9 +101,32 @@ __RCSID("$NetBSD: syslogd.c,v 1.84 2006/11/13 20:24:00 christos Exp $");
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#ifndef _NO_NETBSD_USR_SRC_
 #include <util.h>
 
 #include "utmpentry.h"
+#else
+#include <libutil.h>
+#include <utmp.h>
+#include <sys/stat.h>
+#include <sys/uio.h>
+#include <limits.h>
+/* 
+ * redefined so I can test alongside normal syslogd
+ * #define SERVICENAME "syslog"
+ */
+#define SERVICENAME "5555"
+#endif /* !_NO_NETBSD_USR_SRC_ */
+
+/* one special problem:
+ * kevent.udata has a different tye an NetBSD and FreeBSD :-(
+ */
+#ifndef _NO_NETBSD_USR_SRC_
+#define KEVENT_UDATA_CAST (intptr_t)
+#else
+#define KEVENT_UDATA_CAST (void*)
+#endif /* !_NO_NETBSD_USR_SRC_ */
+
 #include "pathnames.h"
 
 #define SYSLOG_NAMES
@@ -511,9 +534,10 @@ getgroup:
 	if (!Debug) {
 		(void)daemon(0, 0);
 		daemonized = 1;
-
 		/* tuck my process id away, if i'm not in debug mode */
+#ifndef _NO_NETBSD_USR_SRC_
 		pidfile(NULL);
+#endif /* !_NO_NETBSD_USR_SRC_ */
 	}
 
 	/*
@@ -544,24 +568,24 @@ getgroup:
 	(void)signal(SIGQUIT, SIG_IGN);
 	ev = allocevchange();
 	EV_SET(ev, SIGTERM, EVFILT_SIGNAL, EV_ADD | EV_ENABLE, 0, 0,
-	    (intptr_t) die);
+	    KEVENT_UDATA_CAST die);
 	if (Debug) {
 		ev = allocevchange();
 		EV_SET(ev, SIGINT, EVFILT_SIGNAL, EV_ADD | EV_ENABLE, 0, 0,
-		    (intptr_t) die);
+		    KEVENT_UDATA_CAST die);
 
 		ev = allocevchange();
 		EV_SET(ev, SIGQUIT, EVFILT_SIGNAL, EV_ADD | EV_ENABLE, 0, 0,
-		    (intptr_t) die);
+		    KEVENT_UDATA_CAST die);
 	}
 
 	ev = allocevchange();
 	EV_SET(ev, SIGCHLD, EVFILT_SIGNAL, EV_ADD | EV_ENABLE, 0, 0,
-	    (intptr_t) reapchild);
+	    KEVENT_UDATA_CAST reapchild);
 
 	ev = allocevchange();
 	EV_SET(ev, 0, EVFILT_TIMER, EV_ADD | EV_ENABLE, 0,
-	    TIMERINTVL * 1000 /* seconds -> ms */, (intptr_t) domark);
+	    TIMERINTVL * 1000 /* seconds -> ms */, KEVENT_UDATA_CAST domark);
 
 	(void)signal(SIGPIPE, SIG_IGN);	/* We'll catch EPIPE instead. */
 
@@ -569,17 +593,17 @@ getgroup:
 	(void) signal(SIGHUP, SIG_IGN);
 	ev = allocevchange();
 	EV_SET(ev, SIGHUP, EVFILT_SIGNAL, EV_ADD | EV_ENABLE, 0, 0,
-	    (intptr_t) init);
+	    KEVENT_UDATA_CAST init);
 
 	if (fklog >= 0) {
 		ev = allocevchange();
 		EV_SET(ev, fklog, EVFILT_READ, EV_ADD | EV_ENABLE,
-		    0, 0, (intptr_t) dispatch_read_klog);
+		    0, 0, KEVENT_UDATA_CAST dispatch_read_klog);
 	}
 	for (j = 0, pp = LogPaths; *pp; pp++, j++) {
 		ev = allocevchange();
 		EV_SET(ev, funix[j], EVFILT_READ, EV_ADD | EV_ENABLE,
-		    0, 0, (intptr_t) dispatch_read_funix);
+		    0, 0, KEVENT_UDATA_CAST dispatch_read_funix);
 	}
 
 	dprintf("Off & running....\n");
@@ -639,7 +663,7 @@ dispatch_read_klog(struct kevent *ev)
 		struct kevent *cev = allocevchange();
 		logerror("klog failed");
 		EV_SET(cev, fd, EVFILT_READ, EV_DISABLE,
-		    0, 0, (intptr_t) dispatch_read_klog);
+		    0, 0, KEVENT_UDATA_CAST dispatch_read_klog);
 	}
 }
 
@@ -663,7 +687,7 @@ dispatch_read_funix(struct kevent *ev)
 		struct kevent *cev = allocevchange();
 		logerror("getsockname() unix failed");
 		EV_SET(cev, fd, EVFILT_READ, EV_DISABLE,
-		    0, 0, (intptr_t) dispatch_read_funix);
+		    0, 0, KEVENT_UDATA_CAST dispatch_read_funix);
 		return;
 	}
 
@@ -1375,6 +1399,7 @@ sendagain:
 void
 wallmsg(struct filed *f, struct iovec *iov, size_t iovcnt)
 {
+#ifndef _NO_NETBSD_USR_SRC_
 	static int reenter;			/* avoid calling ourselves */
 	int i;
 	char *p;
@@ -1414,6 +1439,7 @@ wallmsg(struct filed *f, struct iovec *iov, size_t iovcnt)
 		}
 	}
 	reenter = 0;
+#endif /* !_NO_NETBSD_USR_SRC_ */
 }
 
 void
@@ -2033,7 +2059,7 @@ cfline(char *line, struct filed *f, char *prog, char *host)
 		hints.ai_family = AF_UNSPEC;
 		hints.ai_socktype = SOCK_DGRAM;
 		hints.ai_protocol = 0;
-		error = getaddrinfo(f->f_un.f_forw.f_hname, "syslog", &hints,
+		error = getaddrinfo(f->f_un.f_forw.f_hname, SERVICENAME, &hints,
 		    &res);
 		if (error) {
 			logerror(gai_strerror(error));
@@ -2123,6 +2149,7 @@ decode(const char *name, CODE *codetab)
 int
 getmsgbufsize(void)
 {
+#ifndef _NO_NETBSD_USR_SRC_
 	int msgbufsize, mib[2];
 	size_t size;
 
@@ -2134,6 +2161,9 @@ getmsgbufsize(void)
 		return (0);
 	}
 	return (msgbufsize);
+#else
+	return 1024;
+#endif /* !_NO_NETBSD_USR_SRC_ */
 }
 
 int *
@@ -2151,7 +2181,7 @@ socksetup(int af, const char *hostname)
 	hints.ai_flags = AI_PASSIVE;
 	hints.ai_family = af;
 	hints.ai_socktype = SOCK_DGRAM;
-	error = getaddrinfo(hostname, "syslog", &hints, &res);
+	error = getaddrinfo(hostname, SERVICENAME, &hints, &res);
 	if (error) {
 		logerror(gai_strerror(error));
 		errno = 0;
@@ -2190,7 +2220,7 @@ socksetup(int af, const char *hostname)
 			}
 			ev = allocevchange();
 			EV_SET(ev, *s, EVFILT_READ, EV_ADD | EV_ENABLE,
-			    0, 0, (intptr_t) dispatch_read_finet);
+			    0, 0, KEVENT_UDATA_CAST dispatch_read_finet);
 		}
 
 		*socks = *socks + 1;

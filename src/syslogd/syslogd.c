@@ -643,6 +643,14 @@ getgroup:
                 dprintf("Listening on kernel log `%s'\n", _PATH_KLOG);
         }
 
+#ifndef DISABLE_TLS
+        /* OpenSSL PRNG needs /dev/urandom, thus initialize before chroot() */
+        if (!RAND_status())
+                logerror("Unable to initialize OpenSSL PRNG\n");
+        else {
+                dprintf("Initializing PRNG\n");
+        }
+#endif /* !DISABLE_TLS */
         /* 
          * All files are open, we can drop privileges and chroot
          */

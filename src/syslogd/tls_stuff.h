@@ -16,6 +16,7 @@
 #include <openssl/x509v3.h>
 #include <openssl/asn1.h>
 #include <openssl/evp.h>
+#include <openssl/rand.h>
 
 #define MYKEY NULL
 #define MYCERT  NULL

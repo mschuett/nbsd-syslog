@@ -318,11 +318,6 @@ check_peer_cert(int preverify_ok, X509_STORE_CTX * ctx)
  * 
  * TODO: mechanism to try again after x minutes
  * 
- * FIXME: currently I cannot perform the handshake,
- *        It took me a long time (and many dprintfs) to realize why.
- *        It seems that the socket is fine, but SSL_connect cannot
- *        access /dev/random after setuid and chroot.
- * 
  */
 #define MAXLINE 512
 bool tls_connect(SSL_CTX **context, struct tls_conn_settings *conn)
@@ -330,7 +325,7 @@ bool tls_connect(SSL_CTX **context, struct tls_conn_settings *conn)
         struct addrinfo hints, *res, *res1;
         int    error, rc, sock;
         const int intsize = sizeof(int);
-        //const int one = 1;
+        const int one = 1;
         char   buf[MAXLINE];
         SSL    *ssl; 
         SSL_CTX *g_TLS_CTX = *context;
@@ -358,19 +353,11 @@ bool tls_connect(SSL_CTX **context, struct tls_conn_settings *conn)
                 }
                 dprintf("got socket with fd=%d, protocol=%d\n", sock, res1->ai_protocol);
                 
-                if (-1 == fcntl(sock, F_SETFL, O_NONBLOCK, 0)) {
-                        dprintf("Unable to fcntl(): %s\n", strerror(errno));
-                }
-                else
-                        dprintf("fcntl() to force blocking behaviour\n");
-                
-                /*
                 if ((-1 == (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one))))
                                  || (-1 == (setsockopt(sock, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one))))
                                  || (-1 == (setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one))))) {
                         dprintf("Unable to setsockopt(): %s\n", strerror(errno));
                 }
-                */
                 if (-1 == connect(sock, res1->ai_addr, res1->ai_addrlen)) {
                         dprintf("Unable to connect() to %s: %s\n", res1->ai_canonname, strerror(errno));
                         close(sock);
@@ -437,7 +424,10 @@ bool tls_connect(SSL_CTX **context, struct tls_conn_settings *conn)
                 else {
                         if (rc == 0) {
                                 dprintf("TLS connection shut down during connect\n");
+                                close(sock);
                                 sock = -1;
+                                SSL_shutdown(ssl);
+                                SSL_free(ssl);
                         } else {
                                 if (-1 == (getsockopt(sock, SOL_SOCKET, SO_ERROR, &rc, (void*)&intsize))) {
                                         dprintf("Unable to getsockopt(): %s\n", strerror(errno)); }
@@ -477,11 +467,11 @@ bool tls_connect(SSL_CTX **context, struct tls_conn_settings *conn)
                                                 dprintf("unknown error value\n");
                                                 break;     
                                 }
+                                close(sock);
                                 sock = -1;
+                                SSL_shutdown(ssl);
+                                SSL_free(ssl);
                         }
-                        SSL_shutdown(ssl);
-                        SSL_free(ssl);
-                        close(sock);
                         continue;
                 }
         }

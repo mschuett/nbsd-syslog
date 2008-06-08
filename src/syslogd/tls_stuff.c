@@ -7,6 +7,7 @@
  *
  * TODO: trans-port-tls12+ (Mail from jsalowey on 080523) requires
  *       server and client to be able to generate self-signed certificates
+ * TODO: define fingerprints for incoming connections.
  *
  * Martin Schütte
  */
@@ -29,12 +30,31 @@
 #include <netdb.h>
 #include <fcntl.h>
 
+#include <sys/event.h>
+#include <sys/time.h>
+     
 #include "tls_stuff.h"
+
+/* to output SSL error codes */
+char *SSL_ERRCODE[9] = {
+        "SSL_ERROR_NONE",
+        "SSL_ERROR_SSL",
+        "SSL_ERROR_WANT_READ",
+        "SSL_ERROR_WANT_WRITE",
+        "SSL_ERROR_WANT_X509_LOOKUP",
+        "SSL_ERROR_SYSCALL",
+        "SSL_ERROR_ZERO_RETURN",
+        "SSL_ERROR_WANT_CONNECT",
+        "SSL_ERROR_WANT_ACCEPT"};
+
 
 /* definitions in syslogd.c */
 extern short int Debug;
 #define dprintf if (Debug) printf
 extern void    logerror(const char *, ...);
+extern void    die(struct kevent *);
+extern void    dispatch_accept_tls(struct kevent *ev);
+extern struct kevent *allocevchange(void);
 
 /*
  * init OpenSSL lib and one context. returns NULL on error, otherwise SSL_CTX
@@ -476,4 +496,118 @@ bool tls_connect(SSL_CTX **context, struct tls_conn_settings *conn)
                 }
         }
         return false;
+}
+
+/*
+ * Create TCP sockets for incoming TLS connections.
+ * To be used like socksetup(), hostname and port are optional,
+ * returns bound stream sockets. 
+ */
+extern int TLSClientOnly;
+
+int *
+socksetup_tls(int af, const char *bindhostname, const char *port)
+{
+        struct addrinfo hints, *res, *r;
+        struct kevent *ev;
+        int error, maxs, *s, *socks;
+        const int on = 1;
+
+        if(TLSClientOnly)
+                return(NULL);
+
+        memset(&hints, 0, sizeof(hints));
+        hints.ai_flags = AI_PASSIVE;
+        hints.ai_family = af;
+        hints.ai_socktype = SOCK_STREAM;
+        
+        error = getaddrinfo(bindhostname, (port ? port : SERVICENAME), &hints, &res);
+        if (error) {
+                logerror(gai_strerror(error));
+                errno = 0;
+                die(NULL);
+        }
+
+        /* Count max number of sockets we may open */
+        for (maxs = 0, r = res; r; r = r->ai_next, maxs++)
+                continue;
+        socks = malloc((maxs+1) * sizeof(int));
+        if (!socks) {
+                logerror("Couldn't allocate memory for sockets");
+                die(NULL);
+        }
+
+        *socks = 0;   /* num of sockets counter at start of array */
+        s = socks + 1;
+        for (r = res; r; r = r->ai_next) {
+                *s = socket(r->ai_family, r->ai_socktype, r->ai_protocol);
+                if (*s < 0) {
+                        logerror("socket() failed: %s", strerror(errno));
+                        continue;
+                }
+                if (r->ai_family == AF_INET6 && setsockopt(*s, IPPROTO_IPV6,
+                    IPV6_V6ONLY, &on, sizeof(on)) < 0) {
+                        logerror("setsockopt(IPV6_V6ONLY) failed: %s", strerror(errno));
+                        close(*s);
+                        continue;
+                }
+                if (bind(*s, r->ai_addr, r->ai_addrlen) < 0) {
+                        logerror("bind() failed: %s", strerror(errno));
+                        close(*s);
+                        continue;
+                }
+                if (listen(*s, TLSBACKLOG) < 0) {
+                        logerror("listen() failed: %s", strerror(errno));
+                        close(*s);
+                        continue;
+                }
+                ev = allocevchange();
+                EV_SET(ev, *s, EVFILT_READ, EV_ADD | EV_ENABLE,
+                    0, 0, KEVENT_UDATA_CAST dispatch_accept_tls);
+
+                *socks = *socks + 1;
+                s++;
+        }
+
+        if (*socks == 0) {
+                free (socks);
+                if(Debug)
+                        return(NULL);
+                else
+                        die(NULL);
+        }
+        if (res)
+                freeaddrinfo(res);
+
+        return(socks);
+}
+
+/*
+ * Close a SSL connection.
+ */
+void
+free_tls_conn(struct tls_conn_settings *tls_conn)
+{
+        int sock;
+        sock = SSL_get_fd(tls_conn->sslptr);
+        
+        if (tls_conn->sslptr) {
+                if (SSL_shutdown(tls_conn->sslptr) || SSL_shutdown(tls_conn->sslptr)) {
+                        /* shutdown has two steps, returns 1 on completion */
+                        dprintf("Closed TLS connection to %s\n", tls_conn->hostname);
+                } else { 
+                        dprintf("Unable to cleanly shutdown TLS connection to %s\n", tls_conn->hostname);
+                }        
+                if (shutdown(sock, SHUT_RDWR))
+                        dprintf("Unable to cleanly shutdown TCP socket %d: %s\n", sock, strerror(errno));
+                if (close(sock))
+                        dprintf("Unable to cleanly close socket %d: %s\n", sock, strerror(errno));
+                SSL_free(tls_conn->sslptr);
+        }
+        if (tls_conn->port)        free(tls_conn->port);
+        if (tls_conn->subject)     free(tls_conn->subject);
+        if (tls_conn->hostname)    free(tls_conn->hostname);
+        if (tls_conn->certfile)    free(tls_conn->certfile);
+        if (tls_conn->fingerprint) free(tls_conn->fingerprint);
+        if (tls_conn)              free(tls_conn);
 }

@@ -117,18 +117,9 @@ __RCSID("$NetBSD: syslogd.c,v 1.84 2006/11/13 20:24:00 christos Exp $");
 
 #endif /* !_NO_NETBSD_USR_SRC_ */
 
-/* one special problem:
- * kevent.udata has a different tye an NetBSD and FreeBSD :-(
- */
-#ifndef _NO_NETBSD_USR_SRC_
-#define KEVENT_UDATA_CAST (intptr_t)
-#else
-#define KEVENT_UDATA_CAST (void*)
-#endif /* !_NO_NETBSD_USR_SRC_ */
-
-
 #ifndef DISABLE_TLS
 #include <netinet/tcp.h>
+#include <sys/stdint.h>
 #include "tls_stuff.h"
 #endif /* !DISABLE_TLS */
 
@@ -314,7 +305,7 @@ void    logpath_fileadd(char ***, int *, int *, char *);
 
 static int fkq;
 
-static struct kevent *allocevchange(void);
+struct kevent *allocevchange(void);
 static int wait_for_events(struct kevent *, size_t);
 
 static void dispatch_read_klog(struct kevent *);
@@ -333,11 +324,48 @@ static const char *bindhostname = NULL;
 
 
 #ifndef DISABLE_TLS
+/* buffersize to process file length prefixes in TLS messages */
+#define PREFIXLENGTH 4+1
+#if MAXLINE > 9999
+#error The hard-coded PREFIXLENGTH is too small.
+#endif /* MAXLINE > 9999 */
+
+extern char *SSL_ERRCODE[];
+
 SSL_CTX *global_TLS_CTX;
+bool TLSClientOnly = 0;
 /* forward declarations */
 bool copy_config_value(char **mem, char *p, char *q);
 bool copy_config_value_quoted(char *keyword, char **mem, char **p, char **q);
 bool parse_tls_destination(char *line, struct filed *f);
+
+void dispatch_accept_tls(struct kevent *ev);
+static void dispatch_read_tls(struct kevent *ev);
+
+/* TLS needs three sets of sockets:
+ * - listening sockets: a fixed size array TLS_Listen_Set, just like finet for UDP.
+ * - outgoing connections: managed as part of struct filed.
+ * - incoming connections: variable sized, thus a linked list TLS_Incoming.
+ */
+int *TLS_Listen_Set;
+
+SLIST_HEAD(TLS_Incoming, TLS_Incoming_Conn) TLS_Incoming_Head
+        = SLIST_HEAD_INITIALIZER(TLS_Incoming_Head);
+
+/* every connection has its own input buffer with status
+ * variables for message reading */
+struct TLS_Incoming_Conn {
+        char inbuf[2*MAXLINE];           /* input buffer */
+        SLIST_ENTRY(TLS_Incoming_Conn) entries;
+        struct tls_conn_settings *tls_conn;
+        SSL *ssl;
+        int socket;
+        uint_fast16_t cur_msg_len;       /* length of current msg */
+        uint_fast16_t cur_msg_start;     /* beginning of current msg */
+        uint_fast16_t read_pos;          /* ring buffer position to write to */
+        uint_fast16_t want_to_read;      /* needed bytes to complete current message */
+        uint_fast8_t errorcount;         /* to close faulty connections */
+};
 
 /* auxillary code to allocate memory and copy a string */
 bool
@@ -650,6 +678,7 @@ getgroup:
         else {
                 dprintf("Initializing PRNG\n");
         }
+        SLIST_INIT(&TLS_Incoming_Head);
 #endif /* !DISABLE_TLS */
         /* 
          * All files are open, we can drop privileges and chroot
@@ -836,7 +865,7 @@ dispatch_read_funix(struct kevent *ev)
                 return;
         }
 
-        dprintf("Unix socket (%.*s) active\n", myname.sun_len, myname.sun_path);
+        dprintf("Unix socket (%.*s) active\n", (myname.sun_len-sizeof(myname.sun_len)-sizeof(myname.sun_family)), myname.sun_path);
 
         sunlen = sizeof(fromunix);
         rv = recvfrom(fd, linebuf, MAXLINE, 0,
@@ -889,6 +918,278 @@ dispatch_read_finet(struct kevent *ev)
                 printline(cvthname(&frominet), linebuf,
                           RemoteAddDate ? ADDDATE : 0);
 }
+
+#ifndef DISABLE_TLS
+/*
+ * Dispatch routine for accepting TCP/TLS sockets.
+ * TODO: check correct LIBWRAP usage for TCP connections
+ * TODO: how do we handle fingerprint auth for incoming?
+ *       set up a list of tls_conn_settings and pick one matching the hostname?
+ */
+void
+dispatch_accept_tls(struct kevent *ev)
+{
+#ifdef LIBWRAP
+        struct request_info req;
+#endif
+        struct sockaddr_storage frominet;
+        socklen_t addrlen;
+        int fd = ev->ident;
+        int reject = 0;
+        int tries = 0;
+        int newsock, rc, error, i;
+        SSL *ssl;
+        struct tls_conn_settings *conn_info;
+        struct TLS_Incoming_Conn *tls_in;
+        struct kevent *newev;
+        char hbuf[NI_MAXHOST];
+        char *peername;
+
+        dprintf("incoming TLS connection\n");
+        if (!global_TLS_CTX) {
+                logerror("global_TLS_CTX not initialized!\n");
+                return;
+        }
+
+#ifdef LIBWRAP
+        request_init(&req, RQ_DAEMON, "syslogd", RQ_FILE, fd, NULL);
+        fromhost(&req);
+        reject = !hosts_access(&req);
+#endif
+        addrlen = sizeof(frominet);
+        if (!(conn_info = malloc(sizeof(struct tls_conn_settings)))
+         || !(tls_in = malloc(sizeof(struct TLS_Incoming_Conn)))) {
+                logerror("cannot allocate memory");
+                return;
+        }
+          
+        if (-1 == (newsock = accept(fd, (struct sockaddr *)&frominet, &addrlen))) {
+                logerror("Error in accept(): %s", strerror(errno));
+                return;
+        }
+        if ((rc = getnameinfo((struct sockaddr *)&frominet, addrlen, hbuf, sizeof(hbuf), NULL, 0, NI_NUMERICHOST|NI_NUMERICSERV))) {
+                dprintf("could not get peername: %s", gai_strerror(rc));
+                peername = NULL;
+        }
+        else {
+                if (!(peername = malloc(strlen(hbuf)+1))) {
+                        dprintf("cannot allocate %d bytes memory\n", strlen(hbuf)+1);
+                        return;
+                }
+                (void)strlcpy(peername, hbuf, strlen(hbuf)+1);
+        }
+#ifdef LIBWRAP
+        if (reject) {
+                logerror("access from %s denied by hosts_access", peername);
+                return;
+        }
+#endif
+        if (-1 == (fcntl(newsock, F_SETFL, O_NONBLOCK))) {
+                dprintf("Unable to fcntl(sock, O_NONBLOCK): %s\n", strerror(errno));
+        }
+        
+        if (!(ssl = SSL_new(global_TLS_CTX))) {
+                dprintf("Unable to establish TLS: %s\n", ERR_error_string(ERR_get_error(), NULL));
+                close(newsock);
+                return;                                
+        }
+        if (!SSL_set_fd(ssl, newsock)) {
+                dprintf("Unable to connect TLS to socket %d: %s\n", newsock, ERR_error_string(ERR_get_error(), NULL));
+                SSL_free(ssl);
+                close(newsock);
+                return;
+        }
+        dprintf("connection from %s accept()ed, and connected SSL*@%p with fd %d...\n",
+                peername, ssl, newsock);
+
+        /* store connection details inside ssl object, used to verify
+         * cert and immediately match against hostname */
+        bzero(conn_info, sizeof(*conn_info));
+        conn_info->hostname = peername;
+        conn_info->x509verify = X509VERIFY_NONE;
+        conn_info->sslptr = ssl;
+        SSL_set_app_data(ssl, conn_info);
+        SSL_set_accept_state(ssl);
+        
+        /* non-blocking might require several calls? */
+try_SSL_accept:        
+        rc = SSL_accept(ssl);
+        if (0 >= rc) {
+                error = SSL_get_error(ssl, rc);
+                dprintf("SSL_accept() from %s returned rc %d, SSL error is %s: %s\n", peername, rc, SSL_ERRCODE[error], ERR_error_string(error, NULL));
+                switch (error) {
+                        case SSL_ERROR_WANT_READ:
+                        case SSL_ERROR_WANT_WRITE:
+                                if (++tries < TLS_SLEEP_TRIES) {
+                                        usleep(TLS_SLEEP_USEC);
+                                        goto try_SSL_accept;
+                                }
+                                break;
+                        case SSL_ERROR_SYSCALL:
+                                dprintf("SSL_ERROR_SYSCALL: ");
+                                i = ERR_get_error();
+                                if ((rc == -1) && (i == 0)) {
+                                        dprintf("socket I/O error: %d/%s\n", errno, strerror(errno));
+                                }
+                                else if ((rc == 0) && (i == 0)) {
+                                                dprintf("unexpected EOF\n");
+                                }
+                                else
+                                        dprintf("no further info\n");
+                                break;                                            
+                        case SSL_ERROR_SSL:
+                                /* TODO: handshake failures with unknown CA are returned as internal failures.
+                                 * log them seperately */
+                                logerror("internal SSL error, error queue gives %s", ERR_error_string(ERR_get_error(), NULL));
+                                break;     
+                        default:
+                                dprintf("ignoring this error\n");
+                                break;     
+                }
+                close(newsock);
+                return;
+        } else {
+                tls_in->tls_conn = conn_info;
+                tls_in->socket = newsock;
+                tls_in->ssl = ssl;
+                tls_in->inbuf[0] = '\0';
+                tls_in->read_pos = tls_in->cur_msg_len = tls_in->cur_msg_start = tls_in->want_to_read = 0;
+                SLIST_INSERT_HEAD(&TLS_Incoming_Head, tls_in, entries);
+    
+                newev = allocevchange();
+                EV_SET(newev, newsock, EVFILT_READ, EV_ADD | EV_ENABLE,
+                    0, 0, KEVENT_UDATA_CAST dispatch_read_tls);
+                dprintf("established TLS connection from %s\n", peername);
+        }
+}
+
+/*
+ * Dispatch routine to read from TCP/TLS sockets.
+ * NB: This gets called when the TCP socket has data available, thus
+ *     we can call SSL_read() on it. But that does not mean the SSL buffer
+ *     holds a complete record and SSL_read() lets us read any data now.
+ * Question: we get the socket fd and have to look up the tls_conn object.
+ *     IMHO we always have <100 connections and a list traversal is
+ *     fast enough. A possible optimization would be keeping track of
+ *     message counts and moving busy sources to the front of the list.
+ */
+static void
+dispatch_read_tls(struct kevent *ev)
+{
+        int fd = ev->ident;
+        int error, i;
+        uint_fast16_t toread, offset, rc;
+        struct TLS_Incoming_Conn *c;
+        char numbuf[PREFIXLENGTH];
+
+        dprintf("active TLS socket\n");
+        
+        SLIST_FOREACH(c, &TLS_Incoming_Head, entries) {
+                dprintf("look at tls_in@%p with fd %d\n", c, c->socket);
+                if (c->socket == fd)
+                        break;
+        }
+        if (!c) {
+                logerror("lost TLS socket fd %d", fd);
+                return;
+        } else
+                dprintf("found fd\n");
+
+/* according to draft-ietf-syslog-transport-tls-12 "It is ... possible
+ * that a syslog message be transferred in multiple TLS records."
+ * So we have to buffer it just like with TCP with a seperate incoming buffer.
+ * 
+ * Example: If a msg is sent in two TLS records 
+ * then we might read the beginning (from the 1st record),
+ * but wait some time for the end (in the 2nd record).
+ * In that waiting time we must not block.
+ */
+        
+        toread = (c->want_to_read ? c->want_to_read :
+                  (sizeof(c->inbuf) - c->read_pos));
+        dprintf("calling SSL_read(%p, %p, %d)\n", c->ssl, &(c->inbuf[c->read_pos]), toread);
+        rc = SSL_read(c->ssl, &(c->inbuf[c->read_pos]), toread);
+        if (0 >= rc) {
+                (c->errorcount)++;
+                error = SSL_get_error(c->ssl, rc);
+                dprintf("SSL_read() returned rc %d and error %s: %s\n", rc, SSL_ERRCODE[error], ERR_error_string(error, NULL));
+                switch (error) {
+                        case SSL_ERROR_SYSCALL:
+                                dprintf("SSL_ERROR_SYSCALL: ");
+                                i = ERR_get_error();
+                                if ((rc == -1) && (i == 0)) {
+                                        dprintf("socket I/O error: %s\n", strerror(errno));
+                                } else if ((rc == 0) && (i == 0)) {
+                                        dprintf("unexpected EOF\n");
+                                } else {
+                                        dprintf("no further info\n");
+                                }
+                                break;                                            
+                        case SSL_ERROR_ZERO_RETURN:
+                                logerror("TLS connection closed by %s", c->tls_conn->hostname);
+                                (c->errorcount) = TLS_MAXERRORCOUNT; /* no need to retry */
+                                break;                                
+                        case SSL_ERROR_SSL:
+                                logerror("internal SSL error, error queue gives %s", ERR_error_string(ERR_get_error(), NULL));
+                                break;
+                        default:
+                                break;     
+                }
+                if ((c->errorcount) >= TLS_MAXERRORCOUNT) {
+                        /* close connection */
+                        SLIST_REMOVE(&TLS_Incoming_Head, c, TLS_Incoming_Conn, entries);
+                        free_tls_conn(c->tls_conn);
+                        free(c);
+                }
+                /* else do nothing, so next invocation calls SSL_read() with same arguments */
+                return;
+        }
+        c->errorcount = 0;
+        c->read_pos = c->read_pos + rc;
+        if (c->want_to_read) {
+                /* already got first fragment of msg */
+                /* do something */
+        } else {
+                dprintf("trying to parse the message, got numbuf with size %d at %p\n", sizeof(numbuf), numbuf);
+                /* new message, empty buffer */
+                for (offset = 0; (c->inbuf)[offset] != ' ' && offset < rc && offset < PREFIXLENGTH;) {
+                        numbuf[offset] = (c->inbuf)[offset];
+                        numbuf[++offset] = '\0';
+                }
+                if ((c->inbuf)[offset] != ' ') {
+                        /* FIXME: assumption: length prefix completely inside one TLS record */
+                        dprintf("length prefix not found or did not fit in TLS record, now I'm lost\n");
+                }
+                else {
+                        c->cur_msg_len = strtol(numbuf, NULL, 10);
+                        c->cur_msg_start = offset+1;
+                        if (c->cur_msg_len > linebufsize) {
+                                /* TODO: handle messages too large for our buffer
+                                 *  --> either receive and truncate or malloc()
+                                 */
+                                logerror("c->cur_msg_len > linebufsize");
+                                die(NULL);
+                        }
+                        if ((c->read_pos - c->cur_msg_start) >= c->cur_msg_len) {
+                                /* complete */
+                                (void)memcpy(linebuf, &((c->inbuf)[c->cur_msg_start]), c->cur_msg_len);
+                                linebuf[c->cur_msg_len] = '\0';
+                                printline(c->tls_conn->hostname, linebuf, RemoteAddDate ? ADDDATE : 0);
+                                
+                                if (c->cur_msg_start + c->cur_msg_len == c->read_pos) {
+                                        /* no unprocessed data in buffer --> reset to start */
+                                        c->cur_msg_start = c->cur_msg_len = c->read_pos = c->want_to_read = 0;                                        
+                                } else {
+                                        /* move remaining input to start of buffer */
+                                        memmove(&((c->inbuf)[0]),
+                                                &((c->inbuf)[c->cur_msg_start + c->cur_msg_len]),
+                                                c->read_pos - (c->cur_msg_start + c->cur_msg_len));
+                                }
+                        }
+                }
+        }
+}
+#endif /* !DISABLE_TLS */
 
 /*
  * given a pointer to an array of char *'s, a pointer to its current
@@ -1259,6 +1560,10 @@ fprintlog(struct filed *f, int flags, char *msg)
         int j, l, lsent, fail, retry;
         char line[MAXLINE + 1], repbuf[80], greetings[200];
 #define ADDEV() assert(++v - iov < A_CNT(iov))
+#ifndef DISABLE_TLS
+        char tlsline[MAXLINE + 1 + PREFIXLENGTH + 1]; /* line + space + decimal length + null */
+        int i = 0;
+#endif /* !DISABLE_TLS */
 
         v = iov;
         if (f->f_type == F_WALL) {
@@ -1342,13 +1647,11 @@ fprintlog(struct filed *f, int flags, char *msg)
         dprintf("Logging to %s", TypeNames[f->f_type]);
         f->f_time = now;
 
-        switch (f->f_type) {
-        case F_UNUSED:
-                dprintf("\n");
-                break;
-
-        case F_FORW:
-                dprintf(" %s\n", f->f_un.f_forw.f_hname);
+        if ((f->f_type == F_FORW)
+#ifndef DISABLE_TLS
+         || (f->f_type == F_TLS)
+#endif /* !DISABLE_TLS */
+        ) {
                         /*
                          * check for local vs remote messages
                          * (from FreeBSD PR#bin/7055)
@@ -1365,6 +1668,15 @@ fprintlog(struct filed *f, int flags, char *msg)
                 }
                 if (l > MAXLINE)
                         l = MAXLINE;
+        }                
+        
+        switch (f->f_type) {
+        case F_UNUSED:
+                dprintf("\n");
+                break;
+
+        case F_FORW:
+                dprintf(" %s\n", f->f_un.f_forw.f_hname);
                 if (finet) {
                         lsent = -1;
                         fail = 0;
@@ -1411,6 +1723,61 @@ sendagain:
                         }
                 }
                 break;
+
+#ifndef DISABLE_TLS
+        case F_TLS:
+                printf("[%s]\n", f->f_un.f_tls.tls_conn->hostname);
+
+                /* 
+                 * At least on machines with enough memory using a new out buffer
+                 * and making a copy is probably faster than using a second buffer
+                 * just for the length prefix and calling SSL_write() twice.
+                 */
+                j = snprintf(tlsline, sizeof(tlsline)-1, "%d %s", l, line);
+                lsent = SSL_write(f->f_un.f_tls.tls_conn->sslptr, tlsline, j);
+                
+                if (0 >= lsent) {
+                        (f->f_un.f_tls.tls_conn->errorcount)++;
+                        fail = SSL_get_error(f->f_un.f_tls.tls_conn->sslptr, lsent);
+                        dprintf("SSL_read() returned rc %d and error %s: %s\n", lsent, SSL_ERRCODE[fail], ERR_error_string(fail, NULL));
+                        switch (fail) {
+                                case SSL_ERROR_SYSCALL:
+                                        dprintf("SSL_ERROR_SYSCALL: ");
+                                        i = ERR_get_error();
+                                        if ((lsent == -1) && (i == 0)) {
+                                                dprintf("socket I/O error: %s\n", strerror(errno));
+                                                if (errno == EPIPE)
+                                                        f->f_un.f_tls.tls_conn->errorcount = TLS_MAXERRORCOUNT;
+                                        } else if ((lsent == 0) && (i == 0)) {
+                                                dprintf("unexpected EOF\n");
+                                        } else {
+                                                dprintf("unknown. ERR_error_string() gives: %s\n", ERR_error_string(i, NULL));
+                                        }
+                                        break;                                            
+                                case SSL_ERROR_ZERO_RETURN:
+                                        logerror("TLS connection closed by %s", f->f_un.f_tls.tls_conn->hostname);
+                                        f->f_un.f_tls.tls_conn->errorcount = TLS_MAXERRORCOUNT; /* no need to retry */
+                                        break;                                
+                                case SSL_ERROR_SSL:
+                                        logerror("internal SSL error, error queue gives %s", ERR_error_string(ERR_get_error(), NULL));
+                                        break;
+                                default:
+                                        break;     
+                        }
+                        if (f->f_un.f_tls.tls_conn->errorcount >= TLS_MAXERRORCOUNT) {
+                                /* close connection */
+                                free_tls_conn(f->f_un.f_tls.tls_conn);
+                                f->f_type = F_UNUSED;
+                        }
+                        /* else do nothing, so next invocation calls SSL_read() with same arguments */
+                        return;
+                }
+                else if (lsent != j) {
+                        dprintf("TLS: SSL_write() wrote %d out of %d bytes\n", lsent, j);
+                }
+                f->f_un.f_tls.tls_conn->errorcount = 0;
+                break;
+#endif /* !DISABLE_TLS */
 
         case F_PIPE:
                 dprintf(" %s\n", f->f_un.f_pipe.f_pname);
@@ -1807,6 +2174,9 @@ init(struct kevent *ev)
         char prog[NAME_MAX + 1];
         char host[MAXHOSTNAMELEN];
         char hostMsg[2*MAXHOSTNAMELEN + 40];
+#ifndef DISABLE_TLS
+        struct TLS_Incoming_Conn *tls_in;
+#endif /* !DISABLE_TLS */
 
         dprintf("init\n");
 
@@ -1819,6 +2189,38 @@ init(struct kevent *ev)
         } else
                 LocalDomain = "";
         LocalDomainLen = strlen(LocalDomain);
+
+#ifndef DISABLE_TLS
+        /* 
+         * close all listening and connected TLS sockets
+         */
+        if (TLS_Listen_Set)
+                for (i = 0; i < *TLS_Listen_Set; i++)
+                        if (close(TLS_Listen_Set[i+1]) < 0)
+                                logerror("close() failed");
+        /* close incoming TLS connections */
+        SLIST_FOREACH(tls_in, &TLS_Incoming_Head, entries) {
+                free_tls_conn(tls_in->tls_conn);
+                free(tls_in);
+        }
+        /* no effect: SLIST_EMPTY(&TLS_Incoming_Head); */
+
+        /* TODO: I wonder whether TLS connections should
+         * use a multi-step shutdown:
+         * 1. send close notify to incoming connections
+         * 2. receive outstanding messages/buffer
+         * 3. receive close notify and close TLS socket
+         * 4. close outgoing connections & files
+         * 
+         * Since init() is called after kevent, this would
+         * probably require splitting it into hangup() for closing
+         * and newinit() for opening, so that messages can still
+         * be received between these two function calls.
+         * 
+         * Or we check inside init() if new kevents arrive
+         * for the incoming sockets...
+         */
+#endif /* !DISABLE_TLS */
 
         /*
          *  Close all open log files.
@@ -1849,20 +2251,7 @@ init(struct kevent *ev)
                         break;
 #ifndef DISABLE_TLS
                 case F_TLS:
-                        if (f->f_un.f_tls.tls_conn->port)        free(f->f_un.f_tls.tls_conn->port);
-                        if (f->f_un.f_tls.tls_conn->subject)     free(f->f_un.f_tls.tls_conn->subject);
-                        if (f->f_un.f_tls.tls_conn->hostname)    free(f->f_un.f_tls.tls_conn->hostname);
-                        if (f->f_un.f_tls.tls_conn->certfile)    free(f->f_un.f_tls.tls_conn->certfile);
-                        if (f->f_un.f_tls.tls_conn->fingerprint) free(f->f_un.f_tls.tls_conn->fingerprint);
-                        if (f->f_un.f_tls.tls_conn)              free(f->f_un.f_tls.tls_conn);
-                        if (f->f_un.f_tls.ssl) {
-                                /* TODO: check ssl-source
-                                 *   a) if _free implies a _clear and is enough
-                                 *   b) if error handling in necessary here
-                                 */
-                                SSL_clear(f->f_un.f_tls.ssl);
-                                SSL_free(f->f_un.f_tls.ssl);
-                        }
+                        free_tls_conn(f->f_un.f_tls.tls_conn);
                         break;
 #endif /* !DISABLE_TLS */
                 }
@@ -1877,7 +2266,7 @@ init(struct kevent *ev)
         nextp = &Files;
 
         /*
-         *  Close all open sockets
+         *  Close all open UDP sockets
          */
 
         if (finet) {
@@ -2000,7 +2389,11 @@ init(struct kevent *ev)
                         case F_FORW:
                                 printf("%s", f->f_un.f_forw.f_hname);
                                 break;
-
+#ifndef DISABLE_TLS
+                        case F_TLS:
+                                printf("[%s]", f->f_un.f_tls.tls_conn->hostname);
+                                break;
+#endif /* !DISABLE_TLS */
                         case F_PIPE:
                                 printf("%s", f->f_un.f_pipe.f_pname);
                                 break;
@@ -2030,6 +2423,21 @@ init(struct kevent *ev)
                         dprintf("Listening on inet and/or inet6 socket\n");
                 dprintf("Sending on inet and/or inet6 socket\n");
         }
+
+#ifndef DISABLE_TLS
+        /* TODO: get TLS settings from the config file
+         *  (CA certs, fingerprints, maybe hostname/port to bind to, ...)
+         */
+        dprintf("Preparing sockets for TLS\n");
+        TLS_Listen_Set = socksetup_tls(PF_UNSPEC, bindhostname, SERVICENAME);
+        /* init with new TLS_CTX
+         * TODO: keep the old one and only change the X.509 settings on config change
+         */
+        if (global_TLS_CTX) {
+                SSL_CTX_free(global_TLS_CTX);
+        }
+        global_TLS_CTX = init_global_TLS_CTX(MYKEY, MYCERT, MYCA, MYCAPATH, X509VERIFY);
+#endif /* !DISABLE_TLS */
 
         logmsg(LOG_SYSLOG|LOG_INFO, "syslogd: restart", LocalHostName, ADDDATE);
         dprintf("syslogd: restarted\n");
@@ -2230,9 +2638,6 @@ cfline(char *line, struct filed *f, char *prog, char *host)
                         else {
                                 /* successful setup */
                                 f->f_type = F_TLS;
-                                /* test message */
-                                snprintf(buf, MAXLINE, "%d %s", strlen("Hallo Welt!"), "Hallo Welt!");
-                                SSL_write(f->f_un.f_tls.tls_conn->sslptr, buf, strlen(buf));
                         }
                         break;
                 }
@@ -2570,7 +2975,7 @@ log_deadchild(pid_t pid, int status, const char *name)
 static struct kevent changebuf[8];
 static int nchanges;
 
-static struct kevent *
+struct kevent *
 allocevchange(void)
 {
 

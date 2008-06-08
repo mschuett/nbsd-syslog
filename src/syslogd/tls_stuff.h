@@ -18,17 +18,30 @@
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 
-#define MYKEY NULL
-#define MYCERT  NULL
-#define MYCA  NULL //"testca.crt"
+#define MYKEY "localhost.key"
+#define MYCERT  "localhost.crt"
+#define MYCA  "testca.crt"
 #define MYCAPATH NULL
 #define X509VERIFY X509VERIFY_NONE
 #define SERVICENAME "5555"
+#define TLSBACKLOG 4
+#define TLS_MAXERRORCOUNT 4
+#define TLS_SLEEP_USEC  2000
+#define TLS_SLEEP_TRIES 5
 
 /* options for peer certificate verification */
 #define X509VERIFY_ALWAYS 0
 #define X509VERIFY_IFPRESENT 1
 #define X509VERIFY_NONE 2
+
+/* one special problem:
+ * kevent.udata has a different type an NetBSD and FreeBSD :-(
+ */
+#ifndef _NO_NETBSD_USR_SRC_
+#define KEVENT_UDATA_CAST (intptr_t)
+#else
+#define KEVENT_UDATA_CAST (void*)
+#endif /* !_NO_NETBSD_USR_SRC_ */
 
 /*
  * holds TLS related settings for one connection to be
@@ -45,6 +58,7 @@ struct tls_conn_settings {
         char *subject;       /* configured hostname in cert  */
         char *fingerprint;   /* fingerprint of peer cert     */
         char *certfile;      /* copy of peer cert -- not implemented */
+        char errorcount;     /* to be able to close a connection after sveral errors */
 };
 /*
  * may be a TODO:
@@ -61,5 +75,7 @@ bool tls_connect(SSL_CTX **context, struct tls_conn_settings *conn);
 bool get_fingerprint(X509 * cert, char **returnstring, char *alg_name);
 bool match_hostnames(X509 * cert, struct tls_conn_settings *conn);
 bool match_fingerprint(X509 * cert, struct tls_conn_settings *conn);
+int *socksetup_tls(int af, const char *bindhostname, const char *port);
+void free_tls_conn(struct tls_conn_settings *tls_conn);
 
 #endif /* !_TLS_STUFF_H */

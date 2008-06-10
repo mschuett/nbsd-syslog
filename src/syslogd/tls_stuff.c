@@ -611,3 +611,43 @@ free_tls_conn(struct tls_conn_settings *tls_conn)
         if (tls_conn->fingerprint) free(tls_conn->fingerprint);
         if (tls_conn)              free(tls_conn);
 }
+
+int
+tls_examine_error(char *functionname, SSL *ssl, struct tls_conn_settings *tls_conn, int rc)
+{
+        int ssl_error, err_error;
+        
+        ssl_error = SSL_get_error(ssl, rc);
+        dprintf("%s returned rc %d and error %s: %s\n", functionname, rc, SSL_ERRCODE[ssl_error], ERR_error_string(ssl_error, NULL));
+        switch (ssl_error) {
+                case SSL_ERROR_WANT_READ:
+                case SSL_ERROR_WANT_WRITE:
+                        return TLS_RETRY;
+                        break;
+                case SSL_ERROR_SYSCALL:
+                        dprintf("SSL_ERROR_SYSCALL: ");
+                        err_error = ERR_get_error();
+                        if ((rc == -1) && (err_error == 0)) {
+                                dprintf("socket I/O error: %s\n", strerror(errno));
+                        } else if ((rc == 0) && (err_error == 0)) {
+                                dprintf("unexpected EOF from %s\n", tls_conn ? tls_conn->hostname : NULL);
+                        } else {
+                                dprintf("no further info\n");
+                        }
+                        return TLS_PERM_ERROR;
+                        break;                                            
+                case SSL_ERROR_ZERO_RETURN:
+                        logerror("TLS connection closed by %s", tls_conn ? tls_conn->hostname : NULL);
+                        return TLS_PERM_ERROR;
+                        break;                                
+                case SSL_ERROR_SSL:
+                        logerror("internal SSL error, error queue gives %s", ERR_error_string(ERR_get_error(), NULL));
+                        /* TODO: handle wrong cert */
+                        return TLS_PERM_ERROR;
+                        break;
+                default:
+                        break;     
+        }
+        if (tls_conn) (tls_conn->errorcount)++;
+        return TLS_TEMP_ERROR;
+}

@@ -356,9 +356,7 @@ void tls_split_messages(struct TLS_Incoming_Conn *c);
 
 void dispatch_accept_tls(struct kevent *ev);
 void dispatch_read_tls(struct kevent *ev);
-void tls_reconnect(struct filed *f);
-
-void tls_reconnect(struct filed *f) { /* TODO */ return; };
+void tls_reconnect(struct kevent *ev);
 
 /* auxillary code to allocate memory and copy a string */
 bool
@@ -396,17 +394,17 @@ parse_tls_destination(char *line, struct filed *f)
         
         p = line;
         if ((*p++ != '@') || *p++ != '[') {
-                logerror("parse_tls_destination() on non-TLS action\n");
+                logerror("parse_tls_destination() on non-TLS action");
                 return false; 
         }
         
         if (!(q = strchr(p, ']'))) {
-                logerror("Unterminated [ in configuration\n");
+                logerror("Unterminated [ in configuration");
                 return false;
         }
 
         if (!(f->f_un.f_tls.tls_conn = malloc(sizeof(struct tls_conn_settings)))) {
-                logerror("Couldn't allocate memory for TLS config\n");
+                logerror("Couldn't allocate memory for TLS config");
                 return false;
         }
         /* default values */
@@ -447,19 +445,19 @@ parse_tls_destination(char *line, struct filed *f)
                                 else if ((q-p > 1) && !strncasecmp("on", p, q-p))
                                         f->f_un.f_tls.tls_conn->x509verify = X509VERIFY_ALWAYS;
                                 else {
-                                        logerror("unknown verify value %.*s\n", q-p, p);
+                                        logerror("unknown verify value %.*s", q-p, p);
                                 }
                                 if (*q == '\"') q++;  /* "" are optional */
                                 p = q;
                         }
                         else {
-                                logerror("unknown keyword %s \n", p);
+                                logerror("unknown keyword %s", p);
                                 return false;        
                         }
                         while (*p == ',' || isblank(*p))
                                 p++;
                         if (*p == '\0') {
-                                logerror("unterminated (\n");
+                                logerror("unterminated (");
                                 return false;
                         }
                 }
@@ -667,7 +665,7 @@ getgroup:
 #ifndef DISABLE_TLS
         /* OpenSSL PRNG needs /dev/urandom, thus initialize before chroot() */
         if (!RAND_status())
-                logerror("Unable to initialize OpenSSL PRNG\n");
+                logerror("Unable to initialize OpenSSL PRNG");
         else {
                 dprintf("Initializing PRNG\n");
         }
@@ -914,6 +912,22 @@ dispatch_read_finet(struct kevent *ev)
 
 #ifndef DISABLE_TLS
 /*
+ * Dispatch routine (triggered by timer) to reconnect to a lost TLS server
+ */
+void tls_reconnect(struct kevent *ev)
+{
+        struct filed *f = (struct filed *) ev->ident;
+        
+        dprintf("reconnect timer expired\n");
+        if (!tls_connect(&global_TLS_CTX, f->f_un.f_tls.tls_conn)) {
+                logerror("Unable to connect to TLS server %s", f->f_un.f_tls.tls_conn->hostname);
+                EV_SET(ev, (uintptr_t)f, EVFILT_TIMER, EV_ADD | EV_ENABLE | EV_ONESHOT,
+                    0, 3*1000*TLS_RECONNECT_SEC, KEVENT_UDATA_CAST tls_reconnect); 
+        }
+        return;
+}
+
+/*
  * Dispatch routine for accepting TCP/TLS sockets.
  * TODO: check correct LIBWRAP usage for TCP connections
  * TODO: how do we handle fingerprint auth for incoming?
@@ -940,7 +954,7 @@ dispatch_accept_tls(struct kevent *ev)
 
         dprintf("incoming TLS connection\n");
         if (!global_TLS_CTX) {
-                logerror("global_TLS_CTX not initialized!\n");
+                logerror("global_TLS_CTX not initialized!");
                 return;
         }
 
@@ -1593,6 +1607,7 @@ fprintlog(struct filed *f, int flags, char *msg)
         char tlsline[MAXLINE + 1 + PREFIXLENGTH + 1]; /* line + space + decimal length + null */
         char *tlslineptr;
         int error, rc;
+        struct kevent *newev;
 #endif /* !DISABLE_TLS */
 
         v = iov;
@@ -1784,8 +1799,11 @@ try_SSL_write:
                                                 break;
                                         /* else fallthrough */
                                 case TLS_PERM_ERROR:
-                                        /* TODO: Reconnect after x seconds  */
-                                        tls_reconnect(f);
+                                        /* Reconnect after x seconds  */
+                                        newev = allocevchange();
+                                        EV_SET(newev, (uintptr_t)f, EVFILT_TIMER, EV_ADD | EV_ENABLE | EV_ONESHOT,
+                                            0, 1000*TLS_RECONNECT_SEC, KEVENT_UDATA_CAST tls_reconnect);
+                                        dprintf("scheduled reconnect in %d seconds\n", TLS_RECONNECT_SEC);
                                         break;
                                 default:break;
                         }
@@ -2486,6 +2504,9 @@ cfline(char *line, struct filed *f, char *prog, char *host)
         int    error, i, pri, syncfile;
         char   *bp, *p, *q;
         char   buf[MAXLINE];
+#ifndef DISABLE_TLS
+        struct kevent *newev;
+#endif /* !DISABLE_TLS */
 
         dprintf("cfline(\"%s\", f, \"%s\", \"%s\")\n", line, prog, host);
 
@@ -2650,17 +2671,19 @@ cfline(char *line, struct filed *f, char *prog, char *host)
                 if (*(p+1) == '[') {
                         /* TLS destination */
                         if (!parse_tls_destination(p, f)) {
-                                logerror("Unable to parse action %s\n", p);
+                                logerror("Unable to parse action %s", p);
                                 break;
                         }
                         if (!tls_connect(&global_TLS_CTX, f->f_un.f_tls.tls_conn)) {
-                                logerror("Unable to connect to TLS server %s\n", f->f_un.f_tls.tls_conn->hostname);
+                                logerror("Unable to connect to TLS server %s", f->f_un.f_tls.tls_conn->hostname);
+                                /* Reconnect after x seconds  */
+                                newev = allocevchange();
+                                EV_SET(newev, (uintptr_t)f, EVFILT_TIMER, EV_ADD | EV_ENABLE | EV_ONESHOT,
+                                    0, 1000*TLS_RECONNECT_SEC, KEVENT_UDATA_CAST tls_reconnect);
+                                dprintf("scheduled reconnect in %d seconds\n", TLS_RECONNECT_SEC);
                                 break;
                         }
-                        else {
-                                /* successful setup */
-                                f->f_type = F_TLS;
-                        }
+                        f->f_type = F_TLS;
                         break;
                 }
 #endif /* !DISABLE_TLS */

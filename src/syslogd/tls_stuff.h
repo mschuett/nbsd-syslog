@@ -43,6 +43,8 @@
 #define TLS_SLEEP_USEC  5000
 #define TLS_SLEEP_TRIES 5
 
+#define TLS_RECONNECT_SEC 10
+
 /* options for peer certificate verification */
 #define X509VERIFY_ALWAYS 0
 #define X509VERIFY_IFPRESENT 1

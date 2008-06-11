@@ -344,7 +344,6 @@ bool tls_connect(SSL_CTX **context, struct tls_conn_settings *conn)
 {
         struct addrinfo hints, *res, *res1;
         int    error, rc, sock;
-        const int intsize = sizeof(int);
         const int one = 1;
         char   buf[MAXLINE];
         SSL    *ssl; 
@@ -405,11 +404,6 @@ bool tls_connect(SSL_CTX **context, struct tls_conn_settings *conn)
                 }
                 dprintf("SSL_set_fd(ssl, %d)\n", sock);
 
-                if (-1 == (getsockopt(sock, SOL_SOCKET, SO_ERROR, &rc, (void*)&intsize))) {
-                        dprintf("Unable to getsockopt(): %s\n", strerror(errno));}
-                if (rc) { dprintf("found socket error: %s\n", strerror(rc)); }
-                else    { dprintf("socket %d ok\n", sock); }
-
                 while ((rc = ERR_get_error())) {
                         ERR_error_string_n(rc, buf, MAXLINE);
                         dprintf("Found SSL error in queue: %s\n", buf);
@@ -422,11 +416,6 @@ bool tls_connect(SSL_CTX **context, struct tls_conn_settings *conn)
                         dprintf("Found SSL error in queue: %s\n", buf);
                 }
                 dprintf("SSL_set_app_data(), SSL_set_connect_state()\n");
-
-                if (-1 == (getsockopt(sock, SOL_SOCKET, SO_ERROR, &rc, (void*)&intsize))) {
-                        dprintf("Unable to getsockopt(): %s\n", strerror(errno));}
-                if (rc) { dprintf("found socket error: %s\n", strerror(rc)); }
-                else    { dprintf("socket %d ok\n", sock); }
                 
                 /* connect */
                 //rc = SSL_do_handshake(ssl);
@@ -441,59 +430,12 @@ bool tls_connect(SSL_CTX **context, struct tls_conn_settings *conn)
                         conn->sslptr = ssl;
                         return true;  /* okay we got one */
                 }
-                else {
-                        if (rc == 0) {
-                                dprintf("TLS connection shut down during connect\n");
-                                close(sock);
-                                sock = -1;
-                                SSL_shutdown(ssl);
-                                SSL_free(ssl);
-                        } else {
-                                if (-1 == (getsockopt(sock, SOL_SOCKET, SO_ERROR, &rc, (void*)&intsize))) {
-                                        dprintf("Unable to getsockopt(): %s\n", strerror(errno)); }
-                                if (rc) { dprintf("found socket error: %s\n", strerror(rc)); }
-                                else    { dprintf("socket %d ok\n", sock); }
-
-                                dprintf("SSL_connect() returned error %d: ", rc);
-                                error = SSL_get_error(ssl, rc);
-                                switch (error) {
-                                        case SSL_ERROR_ZERO_RETURN:
-                                                dprintf("SSL_ERROR_ZERO_RETURN (connection has been closed cleanly)\n");
-                                                break;                                            
-                                        case SSL_ERROR_WANT_READ:
-                                        case SSL_ERROR_WANT_WRITE:
-                                                dprintf("SSL_ERROR_WANT_READ/WRITE\n");
-                                                break;                                            
-                                        case SSL_ERROR_WANT_CONNECT:
-                                        case SSL_ERROR_WANT_ACCEPT:
-                                                dprintf("SSL_ERROR_WANT_CONNECT/ACCEPT\n");
-                                                break;                                            
-                                        case SSL_ERROR_WANT_X509_LOOKUP:
-                                                dprintf("SSL_ERROR_WANT_X509_LOOKUP\n");
-                                                break;                                            
-                                        case SSL_ERROR_SYSCALL:
-                                                dprintf("SSL_ERROR_SYSCALL\n");
-                                                if ((rc == -1) && !ERR_get_error()) {
-                                                        dprintf("socket I/O error: %s\n", strerror(errno));
-                                                }
-                                                else {
-                                                        dprintf("rc != -1, unknown error. errno is %s\n", strerror(errno));
-                                                }
-                                                break;                                            
-                                        case SSL_ERROR_SSL:
-                                                dprintf("SSL_ERROR_SSL\n");
-                                                break;     
-                                        default:
-                                                dprintf("unknown error value\n");
-                                                break;     
-                                }
-                                close(sock);
-                                sock = -1;
-                                SSL_shutdown(ssl);
-                                SSL_free(ssl);
-                        }
-                        continue;
-                }
+                error = tls_examine_error("SSL_connect", ssl, conn, rc);
+                close(sock);
+                sock = -1;
+                SSL_shutdown(ssl);
+                SSL_free(ssl);
+                continue;
         }
         return false;
 }
@@ -583,15 +525,34 @@ socksetup_tls(int af, const char *bindhostname, const char *port)
 }
 
 /*
- * Close a SSL connection.
+ * Close a SSL connection and its queue and its tls_conn.
  */
 void
 free_tls_conn(struct tls_conn_settings *tls_conn)
 {
+        if (tls_conn->sslptr)
+                free_tls_sslptr(tls_conn);
+        /* TODO: free queue */
+        if (tls_conn->port)        free(tls_conn->port);
+        if (tls_conn->subject)     free(tls_conn->subject);
+        if (tls_conn->hostname)    free(tls_conn->hostname);
+        if (tls_conn->certfile)    free(tls_conn->certfile);
+        if (tls_conn->fingerprint) free(tls_conn->fingerprint);
+        if (tls_conn)              free(tls_conn);
+}
+
+/*
+ * Close a SSL object
+ */
+void
+free_tls_sslptr(struct tls_conn_settings *tls_conn)
+{
         int sock;
         sock = SSL_get_fd(tls_conn->sslptr);
         
-        if (tls_conn->sslptr) {
+        if (!tls_conn->sslptr)
+                return;
+        else {
                 if (SSL_shutdown(tls_conn->sslptr) || SSL_shutdown(tls_conn->sslptr)) {
                         /* shutdown has two steps, returns 1 on completion */
                         dprintf("Closed TLS connection to %s\n", tls_conn->hostname);
@@ -603,13 +564,8 @@ free_tls_conn(struct tls_conn_settings *tls_conn)
                 if (close(sock))
                         dprintf("Unable to cleanly close socket %d: %s\n", sock, strerror(errno));
                 SSL_free(tls_conn->sslptr);
+                tls_conn->sslptr = NULL;
         }
-        if (tls_conn->port)        free(tls_conn->port);
-        if (tls_conn->subject)     free(tls_conn->subject);
-        if (tls_conn->hostname)    free(tls_conn->hostname);
-        if (tls_conn->certfile)    free(tls_conn->certfile);
-        if (tls_conn->fingerprint) free(tls_conn->fingerprint);
-        if (tls_conn)              free(tls_conn);
 }
 
 int

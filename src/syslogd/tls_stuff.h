@@ -98,6 +98,7 @@ bool get_fingerprint(X509 * cert, char **returnstring, char *alg_name);
 bool match_hostnames(X509 * cert, struct tls_conn_settings *conn);
 bool match_fingerprint(X509 * cert, struct tls_conn_settings *conn);
 int *socksetup_tls(int af, const char *bindhostname, const char *port);
+void free_tls_sslptr(struct tls_conn_settings *tls_conn);
 void free_tls_conn(struct tls_conn_settings *tls_conn);
 int tls_examine_error(char *functionname, SSL *ssl, struct tls_conn_settings *tls_conn, int rc);
 

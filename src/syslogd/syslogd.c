@@ -115,6 +115,21 @@ __RCSID("$NetBSD: syslogd.c,v 1.84 2006/11/13 20:24:00 christos Exp $");
 #include <netinet/tcp.h>
 #include <sys/stdint.h>
 #include "tls_stuff.h"
+
+/* simple message buffer container */
+struct buf_msg {
+        char *line;
+        size_t len;
+        unsigned short int refcount;
+};
+
+/* queue of messages */
+
+struct buf_queue {
+        struct buf_msg* msg;
+        TAILQ_ENTRY(buf_queue) entries;
+};
+TAILQ_HEAD(buf_queue_head, buf_queue);
 #endif /* !DISABLE_TLS */
 
 #include "pathnames.h"
@@ -175,6 +190,7 @@ struct filed {
                 } f_forw;               /* UDP forwarding address */
 #ifndef DISABLE_TLS
                 struct {
+                        struct buf_queue_head qhead;    /* queue for undelivered msgs */
                         SSL     *ssl;                   /* SSL object  */
                         struct tls_conn_settings *tls_conn;  /* certificate info */ 
                 } f_tls;                /* TLS forwarding address */
@@ -358,6 +374,10 @@ void dispatch_accept_tls(struct kevent *ev);
 void dispatch_read_tls(struct kevent *ev);
 void tls_reconnect(struct kevent *ev);
 
+inline struct buf_queue_head makebuf_queue_head(struct filed *f);
+void tls_send_queue(struct filed *f);
+bool tls_send(struct filed *f, char *line, size_t len);
+
 /* auxillary code to allocate memory and copy a string */
 bool
 copy_config_value(/*@out@*/ char **mem, char *p, char *q)
@@ -387,11 +407,23 @@ copy_config_value_quoted(char *keyword, char **mem, /*@null@*/char **p, /*@null@
         return true;
 }
 
+/* 
+ * Auxiliary function because TAILQ_HEAD_INITIALIZER is defined for
+ * initialization and cannot be used in an assignment after malloc()
+ * (?)
+ */
+inline struct buf_queue_head
+makebuf_queue_head(struct filed *f)
+{
+        struct buf_queue_head bqh = TAILQ_HEAD_INITIALIZER(f->f_un.f_tls.qhead);
+        return bqh;
+}        
+
 bool
 parse_tls_destination(char *line, struct filed *f)
 {
         char *p, *q;
-        
+
         p = line;
         if ((*p++ != '@') || *p++ != '[') {
                 logerror("parse_tls_destination() on non-TLS action");
@@ -410,7 +442,9 @@ parse_tls_destination(char *line, struct filed *f)
         /* default values */
         bzero(f->f_un.f_tls.tls_conn, sizeof(struct tls_conn_settings));
         f->f_un.f_tls.tls_conn->x509verify = X509VERIFY_NONE;
-        
+        f->f_un.f_tls.qhead = makebuf_queue_head(f);
+        TAILQ_INIT(&f->f_un.f_tls.qhead);
+
         if (!(copy_config_value(&(f->f_un.f_tls.tls_conn->hostname), p, q)))
                 return false;
         p = ++q;
@@ -911,10 +945,32 @@ dispatch_read_finet(struct kevent *ev)
 }
 
 #ifndef DISABLE_TLS
+/* send message queue after reconnect */
+void
+tls_send_queue(struct filed *f)
+{
+        struct buf_queue *qptr;
+        
+        while (!TAILQ_EMPTY(&f->f_un.f_tls.qhead)) {
+                qptr = TAILQ_FIRST(&f->f_un.f_tls.qhead);
+                
+                if (!tls_send(f, qptr->msg->line, qptr->msg->len))
+                        /* stop on first error --> next reconnect will continue */
+                        return;
+                
+                TAILQ_REMOVE(&f->f_un.f_tls.qhead, qptr, entries);
+                if (!qptr->msg->refcount) {
+                        free(qptr->msg->line);
+                        free(qptr->msg);
+                }
+                free(qptr);
+        }                
+}
 /*
  * Dispatch routine (triggered by timer) to reconnect to a lost TLS server
  */
-void tls_reconnect(struct kevent *ev)
+void
+tls_reconnect(struct kevent *ev)
 {
         struct filed *f = (struct filed *) ev->ident;
         
@@ -923,7 +979,9 @@ void tls_reconnect(struct kevent *ev)
                 logerror("Unable to connect to TLS server %s", f->f_un.f_tls.tls_conn->hostname);
                 EV_SET(ev, (uintptr_t)f, EVFILT_TIMER, EV_ADD | EV_ENABLE | EV_ONESHOT,
                     0, 3*1000*TLS_RECONNECT_SEC, KEVENT_UDATA_CAST tls_reconnect); 
-        }
+        } else {
+                tls_send_queue(f);
+        }        
         return;
 }
 
@@ -1594,6 +1652,81 @@ logmsg(int pri, char *msg, char *from, int flags)
         (void)sigsetmask(omask);
 }
 
+#ifndef DISABLE_TLS
+/* send one line with tls
+ * f has to be of typ TLS
+ * line has to be in transport format with length prefix
+ */
+bool
+tls_send(struct filed *f, char *line, size_t len)
+{
+        int i, j, retry, rc, error;
+        char *tlslineptr = line;
+        size_t tlslen = len;
+        struct kevent *newev;
+        
+        dprintf("tls_send(f=%p, line=\"%.*s...\", len=%d) to %sconnected dest.\n",
+                f, (len>20 ? 20 : len), line, len,
+                f->f_un.f_tls.tls_conn->sslptr ? "" : "un");
+
+        if (!f->f_un.f_tls.tls_conn->sslptr) {
+                return false;
+        }
+
+        /* simple sanity check for length prefix */
+        for (i = 0, j = len; j /= 10; i++)
+                if (!isdigit(line[i])) {
+                        dprintf("malformed TLS line: %.*s", (len>20 ? 20 : len), line);
+                        /* silently discard malformed line, re-queuing it would only cause a loop */
+                        return true;
+                } 
+        if (line[++i] != ' ') {
+                dprintf("malformed TLS line: %.*s", (len>20 ? 20 : len), line);
+                return true;
+        }
+
+        retry = 0;
+try_SSL_write:
+        rc = SSL_write(f->f_un.f_tls.tls_conn->sslptr, tlslineptr, tlslen);
+        if (0 >= rc) {
+                error = tls_examine_error("SSL_write()",
+                        f->f_un.f_tls.tls_conn->sslptr,
+                        f->f_un.f_tls.tls_conn, rc);
+                switch (error) {
+                        case TLS_RETRY:
+                                if (++retry < TLS_SLEEP_TRIES) {
+                                        usleep(TLS_SLEEP_USEC);
+                                        goto try_SSL_write;
+                                }
+                                break;
+                        case TLS_TEMP_ERROR:
+                                if ((f->f_un.f_tls.tls_conn->errorcount)++ < TLS_MAXERRORCOUNT)
+                                        break;
+                                /* else fallthrough */
+                        case TLS_PERM_ERROR:
+                                /* Reconnect after x seconds  */
+                                newev = allocevchange();
+                                EV_SET(newev, (uintptr_t)f, EVFILT_TIMER, EV_ADD | EV_ENABLE | EV_ONESHOT,
+                                    0, 1000*TLS_RECONNECT_SEC, KEVENT_UDATA_CAST tls_reconnect);
+                                dprintf("scheduled reconnect in %d seconds\n", TLS_RECONNECT_SEC);
+                                break;
+                        default:break;
+                }
+                free_tls_sslptr(f->f_un.f_tls.tls_conn);
+                return false;
+        }
+        else if (rc < tlslen) {
+        dprintf("TLS: SSL_write() wrote %d out of %d bytes\n",
+                        rc, tlslen);
+                tlslineptr += rc;
+                tlslen -= rc;
+                goto try_SSL_write;
+        }
+        f->f_un.f_tls.tls_conn->errorcount = 0;
+        return true;
+}
+#endif /* !DISABLE_TLS */
+
 void
 fprintlog(struct filed *f, int flags, char *msg)
 {
@@ -1605,9 +1738,7 @@ fprintlog(struct filed *f, int flags, char *msg)
 #define ADDEV() assert(++v - iov < A_CNT(iov))
 #ifndef DISABLE_TLS
         char tlsline[MAXLINE + 1 + PREFIXLENGTH + 1]; /* line + space + decimal length + null */
-        char *tlslineptr;
-        int error, rc;
-        struct kevent *newev;
+        struct buf_queue *qentry;
 #endif /* !DISABLE_TLS */
 
         v = iov;
@@ -1771,51 +1902,24 @@ sendagain:
 
 #ifndef DISABLE_TLS
         case F_TLS:
-                printf("[%s]\n", f->f_un.f_tls.tls_conn->hostname);
-
-                /* 
-                 * At least on machines with enough memory using a new out buffer
-                 * and making a copy is probably faster than using a second buffer
-                 * just for the length prefix and calling SSL_write() twice.
-                 */
                 j = snprintf(tlsline, sizeof(tlsline)-1, "%d %s", l, line);
-                tlslineptr = tlsline;
-                retry = 0;
-try_SSL_write:
-                rc = SSL_write(f->f_un.f_tls.tls_conn->sslptr, tlslineptr, j);
-                if (0 >= rc) {
-                        error = tls_examine_error("SSL_write()",
-                                        f->f_un.f_tls.tls_conn->sslptr,
-                                        f->f_un.f_tls.tls_conn, rc);
-                        switch (error) {
-                                case TLS_RETRY:
-                                        if (++retry < TLS_SLEEP_TRIES) {
-                                                usleep(TLS_SLEEP_USEC);
-                                                goto try_SSL_write;
-                                        }
-                                        break;
-                                case TLS_TEMP_ERROR:
-                                        if ((f->f_un.f_tls.tls_conn->errorcount)++ < TLS_MAXERRORCOUNT)
-                                                break;
-                                        /* else fallthrough */
-                                case TLS_PERM_ERROR:
-                                        /* Reconnect after x seconds  */
-                                        newev = allocevchange();
-                                        EV_SET(newev, (uintptr_t)f, EVFILT_TIMER, EV_ADD | EV_ENABLE | EV_ONESHOT,
-                                            0, 1000*TLS_RECONNECT_SEC, KEVENT_UDATA_CAST tls_reconnect);
-                                        dprintf("scheduled reconnect in %d seconds\n", TLS_RECONNECT_SEC);
-                                        break;
-                                default:break;
-                        }
+
+                if ((!f->f_un.f_tls.tls_conn->sslptr)
+                 || (!tls_send(f, tlsline, j))) {
+                        printf("-- enqueued for unconnected [%s]\n", f->f_un.f_tls.tls_conn->hostname);
+                        if (!(qentry = malloc(sizeof(struct buf_queue)))
+                         || !(qentry->msg = malloc(sizeof(struct buf_msg)))
+                         || !(qentry->msg->line = malloc(j)))
+                                logerror("Unable to allocate memory, dropping undelivered TLS message\n");
+                        else {
+                                memcpy(qentry->msg->line, tlsline, j);
+                                qentry->msg->len = j;
+                                qentry->msg->refcount = 1;
+                                TAILQ_INSERT_TAIL(&f->f_un.f_tls.qhead, qentry, entries);
+                        }                        
                 }
-                else if (rc < j) {
-                        dprintf("TLS: SSL_write() wrote %d out of %d bytes\n",
-                                rc, j);
-                        tlslineptr += rc;
-                        j -= rc;
-                        goto try_SSL_write;
-                }
-                f->f_un.f_tls.tls_conn->errorcount = 0;
+                else
+                        printf("[%s]\n", f->f_un.f_tls.tls_conn->hostname);
                 break;
 #endif /* !DISABLE_TLS */
 
@@ -2179,8 +2283,28 @@ die(struct kevent *ev)
 {
         struct filed *f;
         char **p;
+#ifndef DISABLE_TLS
+        struct TLS_Incoming_Conn *tls_in;
+        int i;
+#endif /* !DISABLE_TLS */
 
         ShuttingDown = 1;       /* Don't log SIGCHLDs. */
+
+#ifndef DISABLE_TLS
+        /* 
+         * close all listening and connected TLS sockets
+         */
+        if (TLS_Listen_Set)
+                for (i = 0; i < *TLS_Listen_Set; i++)
+                        if (close(TLS_Listen_Set[i+1]) < 0)
+                                logerror("close() failed");
+        /* close incoming TLS connections */
+        SLIST_FOREACH(tls_in, &TLS_Incoming_Head, entries) {
+                free_tls_conn(tls_in->tls_conn);
+                free(tls_in);
+        }
+#endif /* !DISABLE_TLS */
+
         for (f = Files; f != NULL; f = f->f_next) {
                 /* flush any pending output */
                 if (f->f_prevcount)
@@ -2189,6 +2313,11 @@ die(struct kevent *ev)
                         (void) close(f->f_file);
                         f->f_un.f_pipe.f_pid = 0;
                 }
+#ifndef DISABLE_TLS
+                if (f->f_type == F_TLS) {
+                        free_tls_conn(f->f_un.f_tls.tls_conn);        
+                }
+#endif /* !DISABLE_TLS */
         }
         errno = 0;
         if (ev != NULL)
@@ -2681,7 +2810,6 @@ cfline(char *line, struct filed *f, char *prog, char *host)
                                 EV_SET(newev, (uintptr_t)f, EVFILT_TIMER, EV_ADD | EV_ENABLE | EV_ONESHOT,
                                     0, 1000*TLS_RECONNECT_SEC, KEVENT_UDATA_CAST tls_reconnect);
                                 dprintf("scheduled reconnect in %d seconds\n", TLS_RECONNECT_SEC);
-                                break;
                         }
                         f->f_type = F_TLS;
                         break;

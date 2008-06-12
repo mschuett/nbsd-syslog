@@ -45,6 +45,9 @@
 
 #define TLS_RECONNECT_SEC 10
 
+/* buffersize to process file length prefixes in TLS messages */
+#define PREFIXLENGTH 10
+
 /* options for peer certificate verification */
 #define X509VERIFY_ALWAYS 0
 #define X509VERIFY_IFPRESENT 1
@@ -101,5 +104,18 @@ int *socksetup_tls(int af, const char *bindhostname, const char *port);
 void free_tls_sslptr(struct tls_conn_settings *tls_conn);
 void free_tls_conn(struct tls_conn_settings *tls_conn);
 int tls_examine_error(char *functionname, SSL *ssl, struct tls_conn_settings *tls_conn, int rc);
+
+/* forward declarations */
+bool copy_config_value(char **mem, char *p, char *q);
+bool copy_config_value_quoted(char *keyword, char **mem, char **p, char **q);
+bool parse_tls_destination(char *line, struct filed *f);
+void tls_split_messages(struct TLS_Incoming_Conn *c);
+inline struct buf_queue_head makebuf_queue_head(struct filed *f);
+
+void dispatch_accept_tls(struct kevent *ev);
+void dispatch_read_tls(struct kevent *ev);
+void tls_reconnect(struct kevent *ev);
+void tls_send_queue(struct filed *f);
+bool tls_send(struct filed *f, char *line, size_t len);
 
 #endif /* !_TLS_STUFF_H */

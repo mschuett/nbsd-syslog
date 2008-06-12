@@ -81,7 +81,7 @@ TAILQ_HEAD(buf_queue_head, buf_queue);
 
 #define FDMASK(fd)      (1 << (fd))
 
-#define dprintf         if (Debug) printf
+#define DPRINTF(...)    if (Debug) printf(__VA_ARGS__)
 
 #define MAXUNAMES       20      /* maximum number of user names */
 

@@ -50,7 +50,6 @@ const char *SSL_ERRCODE[] = {
 
 /* definitions in syslogd.c */
 extern short int Debug;
-#define dprintf if (Debug) printf
 
 extern SSL_CTX *global_TLS_CTX;
 extern struct TLS_Incoming TLS_Incoming_Head;
@@ -84,24 +83,24 @@ init_global_TLS_CTX(char const *keyfilename, char const *certfilename, char cons
         if (keyfilename && certfilename) {
                 if (!(SSL_CTX_use_PrivateKey_file(ctx, keyfilename, SSL_FILETYPE_PEM)
                     && SSL_CTX_use_certificate_chain_file(ctx, certfilename))) {
-                        dprintf("unable to get private key and certificate\n");
+                        DPRINTF("unable to get private key and certificate\n");
                         ERR_print_errors_fp(stderr);
                         exit(1);
                 }
                 if (!SSL_CTX_check_private_key(ctx)) {
-                        dprintf("private key does not match certificate\n");
+                        DPRINTF("private key does not match certificate\n");
                         ERR_print_errors_fp(stderr);
                         exit(1);
                 } else {
-                        dprintf("loaded and checked own certificate\n");
+                        DPRINTF("loaded and checked own certificate\n");
                 }
         }
         if (CAfile || CApath) {
                 if (!SSL_CTX_load_verify_locations(ctx, CAfile, CApath)) {
-                        dprintf("unable to load trust anchors\n");
+                        DPRINTF("unable to load trust anchors\n");
                         ERR_print_errors_fp(stderr);
                 } else {
-                        dprintf("loaded trust anchors\n");
+                        DPRINTF("loaded trust anchors\n");
                 }
         }
         /* peer verification */
@@ -131,23 +130,23 @@ get_fingerprint(X509 * cert, char **returnstring, char *alg_name)
         unsigned int len, memsize, i = 0;
         EVP_MD *digest;
 
-        dprintf("get_fingerprint(cert, %p, %s)\n", returnstring, alg_name);
+        DPRINTF("get_fingerprint(cert, %p, %s)\n", returnstring, alg_name);
         *returnstring = NULL;
         if ((alg_name && !(digest = (EVP_MD *) EVP_get_digestbyname(alg_name)))
             || (!alg_name && !(digest = (EVP_MD *) EVP_get_digestbyname("SHA1")))) {
-                dprintf("unknown digest algorithm %s\n", alg_name);
+                DPRINTF("unknown digest algorithm %s\n", alg_name);
                 
                 return false;
         }
         if (!X509_digest(cert, digest, md, &len)) {
-                dprintf("cannot get %s digest\n", alg_name);
+                DPRINTF("cannot get %s digest\n", alg_name);
                 return false;
         }
         /* needed memory. 3 string bytes for every binary byte with delimiter
          * + alg_name with delimiter */
         memsize = (len * 3) + strlen(OBJ_nid2sn(EVP_MD_type(digest))) + 1;
         if (!(*returnstring = malloc(memsize))) {
-                dprintf("cannot allocate %d bytes memory\n", memsize);
+                DPRINTF("cannot allocate %d bytes memory\n", memsize);
                 return false;
         }
         /* 'normalise' the algorithm name */
@@ -159,7 +158,7 @@ get_fingerprint(X509 * cert, char **returnstring, char *alg_name)
                 (void)strlcat(*returnstring, fp_val, memsize);
         }
         if ((*returnstring)[memsize - 1] != '\0')
-                dprintf("memory overflow. last 4 chars are: %c%c%c%c\n",
+                DPRINTF("memory overflow. last 4 chars are: %c%c%c%c\n",
                     (*returnstring)[memsize - 4], (*returnstring)[memsize - 3],
                     (*returnstring)[memsize - 2], (*returnstring)[memsize - 1]);
         return true;
@@ -185,14 +184,14 @@ match_hostnames(X509 * cert, struct tls_conn_settings *conn)
         X509_NAME_ENTRY *entry;
         ASN1_OCTET_STRING *asn1_ip, *asn1_cn_ip;
         int crit, idx;
-        dprintf("match_hostnames() to check cert against %s and %s\n",
+        DPRINTF("match_hostnames() to check cert against %s and %s\n",
             conn->subject, conn->hostname);
 
         /* see if hostname is an IP */
         i = (asn1_ip = a2i_IPADDRESS(conn->subject)) || (asn1_ip = a2i_IPADDRESS(conn->hostname));
 
         if (!(gennames = X509_get_ext_d2i(cert, NID_subject_alt_name, &crit, &idx))) {
-                dprintf("X509_get_ext_d2i() returned (%p,%d,%d) --> no subjectAltName\n", gennames, crit, idx);
+                DPRINTF("X509_get_ext_d2i() returned (%p,%d,%d) --> no subjectAltName\n", gennames, crit, idx);
         } else {
                 num = sk_GENERAL_NAME_num(gennames);
                 if (asn1_ip) {
@@ -225,7 +224,7 @@ match_hostnames(X509 * cert, struct tls_conn_settings *conn)
                 entry = X509_NAME_get_entry(x509name, i);
                 len = ASN1_STRING_to_UTF8(&ubuf, X509_NAME_ENTRY_get_data(entry));
                 if (len > 0) {
-                        dprintf("found CN: %.*s\n", len, ubuf);
+                        DPRINTF("found CN: %.*s\n", len, ubuf);
                         /* hostname */
                         if ((conn->subject && !strncasecmp(conn->subject, (char*)ubuf, len))
                             || (conn->hostname && !strncasecmp(conn->hostname, (char*)ubuf, len))) {
@@ -255,7 +254,7 @@ match_fingerprint(X509 * cert, struct tls_conn_settings *conn)
         char alg[MAX_ALG_NAME_LENGTH];
         char *certfingerprint;
         char *p, *q;
-        dprintf("match_fingerprint(%s)\n", conn->fingerprint);
+        DPRINTF("match_fingerprint(%s)\n", conn->fingerprint);
         if (!conn->fingerprint)
                 return false;
 
@@ -267,15 +266,15 @@ match_fingerprint(X509 * cert, struct tls_conn_settings *conn)
         *p = '\0';
 
         if (!get_fingerprint(cert, &certfingerprint, alg)) {
-                dprintf("cannot get %s digest\n", alg);
+                DPRINTF("cannot get %s digest\n", alg);
                 return false;
         }
         if (strncmp(certfingerprint, conn->fingerprint, strlen(certfingerprint))) {
-                dprintf("fail: fingerprints do not match\n");
+                DPRINTF("fail: fingerprints do not match\n");
                 free(certfingerprint);
                 return false;
         }
-        dprintf("accepted: fingerprints match\n");
+        DPRINTF("accepted: fingerprints match\n");
         free(certfingerprint);
         return true;
 }
@@ -305,7 +304,7 @@ check_peer_cert(int preverify_ok, X509_STORE_CTX * ctx)
         /* some info */
         (void)X509_NAME_oneline(X509_get_subject_name(cur_cert), buf, sizeof(buf));
         (void)get_fingerprint(cur_cert, &fingerprint, NULL);
-        dprintf("check cert for connection with %s. depth is %d, preverify is %d, subject is %s, fingerprint is %s\n",
+        DPRINTF("check cert for connection with %s. depth is %d, preverify is %d, subject is %s, fingerprint is %s\n",
             conn_info->hostname, cur_depth, preverify_ok, buf, fingerprint);
         free(fingerprint);
 
@@ -315,19 +314,19 @@ check_peer_cert(int preverify_ok, X509_STORE_CTX * ctx)
 
         if ((conn_info->force_fingerprint_check) && (cur_depth == 0)) {
                 rc = match_fingerprint(cur_cert, conn_info);
-                dprintf("depth 0 arrived, match_fingerprint() returned %d\n", rc);
+                DPRINTF("depth 0 arrived, match_fingerprint() returned %d\n", rc);
                 return rc;
         }
         if (!preverify_ok) {
                 if (cur_err == X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT) {
                         X509_NAME_oneline(X509_get_issuer_name(ctx->current_cert), buf, sizeof(buf));
-                        dprintf("openssl verify error:missing cert for issuer= %s\n", buf);
+                        DPRINTF("openssl verify error:missing cert for issuer= %s\n", buf);
                 }
-                dprintf("openssl verify error:num=%d:%s:depth=%d:%s\t\n", cur_err,
+                DPRINTF("openssl verify error:num=%d:%s:depth=%d:%s\t\n", cur_err,
                     X509_verify_cert_error_string(cur_err), cur_depth, buf);
 
                 if ((conn_info->fingerprint) && (cur_depth != 0)) {
-                        dprintf("accepting otherwise invalid chain element, waiting for depth 0 to check fingerprint\n");
+                        DPRINTF("accepting otherwise invalid chain element, waiting for depth 0 to check fingerprint\n");
                         conn_info->force_fingerprint_check = true;
                         return 1;
                 } else {
@@ -454,30 +453,30 @@ bool tls_connect(SSL_CTX **context, struct tls_conn_settings *conn)
         sock = -1;
         for (res1 = res; res1; res1 = res1->ai_next) {
                 if (-1 == (sock = socket(res1->ai_family, res1->ai_socktype, res1->ai_protocol))) {
-                        dprintf("Unable to open socket.\n");
+                        DPRINTF("Unable to open socket.\n");
                         continue;
                 }
                 if ((-1 == (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one))))
                                  || (-1 == (setsockopt(sock, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one))))
                                  || (-1 == (setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one))))) {
-                        dprintf("Unable to setsockopt(): %s\n", strerror(errno));
+                        DPRINTF("Unable to setsockopt(): %s\n", strerror(errno));
                 }
                 if (-1 == connect(sock, res1->ai_addr, res1->ai_addrlen)) {
-                        dprintf("Unable to connect() to %s: %s\n", res1->ai_canonname, strerror(errno));
+                        DPRINTF("Unable to connect() to %s: %s\n", res1->ai_canonname, strerror(errno));
                         close(sock);
                         sock = -1;
                         continue;
                 }
                 if (!(ssl = SSL_new(g_TLS_CTX))) {
                         ERR_error_string_n(ERR_get_error(), buf, sizeof(buf));
-                        dprintf("Unable to establish TLS: %s\n", buf);
+                        DPRINTF("Unable to establish TLS: %s\n", buf);
                         close(sock);
                         sock = -1;
                         continue;                                
                 }
                 if (!SSL_set_fd(ssl, sock)) {
                         ERR_error_string_n(ERR_get_error(), buf, sizeof(buf));
-                        dprintf("Unable to connect TLS to socket: %s\n", buf);
+                        DPRINTF("Unable to connect TLS to socket: %s\n", buf);
                         SSL_free(ssl);
                         close(sock);
                         sock = -1;
@@ -485,20 +484,20 @@ bool tls_connect(SSL_CTX **context, struct tls_conn_settings *conn)
                 }
                 while ((rc = ERR_get_error())) {
                         ERR_error_string_n(rc, buf, sizeof(buf));
-                        dprintf("Found SSL error in queue: %s\n", buf);
+                        DPRINTF("Found SSL error in queue: %s\n", buf);
                 }
                 SSL_set_app_data(ssl, conn);
                 SSL_set_connect_state(ssl);
                 while ((rc = ERR_get_error())) {
                         ERR_error_string_n(rc, buf, sizeof(buf));
-                        dprintf("Found SSL error in queue: %s\n", buf);
+                        DPRINTF("Found SSL error in queue: %s\n", buf);
                 }
                 /* connect */
-                dprintf("Calling SSL_connect()...\n");
+                DPRINTF("Calling SSL_connect()...\n");
                 errno = 0;  /* reset to be sure we get the right one later on */
                 rc = SSL_connect(ssl);
                 if (rc >= 1) {
-                        dprintf("TLS connection established.\n");
+                        DPRINTF("TLS connection established.\n");
                         freeaddrinfo(res);
                         conn->sslptr = ssl;
                         return true;  /* okay we got one */
@@ -519,21 +518,21 @@ tls_examine_error(char *functionname, SSL *ssl, struct tls_conn_settings *tls_co
         int ssl_error, err_error;
         
         ssl_error = SSL_get_error(ssl, rc);
-        dprintf("%s returned rc %d and error %s: %s\n", functionname, rc, SSL_ERRCODE[ssl_error], ERR_error_string(ssl_error, NULL));
+        DPRINTF("%s returned rc %d and error %s: %s\n", functionname, rc, SSL_ERRCODE[ssl_error], ERR_error_string(ssl_error, NULL));
         switch (ssl_error) {
                 case SSL_ERROR_WANT_READ:
                 case SSL_ERROR_WANT_WRITE:
                         return TLS_RETRY;
                         break;
                 case SSL_ERROR_SYSCALL:
-                        dprintf("SSL_ERROR_SYSCALL: ");
+                        DPRINTF("SSL_ERROR_SYSCALL: ");
                         err_error = ERR_get_error();
                         if ((rc == -1) && (err_error == 0)) {
-                                dprintf("socket I/O error: %s\n", strerror(errno));
+                                DPRINTF("socket I/O error: %s\n", strerror(errno));
                         } else if ((rc == 0) && (err_error == 0)) {
-                                dprintf("unexpected EOF from %s\n", tls_conn ? tls_conn->hostname : NULL);
+                                DPRINTF("unexpected EOF from %s\n", tls_conn ? tls_conn->hostname : NULL);
                         } else {
-                                dprintf("no further info\n");
+                                DPRINTF("no further info\n");
                         }
                         return TLS_PERM_ERROR;
                         break;                                            
@@ -662,7 +661,7 @@ parse_tls_destination(char *line, struct filed *f)
                         }
                 }
         }
-        dprintf("got TLS config: host %s, port %s, subject: %s\n",
+        DPRINTF("got TLS config: host %s, port %s, subject: %s\n",
                 f->f_un.f_tls.tls_conn->hostname,
                 f->f_un.f_tls.tls_conn->port,
                 f->f_un.f_tls.tls_conn->subject);
@@ -678,7 +677,7 @@ tls_reconnect(struct kevent *ev)
         struct filed *f = (struct filed *) ev->ident;
         struct kevent *newev;
 
-        dprintf("reconnect timer expired\n");
+        DPRINTF("reconnect timer expired\n");
         if (!tls_connect(&global_TLS_CTX, f->f_un.f_tls.tls_conn)) {
                 logerror("Unable to connect to TLS server %s", f->f_un.f_tls.tls_conn->hostname);
                 newev = allocevchange();
@@ -737,7 +736,7 @@ dispatch_accept_tls(struct kevent *ev)
         char hbuf[NI_MAXHOST];
         char *peername;
 
-        dprintf("incoming TLS connection\n");
+        DPRINTF("incoming TLS connection\n");
         if (!global_TLS_CTX) {
                 logerror("global_TLS_CTX not initialized!");
                 return;
@@ -760,12 +759,12 @@ dispatch_accept_tls(struct kevent *ev)
                 return;
         }
         if ((rc = getnameinfo((struct sockaddr *)&frominet, addrlen, hbuf, sizeof(hbuf), NULL, 0, NI_NUMERICHOST|NI_NUMERICSERV))) {
-                dprintf("could not get peername: %s", gai_strerror(rc));
+                DPRINTF("could not get peername: %s", gai_strerror(rc));
                 peername = NULL;
         }
         else {
                 if (!(peername = malloc(strlen(hbuf)+1))) {
-                        dprintf("cannot allocate %d bytes memory\n", strlen(hbuf)+1);
+                        DPRINTF("cannot allocate %d bytes memory\n", strlen(hbuf)+1);
                         return;
                 }
                 (void)strlcpy(peername, hbuf, strlen(hbuf)+1);
@@ -777,21 +776,21 @@ dispatch_accept_tls(struct kevent *ev)
         }
 #endif
         if (-1 == (fcntl(newsock, F_SETFL, O_NONBLOCK))) {
-                dprintf("Unable to fcntl(sock, O_NONBLOCK): %s\n", strerror(errno));
+                DPRINTF("Unable to fcntl(sock, O_NONBLOCK): %s\n", strerror(errno));
         }
         
         if (!(ssl = SSL_new(global_TLS_CTX))) {
-                dprintf("Unable to establish TLS: %s\n", ERR_error_string(ERR_get_error(), NULL));
+                DPRINTF("Unable to establish TLS: %s\n", ERR_error_string(ERR_get_error(), NULL));
                 close(newsock);
                 return;                                
         }
         if (!SSL_set_fd(ssl, newsock)) {
-                dprintf("Unable to connect TLS to socket %d: %s\n", newsock, ERR_error_string(ERR_get_error(), NULL));
+                DPRINTF("Unable to connect TLS to socket %d: %s\n", newsock, ERR_error_string(ERR_get_error(), NULL));
                 SSL_free(ssl);
                 close(newsock);
                 return;
         }
-        dprintf("connection from %s accept()ed, and connected SSL*@%p with fd %d...\n",
+        DPRINTF("connection from %s accept()ed, and connected SSL*@%p with fd %d...\n",
                 peername, ssl, newsock);
 
         /* store connection details inside ssl object, used to verify
@@ -830,7 +829,7 @@ try_SSL_accept:
                 newev = allocevchange();
                 EV_SET(newev, newsock, EVFILT_READ, EV_ADD | EV_ENABLE,
                     0, 0, KEVENT_UDATA_CAST dispatch_read_tls);
-                dprintf("established TLS connection from %s\n", peername);
+                DPRINTF("established TLS connection from %s\n", peername);
                 
                 /*
                  * We could also listen to EOF kevents -- but I do not think
@@ -858,10 +857,10 @@ dispatch_read_tls(struct kevent *ev)
         int_fast16_t rc;
         struct TLS_Incoming_Conn *c;
 
-        dprintf("active TLS socket %d\n", fd);
+        DPRINTF("active TLS socket %d\n", fd);
         
         SLIST_FOREACH(c, &TLS_Incoming_Head, entries) {
-                dprintf("look at tls_in@%p with fd %d\n", c, c->socket);
+                DPRINTF("look at tls_in@%p with fd %d\n", c, c->socket);
                 if (c->socket == fd)
                         break;
         }
@@ -883,9 +882,9 @@ dispatch_read_tls(struct kevent *ev)
         
         tries = 0;
 try_SSL_read:
-        dprintf("incoming status is msg_start %d, msg_len %d, pos %d\n",
+        DPRINTF("incoming status is msg_start %d, msg_len %d, pos %d\n",
                 c->cur_msg_start, c->cur_msg_len, c->read_pos);
-        dprintf("calling SSL_read(%p, %p, %d)\n", c->ssl,
+        DPRINTF("calling SSL_read(%p, %p, %d)\n", c->ssl,
                 &(c->inbuf[c->read_pos]), sizeof(c->inbuf) - c->read_pos);
         rc = SSL_read(c->ssl, &(c->inbuf[c->read_pos]), sizeof(c->inbuf) - c->read_pos);
         if (rc <= 0) {
@@ -916,7 +915,7 @@ try_SSL_read:
                         default:break;
                 }
         } else {
-                dprintf("SSL_read() returned %d\n", rc);
+                DPRINTF("SSL_read() returned %d\n", rc);
                 c->errorcount = 0;
                 c->read_pos += rc;
         }
@@ -934,7 +933,7 @@ tls_split_messages(struct TLS_Incoming_Conn *c)
         uint_fast16_t offset;
         char numbuf[PREFIXLENGTH+1];
         
-        dprintf("tls_split_messages() -- incoming status is " \
+        DPRINTF("tls_split_messages() -- incoming status is " \
                 "msg_start %d, msg_len %d, pos %d\n",
                 c->cur_msg_start, c->cur_msg_len, c->read_pos);
 
@@ -998,7 +997,7 @@ tls_split_messages(struct TLS_Incoming_Conn *c)
                 if (Debug)
                         while (isspace(c->inbuf[c->read_pos-1])) {
                                 c->read_pos--;
-                                dprintf("skip\n"); 
+                                DPRINTF("skip\n"); 
                         }
 
                 if (MSG_END_OFFSET == c->read_pos) {
@@ -1006,7 +1005,7 @@ tls_split_messages(struct TLS_Incoming_Conn *c)
                         c->cur_msg_start = c->cur_msg_len = c->read_pos = 0;
                 } else {
                         /* move remaining input to start of buffer */
-                        dprintf("move inbuf of length %d by %d chars\n",
+                        DPRINTF("move inbuf of length %d by %d chars\n",
                                 c->read_pos - (MSG_END_OFFSET),
                                 MSG_END_OFFSET);
                         memmove(&c->inbuf[0],
@@ -1016,7 +1015,7 @@ tls_split_messages(struct TLS_Incoming_Conn *c)
                         c->cur_msg_start = c->cur_msg_len = 0;
                 }
         }
-        dprintf("return with status: msg_start %d, msg_len %d, pos %d\n",
+        DPRINTF("return with status: msg_start %d, msg_len %d, pos %d\n",
                  c->cur_msg_start, c->cur_msg_len, c->read_pos);
 
         /* try to read another message */
@@ -1037,7 +1036,7 @@ tls_send(struct filed *f, char *line, size_t len)
         size_t tlslen = len;
         struct kevent *newev;
         
-        dprintf("tls_send(f=%p, line=\"%.*s...\", len=%d) to %sconnected dest.\n",
+        DPRINTF("tls_send(f=%p, line=\"%.*s...\", len=%d) to %sconnected dest.\n",
                 f, (len>20 ? 20 : len), line, len,
                 f->f_un.f_tls.tls_conn->sslptr ? "" : "un");
 
@@ -1048,12 +1047,12 @@ tls_send(struct filed *f, char *line, size_t len)
         /* simple sanity check for length prefix */
         for (i = 0, j = len; j /= 10; i++)
                 if (!isdigit(line[i])) {
-                        dprintf("malformed TLS line: %.*s", (len>20 ? 20 : len), line);
+                        DPRINTF("malformed TLS line: %.*s", (len>20 ? 20 : len), line);
                         /* silently discard malformed line, re-queuing it would only cause a loop */
                         return true;
                 } 
         if (line[++i] != ' ') {
-                dprintf("malformed TLS line: %.*s", (len>20 ? 20 : len), line);
+                DPRINTF("malformed TLS line: %.*s", (len>20 ? 20 : len), line);
                 return true;
         }
 
@@ -1080,7 +1079,7 @@ try_SSL_write:
                                 newev = allocevchange();
                                 EV_SET(newev, (uintptr_t)f, EVFILT_TIMER, EV_ADD | EV_ENABLE | EV_ONESHOT,
                                     0, 1000*TLS_RECONNECT_SEC, KEVENT_UDATA_CAST tls_reconnect);
-                                dprintf("scheduled reconnect in %d seconds\n", TLS_RECONNECT_SEC);
+                                DPRINTF("scheduled reconnect in %d seconds\n", TLS_RECONNECT_SEC);
                                 break;
                         default:break;
                 }
@@ -1088,7 +1087,7 @@ try_SSL_write:
                 return false;
         }
         else if (rc < tlslen) {
-        dprintf("TLS: SSL_write() wrote %d out of %d bytes\n",
+        DPRINTF("TLS: SSL_write() wrote %d out of %d bytes\n",
                         rc, tlslen);
                 tlslineptr += rc;
                 tlslen -= rc;
@@ -1129,14 +1128,14 @@ free_tls_sslptr(struct tls_conn_settings *tls_conn)
         else {
                 if (SSL_shutdown(tls_conn->sslptr) || SSL_shutdown(tls_conn->sslptr)) {
                         /* shutdown has two steps, returns 1 on completion */
-                        dprintf("Closed TLS connection to %s\n", tls_conn->hostname);
+                        DPRINTF("Closed TLS connection to %s\n", tls_conn->hostname);
                 } else { 
-                        dprintf("Unable to cleanly shutdown TLS connection to %s\n", tls_conn->hostname);
+                        DPRINTF("Unable to cleanly shutdown TLS connection to %s\n", tls_conn->hostname);
                 }        
                 if (shutdown(sock, SHUT_RDWR))
-                        dprintf("Unable to cleanly shutdown TCP socket %d: %s\n", sock, strerror(errno));
+                        DPRINTF("Unable to cleanly shutdown TCP socket %d: %s\n", sock, strerror(errno));
                 if (close(sock))
-                        dprintf("Unable to cleanly close socket %d: %s\n", sock, strerror(errno));
+                        DPRINTF("Unable to cleanly close socket %d: %s\n", sock, strerror(errno));
                 SSL_free(tls_conn->sslptr);
                 tls_conn->sslptr = NULL;
         }

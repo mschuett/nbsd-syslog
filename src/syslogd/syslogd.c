@@ -381,7 +381,7 @@ getgroup:
                 die(NULL);
         }
         for (j = 0, pp = LogPaths; *pp; pp++, j++) {
-                dprintf("Making unix dgram socket `%s'\n", *pp);
+                DPRINTF("Making unix dgram socket `%s'\n", *pp);
                 unlink(*pp);
                 memset(&sunx, 0, sizeof(sunx));
                 sunx.sun_family = AF_LOCAL;
@@ -393,13 +393,13 @@ getgroup:
                         logerror("Cannot create `%s'", *pp);
                         die(NULL);
                 }
-                dprintf("Listening on unix dgram socket `%s'\n", *pp);
+                DPRINTF("Listening on unix dgram socket `%s'\n", *pp);
         }
 
         if ((fklog = open(_PATH_KLOG, O_RDONLY, 0)) < 0) {
-                dprintf("Can't open `%s' (%d)\n", _PATH_KLOG, errno);
+                DPRINTF("Can't open `%s' (%d)\n", _PATH_KLOG, errno);
         } else {
-                dprintf("Listening on kernel log `%s'\n", _PATH_KLOG);
+                DPRINTF("Listening on kernel log `%s'\n", _PATH_KLOG);
         }
 
 #ifndef DISABLE_TLS
@@ -407,24 +407,24 @@ getgroup:
         if (!RAND_status())
                 logerror("Unable to initialize OpenSSL PRNG");
         else {
-                dprintf("Initializing PRNG\n");
+                DPRINTF("Initializing PRNG\n");
         }
         SLIST_INIT(&TLS_Incoming_Head);
 #endif /* !DISABLE_TLS */
         /* 
          * All files are open, we can drop privileges and chroot
          */
-        dprintf("Attempt to chroot to `%s'\n", root);  
+        DPRINTF("Attempt to chroot to `%s'\n", root);  
         if (chroot(root)) {
                 logerror("Failed to chroot to `%s'", root);
                 die(NULL);
         }
-        dprintf("Attempt to set GID/EGID to `%d'\n", gid);  
+        DPRINTF("Attempt to set GID/EGID to `%d'\n", gid);  
         if (setgid(gid) || setegid(gid)) {
                 logerror("Failed to set gid to `%d'", gid);
                 die(NULL);
         }
-        dprintf("Attempt to set UID/EUID to `%d'\n", uid);  
+        DPRINTF("Attempt to set UID/EUID to `%d'\n", uid);  
         if (setuid(uid) || seteuid(uid)) {
                 logerror("Failed to set uid to `%d'", uid);
                 die(NULL);
@@ -511,7 +511,7 @@ getgroup:
                     0, 0, KEVENT_UDATA_CAST dispatch_read_funix);
         }
 
-        dprintf("Off & running....\n");
+        DPRINTF("Off & running....\n");
 
         for (;;) {
                 void (*handler)(struct kevent *);
@@ -525,7 +525,7 @@ getgroup:
                                 logerror("kevent() failed");
                         continue;
                 }
-                dprintf("Got an event (%d)\n", rv);
+                DPRINTF("Got an event (%d)\n", rv);
                 for (i = 0; i < rv; i++) {
                         handler = (void *) events[i].udata;
                         (*handler)(&events[i]);
@@ -554,7 +554,7 @@ dispatch_read_klog(struct kevent *ev)
         ssize_t rv;
         int fd = ev->ident;
 
-        dprintf("Kernel log active\n");
+        DPRINTF("Kernel log active\n");
 
         rv = read(fd, linebuf, linebufsize - 1);
         if (rv > 0) {
@@ -596,7 +596,7 @@ dispatch_read_funix(struct kevent *ev)
                 return;
         }
 
-        dprintf("Unix socket (%.*s) active\n", (myname.sun_len-sizeof(myname.sun_len)-sizeof(myname.sun_family)), myname.sun_path);
+        DPRINTF("Unix socket (%.*s) active\n", (myname.sun_len-sizeof(myname.sun_len)-sizeof(myname.sun_family)), myname.sun_path);
 
         sunlen = sizeof(fromunix);
         rv = recvfrom(fd, linebuf, MAXLINE, 0,
@@ -624,14 +624,14 @@ dispatch_read_finet(struct kevent *ev)
         int fd = ev->ident;
         int reject = 0;
 
-        dprintf("inet socket active\n");
+        DPRINTF("inet socket active\n");
 
 #ifdef LIBWRAP
         request_init(&req, RQ_DAEMON, "syslogd", RQ_FILE, fd, NULL);
         fromhost(&req);
         reject = !hosts_access(&req);
         if (reject)
-                dprintf("access denied\n");
+                DPRINTF("access denied\n");
 #endif
 
         len = sizeof(frominet);
@@ -661,7 +661,7 @@ logpath_add(char ***lp, int *szp, int *maxszp, char *new)
         char **nlp;
         int newmaxsz;
 
-        dprintf("Adding `%s' to the %p logpath list\n", new, *lp);
+        DPRINTF("Adding `%s' to the %p logpath list\n", new, *lp);
         if (*szp == *maxszp) {
                 if (*maxszp == 0) {
                         newmaxsz = 4;   /* start of with enough for now */
@@ -846,7 +846,7 @@ logmsg(int pri, char *msg, char *from, int flags)
         char prog[NAME_MAX + 1];
         char buf[MAXLINE + 1];
 
-        dprintf("logmsg: pri 0%o, flags 0x%x, from %s, msg %s\n",
+        DPRINTF("logmsg: pri 0%o, flags 0x%x, from %s, msg %s\n",
             pri, flags, from, msg);
 
         omask = sigblock(sigmask(SIGHUP)|sigmask(SIGALRM));
@@ -973,7 +973,7 @@ logmsg(int pri, char *msg, char *from, int flags)
                     !strcasecmp(from, f->f_prevhost)) {
                         (void)strncpy(f->f_lasttime, timestamp, 15);
                         f->f_prevcount++;
-                        dprintf("Msg repeated %d times, %ld sec of %d\n",
+                        DPRINTF("Msg repeated %d times, %ld sec of %d\n",
                             f->f_prevcount, (long)(now - f->f_time),
                             repeatinterval[f->f_repeatcount]);
                         /*
@@ -1103,7 +1103,7 @@ fprintlog(struct filed *f, int flags, char *msg)
         }
         ADDEV();
 
-        dprintf("Logging to %s", TypeNames[f->f_type]);
+        DPRINTF("Logging to %s", TypeNames[f->f_type]);
         f->f_time = now;
 
         if ((f->f_type == F_FORW)
@@ -1131,11 +1131,11 @@ fprintlog(struct filed *f, int flags, char *msg)
         
         switch (f->f_type) {
         case F_UNUSED:
-                dprintf("\n");
+                DPRINTF("\n");
                 break;
 
         case F_FORW:
-                dprintf(" %s\n", f->f_un.f_forw.f_hname);
+                DPRINTF(" %s\n", f->f_un.f_forw.f_hname);
                 if (finet) {
                         lsent = -1;
                         fail = 0;
@@ -1207,7 +1207,7 @@ sendagain:
 #endif /* !DISABLE_TLS */
 
         case F_PIPE:
-                dprintf(" %s\n", f->f_un.f_pipe.f_pname);
+                DPRINTF(" %s\n", f->f_un.f_pipe.f_pname);
                 v->iov_base = "\n";
                 v->iov_len = 1;
                 ADDEV();
@@ -1266,14 +1266,14 @@ sendagain:
 
         case F_CONSOLE:
                 if (flags & IGN_CONS) {
-                        dprintf(" (ignored)\n");
+                        DPRINTF(" (ignored)\n");
                         break;
                 }
                 /* FALLTHROUGH */
 
         case F_TTY:
         case F_FILE:
-                dprintf(" %s\n", f->f_un.f_fname);
+                DPRINTF(" %s\n", f->f_un.f_fname);
                 if (f->f_type != F_FILE) {
                         v->iov_base = "\r\n";
                         v->iov_len = 2;
@@ -1319,7 +1319,7 @@ sendagain:
 
         case F_USERS:
         case F_WALL:
-                dprintf("\n");
+                DPRINTF("\n");
                 v->iov_base = "\r\n";
                 v->iov_len = 2;
                 ADDEV();
@@ -1427,10 +1427,10 @@ cvthname(struct sockaddr_storage *f)
         error = getnameinfo((struct sockaddr*)f, ((struct sockaddr*)f)->sa_len,
                         ip, sizeof ip, NULL, 0, NI_NUMERICHOST|niflag);
 
-        dprintf("cvthname(%s)\n", ip);
+        DPRINTF("cvthname(%s)\n", ip);
 
         if (error) {
-                dprintf("Malformed from address %s\n", gai_strerror(error));
+                DPRINTF("Malformed from address %s\n", gai_strerror(error));
                 return ("???");
         }
 
@@ -1440,7 +1440,7 @@ cvthname(struct sockaddr_storage *f)
         error = getnameinfo((struct sockaddr*)f, ((struct sockaddr*)f)->sa_len,
                         host, sizeof host, NULL, 0, niflag);
         if (error) {
-                dprintf("Host name for your address (%s) unknown\n", ip);
+                DPRINTF("Host name for your address (%s) unknown\n", ip);
                 return (ip);
         }
 
@@ -1484,7 +1484,7 @@ domark(struct kevent *ev)
 
         for (f = Files; f; f = f->f_next) {
                 if (f->f_prevcount && now >= REPEATTIME(f)) {
-                        dprintf("Flush %s: repeated %d times, %d sec.\n",
+                        DPRINTF("Flush %s: repeated %d times, %d sec.\n",
                             TypeNames[f->f_type], f->f_prevcount,
                             repeatinterval[f->f_repeatcount]);
                         fprintlog(f, 0, (char *)NULL);
@@ -1554,7 +1554,7 @@ logerror(const char *fmt, ...)
         if (daemonized) 
                 logmsg(LOG_SYSLOG|LOG_ERR, buf, LocalHostName, ADDDATE);
         if (!daemonized && Debug)
-                dprintf("%s\n", buf);
+                DPRINTF("%s\n", buf);
         if (!daemonized && !Debug)
                 printf("%s\n", buf);
 
@@ -1630,7 +1630,7 @@ init(struct kevent *ev)
         struct TLS_Incoming_Conn *tls_in, *tls_tmp;
 #endif /* !DISABLE_TLS */
 
-        dprintf("init\n");
+        DPRINTF("init\n");
 
         (void)strlcpy(oldLocalHostName, LocalHostName,
                       sizeof(oldLocalHostName));
@@ -1738,7 +1738,7 @@ init(struct kevent *ev)
 
         /* open the configuration file */
         if ((cf = fopen(ConfFile, "r")) == NULL) {
-                dprintf("Cannot open `%s'\n", ConfFile);
+                DPRINTF("Cannot open `%s'\n", ConfFile);
                 *nextp = (struct filed *)calloc(1, sizeof(*f));
                 cfline("*.ERR\t/dev/console", *nextp, "*", "*");
                 (*nextp)->f_next = (struct filed *)calloc(1, sizeof(*f));
@@ -1872,15 +1872,15 @@ init(struct kevent *ev)
                                 }
                         }
                 } else
-                        dprintf("Listening on inet and/or inet6 socket\n");
-                dprintf("Sending on inet and/or inet6 socket\n");
+                        DPRINTF("Listening on inet and/or inet6 socket\n");
+                DPRINTF("Sending on inet and/or inet6 socket\n");
         }
 
 #ifndef DISABLE_TLS
         /* TODO: get TLS settings from the config file
          *  (CA certs, fingerprints, maybe hostname/port to bind to, ...)
          */
-        dprintf("Preparing sockets for TLS\n");
+        DPRINTF("Preparing sockets for TLS\n");
         TLS_Listen_Set = socksetup_tls(PF_UNSPEC, bindhostname, SERVICENAME);
         /* init with new TLS_CTX
          * TODO: keep the old one and only change the X.509 settings on config change
@@ -1892,7 +1892,7 @@ init(struct kevent *ev)
 #endif /* !DISABLE_TLS */
 
         logmsg(LOG_SYSLOG|LOG_INFO, "syslogd: restart", LocalHostName, ADDDATE);
-        dprintf("syslogd: restarted\n");
+        DPRINTF("syslogd: restarted\n");
         /*
          * Log a change in hostname, but only on a restart (we detect this
          * by checking to see if we're passed a kevent).
@@ -1902,7 +1902,7 @@ init(struct kevent *ev)
                     "syslogd: host name changed, \"%s\" to \"%s\"",
                     oldLocalHostName, LocalHostName);
                 logmsg(LOG_SYSLOG|LOG_INFO, hostMsg, LocalHostName, ADDDATE);
-                dprintf("%s\n", hostMsg);
+                DPRINTF("%s\n", hostMsg);
         }
 }
 
@@ -1920,7 +1920,7 @@ cfline(char *line, struct filed *f, char *prog, char *host)
         struct kevent *newev;
 #endif /* !DISABLE_TLS */
 
-        dprintf("cfline(\"%s\", f, \"%s\", \"%s\")\n", line, prog, host);
+        DPRINTF("cfline(\"%s\", f, \"%s\", \"%s\")\n", line, prog, host);
 
         errno = 0;      /* keep strerror() stuff out of logerror messages */
 
@@ -2092,7 +2092,7 @@ cfline(char *line, struct filed *f, char *prog, char *host)
                                 newev = allocevchange();
                                 EV_SET(newev, (uintptr_t)f, EVFILT_TIMER, EV_ADD | EV_ENABLE | EV_ONESHOT,
                                     0, 1000*TLS_RECONNECT_SEC, KEVENT_UDATA_CAST tls_reconnect);
-                                dprintf("scheduled reconnect in %d seconds\n", TLS_RECONNECT_SEC);
+                                DPRINTF("scheduled reconnect in %d seconds\n", TLS_RECONNECT_SEC);
                         }
                         f->f_type = F_TLS;
                         break;
@@ -2202,7 +2202,7 @@ getmsgbufsize(void)
         mib[1] = KERN_MSGBUFSIZE;
         size = sizeof msgbufsize;
         if (sysctl(mib, 2, &msgbufsize, &size, NULL, 0) == -1) {
-                dprintf("Couldn't get kern.msgbufsize\n");
+                DPRINTF("Couldn't get kern.msgbufsize\n");
                 return (0);
         }
         return (msgbufsize);

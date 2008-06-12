@@ -27,22 +27,27 @@
 #define TLSBACKLOG 4
 #define TLS_MAXERRORCOUNT 4
 
-/* incoming sockets are non-blocking and every action may take up to
- * TLS_SLEEP_TRIES * TLS_SLEEP_USEC usec before it finishes or gives up.
- * I found that an SSL_accept() often needs that time for the handshake.
+/* 
+ * incoming sockets and TLS functions on them are non-blocking,
+ * so the immediate retry inside the dispatch routines may take
+ * up to TLS_NONBLOCKING_TRIES * TLS_NONBLOCKING_USEC usec.
+ *
+ * After that the function schedules a kevent to call itself
+ * TLS_RETRY_KEVENT_MSEC msec later.
+ *
+ * This approach prevents DoS attacks on the event-loop
+ * (eg. by sending large certificate chains).
  * 
- * Is this reasonable or too long for a busy logserver?
- * 
- * The waiting time has to be long enough to check all valid certificates,
- * but short enough to prevent a DoS from an attacker sending very large
- * certificates to disturb our event loop.
- * If we have to wait for several milliseconds then we might try to 
- * save the SSL* and use a kevent timer to continue the SSL_accept()
- * later. 
+ * I found that the necessary time for SSL_accept(), ie. for the
+ * TLS handshake, varies considerably depending on system load.
+ * I also have no idea which values are optimal or whether setting up
+ * the timer-kevent is more expensive than sleeping for some time.
  */
-#define TLS_SLEEP_USEC  5000
-#define TLS_SLEEP_TRIES 5
+#define TLS_NONBLOCKING_USEC  200
+#define TLS_NONBLOCKING_TRIES 2
+#define TLS_RETRY_KEVENT_MSEC 200
 
+/* reconnect to lost server after n sec */
 #define TLS_RECONNECT_SEC 10
 
 /* buffersize to process file length prefixes in TLS messages */
@@ -111,6 +116,7 @@ bool copy_config_value_quoted(char *keyword, char **mem, char **p, char **q);
 bool parse_tls_destination(char *line, struct filed *f);
 void tls_split_messages(struct TLS_Incoming_Conn *c);
 
+void dispatch_accept_socket(struct kevent *ev);
 void dispatch_accept_tls(struct kevent *ev);
 void dispatch_read_tls(struct kevent *ev);
 void tls_reconnect(struct kevent *ev);

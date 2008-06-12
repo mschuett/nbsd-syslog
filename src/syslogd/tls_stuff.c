@@ -60,7 +60,7 @@ extern int     RemoteAddDate;
 extern void    logerror(const char *, ...);
 extern void    printline(char *, char *, int);
 extern void    die(struct kevent *);
-extern void    dispatch_accept_tls(struct kevent *ev);
+extern void    dispatch_accept_socket(struct kevent *ev);
 extern struct kevent *allocevchange(void);
 
 /*
@@ -404,7 +404,7 @@ socksetup_tls(int af, const char *bindhostname, const char *port)
                 }
                 ev = allocevchange();
                 EV_SET(ev, *s, EVFILT_READ, EV_ADD | EV_ENABLE,
-                    0, 0, KEVENT_UDATA_CAST dispatch_accept_tls);
+                    0, 0, KEVENT_UDATA_CAST dispatch_accept_socket);
 
                 *socks = *socks + 1;
                 s++;
@@ -712,13 +712,76 @@ tls_send_queue(struct filed *f)
 }
 
 /*
- * Dispatch routine for accepting TCP/TLS sockets.
+ * Dispatch routine for accepting TLS connections.
+ * Has to be idempotent in case of TLS_RETRY (~ EAGAIN), so we can defer
+ * a slow handshake with a timer-kevent and continue some msec later.
+ */
+void
+dispatch_accept_tls(struct kevent *ev)
+{
+        struct tls_conn_settings *conn_info = (struct tls_conn_settings *) ev->ident;
+        struct kevent *newev;
+        int rc, error, tries = 0;
+        struct TLS_Incoming_Conn *tls_in;
+
+        /* non-blocking might require several calls? */
+try_SSL_accept:        
+        rc = SSL_accept(conn_info->sslptr);
+        if (0 >= rc) {
+                error = tls_examine_error("SSL_accept()",
+                        conn_info->sslptr, NULL, rc);
+                if (error == TLS_RETRY) {
+                        /* first retry immediately again,
+                         * then schedule for later */ 
+                        if (++tries < TLS_NONBLOCKING_TRIES) {
+                                usleep(TLS_NONBLOCKING_USEC);
+                                goto try_SSL_accept;
+                        }
+                        newev = allocevchange();
+                        EV_SET(newev, (uintptr_t)conn_info, EVFILT_TIMER,
+                                EV_ADD | EV_ENABLE | EV_ONESHOT,
+                                0, TLS_RETRY_KEVENT_MSEC,
+                                KEVENT_UDATA_CAST dispatch_accept_tls);
+                }
+                return;
+        }
+        /* else */
+        if (!(tls_in = malloc(sizeof(struct TLS_Incoming_Conn)))) {
+                logerror("Unable to allocate memory for accepted connection");
+                free_tls_conn(conn_info);
+                return;
+        }        
+        bzero(tls_in, sizeof(struct TLS_Incoming_Conn));
+        tls_in->tls_conn = conn_info;
+        tls_in->socket = SSL_get_fd(conn_info->sslptr);
+        tls_in->ssl = conn_info->sslptr;
+        tls_in->inbuf[0] = '\0';
+        tls_in->read_pos = tls_in->cur_msg_start = \
+                tls_in->cur_msg_len = tls_in->closenow = 0;
+        SLIST_INSERT_HEAD(&TLS_Incoming_Head, tls_in, entries);
+
+        newev = allocevchange();
+        EV_SET(newev, tls_in->socket, EVFILT_READ, EV_ADD | EV_ENABLE,
+            0, 0, KEVENT_UDATA_CAST dispatch_read_tls);
+
+        DPRINTF("established TLS connection from %s\n", conn_info->hostname);
+        
+        /*
+         * We could also listen to EOF kevents -- but I do not think
+         * that would be useful, because we still had to read() the buffer
+         * before closing the socket.
+         */
+}
+
+/*
+ * Dispatch routine for accepting TCP connections and preparing
+ * the tls_conn_settings object for a following SSL_accept().
  * TODO: check correct LIBWRAP usage for TCP connections
  * TODO: how do we handle fingerprint auth for incoming?
  *       set up a list of tls_conn_settings and pick one matching the hostname?
  */
 void
-dispatch_accept_tls(struct kevent *ev)
+dispatch_accept_socket(struct kevent *ev)
 {
 #ifdef LIBWRAP
         struct request_info req;
@@ -727,12 +790,11 @@ dispatch_accept_tls(struct kevent *ev)
         socklen_t addrlen;
         int fd = ev->ident;
         int reject = 0;
-        int tries = 0;
-        int newsock, rc, error;
+        int newsock, rc;
         SSL *ssl;
         struct tls_conn_settings *conn_info;
         struct TLS_Incoming_Conn *tls_in;
-        struct kevent *newev;
+        struct kevent newev;
         char hbuf[NI_MAXHOST];
         char *peername;
 
@@ -790,9 +852,6 @@ dispatch_accept_tls(struct kevent *ev)
                 close(newsock);
                 return;
         }
-        DPRINTF("connection from %s accept()ed, and connected SSL*@%p with fd %d...\n",
-                peername, ssl, newsock);
-
         /* store connection details inside ssl object, used to verify
          * cert and immediately match against hostname */
         bzero(conn_info, sizeof(*conn_info));
@@ -801,42 +860,12 @@ dispatch_accept_tls(struct kevent *ev)
         conn_info->sslptr = ssl;
         SSL_set_app_data(ssl, conn_info);
         SSL_set_accept_state(ssl);
+
+        DPRINTF("socket connection from %s accept()ed with fd %d, " \
+                "calling SSL_accept()...\n",  peername, newsock);
         
-        /* non-blocking might require several calls? */
-try_SSL_accept:        
-        rc = SSL_accept(ssl);
-        if (0 >= rc) {
-                error = tls_examine_error("SSL_accept()", ssl, NULL, rc);
-                switch (error) {
-                        case TLS_RETRY:
-                                if (++tries < TLS_SLEEP_TRIES) {
-                                        usleep(TLS_SLEEP_USEC);
-                                        goto try_SSL_accept;
-                                }
-                                break;
-                        default:break;
-                }
-        } else {
-                bzero(tls_in, sizeof(tls_in));
-                tls_in->tls_conn = conn_info;
-                tls_in->socket = newsock;
-                tls_in->ssl = ssl;
-                tls_in->inbuf[0] = '\0';
-                tls_in->read_pos = tls_in->cur_msg_start = \
-                        tls_in->cur_msg_len = tls_in->closenow = 0;
-                SLIST_INSERT_HEAD(&TLS_Incoming_Head, tls_in, entries);
-    
-                newev = allocevchange();
-                EV_SET(newev, newsock, EVFILT_READ, EV_ADD | EV_ENABLE,
-                    0, 0, KEVENT_UDATA_CAST dispatch_read_tls);
-                DPRINTF("established TLS connection from %s\n", peername);
-                
-                /*
-                 * We could also listen to EOF kevents -- but I do not think
-                 * that would be useful, because we still had to read() the buffer
-                 * before closing the socket.
-                 */
-        }
+        newev = ((struct kevent) {(uintptr_t)conn_info, 0, 0, 0, 0, NULL});
+        dispatch_accept_tls(&newev);
 }
 
 /*
@@ -856,6 +885,7 @@ dispatch_read_tls(struct kevent *ev)
         int error, tries;
         int_fast16_t rc;
         struct TLS_Incoming_Conn *c;
+        struct kevent *newev;
 
         DPRINTF("active TLS socket %d\n", fd);
         
@@ -891,17 +921,15 @@ try_SSL_read:
                 error = tls_examine_error("SSL_read()", c->ssl, c->tls_conn, rc);
                 switch (error) {
                         case TLS_RETRY:
-                                if (++tries < TLS_SLEEP_TRIES) {
-                                        usleep(TLS_SLEEP_USEC);
+                                if (++tries < TLS_NONBLOCKING_TRIES) {
+                                        usleep(TLS_NONBLOCKING_USEC);
                                         goto try_SSL_read;
                                 }
-                                /* serious problem:
-                                 * if TLS layer is too slow we might leave the
-                                 * data in the TLS buffer.
-                                 * Especially bad: if client disconnects
-                                 * immediately after sending then we never
-                                 * get a kevent to read again.   :-(
-                                 */
+                                newev = allocevchange();
+                                EV_SET(newev, fd, EVFILT_TIMER,
+                                        EV_ADD | EV_ENABLE | EV_ONESHOT,
+                                        0, TLS_RETRY_KEVENT_MSEC,
+                                        KEVENT_UDATA_CAST dispatch_read_tls); 
                                 break;
                         case TLS_TEMP_ERROR:
                                 if (c->tls_conn->errorcount < TLS_MAXERRORCOUNT)
@@ -1065,8 +1093,8 @@ try_SSL_write:
                         f->f_un.f_tls.tls_conn, rc);
                 switch (error) {
                         case TLS_RETRY:
-                                if (++retry < TLS_SLEEP_TRIES) {
-                                        usleep(TLS_SLEEP_USEC);
+                                if (++retry < TLS_NONBLOCKING_TRIES) {
+                                        usleep(TLS_NONBLOCKING_USEC);
                                         goto try_SSL_write;
                                 }
                                 break;

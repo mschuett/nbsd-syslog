@@ -162,10 +162,10 @@ struct TLS_Incoming_Conn {
         struct tls_conn_settings *tls_conn;
         SSL *ssl;
         int socket;
-        uint_fast16_t cur_msg_len;       /* length of current msg */
-        uint_fast16_t cur_msg_start;     /* beginning of current msg */
-        uint_fast16_t read_pos;          /* ring buffer position to write to */
-        uint_fast8_t errorcount;         /* to close faulty connections */
+        unsigned int cur_msg_len;       /* length of current msg */
+        unsigned int cur_msg_start;     /* beginning of current msg */
+        unsigned int read_pos;          /* ring buffer position to write to */
+        unsigned int errorcount;         /* to close faulty connections */
         bool closenow;                   /* close connection as soon as buffer processed */
 };
 

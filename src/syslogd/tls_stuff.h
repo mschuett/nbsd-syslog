@@ -110,7 +110,6 @@ bool copy_config_value(char **mem, char *p, char *q);
 bool copy_config_value_quoted(char *keyword, char **mem, char **p, char **q);
 bool parse_tls_destination(char *line, struct filed *f);
 void tls_split_messages(struct TLS_Incoming_Conn *c);
-inline struct buf_queue_head makebuf_queue_head(struct filed *f);
 
 void dispatch_accept_tls(struct kevent *ev);
 void dispatch_read_tls(struct kevent *ev);

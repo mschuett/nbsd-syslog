@@ -36,7 +36,7 @@
 #include "tls_stuff.h"
 
 /* to output SSL error codes */
-char *SSL_ERRCODE[9] = {
+const char *SSL_ERRCODE[] = {
         "SSL_ERROR_NONE",
         "SSL_ERROR_SSL",
         "SSL_ERROR_WANT_READ",
@@ -74,7 +74,7 @@ init_global_TLS_CTX(char const *keyfilename, char const *certfilename, char cons
 {
         SSL_CTX *ctx;
         SSL_load_error_strings();
-        SSL_library_init();
+        (void) SSL_library_init();
         OpenSSL_add_all_digests();
         if (!(ctx = SSL_CTX_new(SSLv23_method()))) {
                 ERR_print_errors_fp(stderr);
@@ -128,9 +128,9 @@ get_fingerprint(X509 * cert, char **returnstring, char *alg_name)
 #define MAX_ALG_NAME_LENGTH 8
         unsigned char md[EVP_MAX_MD_SIZE];
         char fp_val[4];
-        unsigned int len, memsize;
+        unsigned int len, memsize, i = 0;
         EVP_MD *digest;
-        int i = 0;
+
         dprintf("get_fingerprint(cert, %p, %s)\n", returnstring, alg_name);
         *returnstring = NULL;
         if ((alg_name && !(digest = (EVP_MD *) EVP_get_digestbyname(alg_name)))
@@ -155,7 +155,7 @@ get_fingerprint(X509 * cert, char **returnstring, char *alg_name)
         (void)strlcat(*returnstring, ":", memsize);
         /* append the fingeprint data */
         for (i = 0; i < len; i++) {
-                (void)snprintf(fp_val, 4, "%02X:", (unsigned int) md[i]);
+                (void)snprintf(fp_val, sizeof(fp_val), "%02X:", (unsigned int) md[i]);
                 (void)strlcat(*returnstring, fp_val, memsize);
         }
         if ((*returnstring)[memsize - 1] != '\0')
@@ -262,7 +262,7 @@ match_fingerprint(X509 * cert, struct tls_conn_settings *conn)
         /* get algorithm */
         p = alg;
         q = conn->fingerprint;
-        while (*q != ':' && *q != '\0' && p < (char *)alg + MAX_ALG_NAME_LENGTH)
+        while (*q != ':' && *q != '\0' && p < alg + MAX_ALG_NAME_LENGTH)
                 *p++ = *q++;
         *p = '\0';
 
@@ -303,8 +303,8 @@ check_peer_cert(int preverify_ok, X509_STORE_CTX * ctx)
         conn_info = SSL_get_app_data(ssl);
 
         /* some info */
-        X509_NAME_oneline(X509_get_subject_name(cur_cert), buf, sizeof(buf));
-        get_fingerprint(cur_cert, &fingerprint, NULL);
+        (void)X509_NAME_oneline(X509_get_subject_name(cur_cert), buf, sizeof(buf));
+        (void)get_fingerprint(cur_cert, &fingerprint, NULL);
         dprintf("check cert for connection with %s. depth is %d, preverify is %d, subject is %s, fingerprint is %s\n",
             conn_info->hostname, cur_depth, preverify_ok, buf, fingerprint);
         free(fingerprint);
@@ -320,7 +320,7 @@ check_peer_cert(int preverify_ok, X509_STORE_CTX * ctx)
         }
         if (!preverify_ok) {
                 if (cur_err == X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT) {
-                        X509_NAME_oneline(X509_get_issuer_name(ctx->current_cert), buf, 256);
+                        X509_NAME_oneline(X509_get_issuer_name(ctx->current_cert), buf, sizeof(buf));
                         dprintf("openssl verify error:missing cert for issuer= %s\n", buf);
                 }
                 dprintf("openssl verify error:num=%d:%s:depth=%d:%s\t\n", cur_err,
@@ -457,8 +457,6 @@ bool tls_connect(SSL_CTX **context, struct tls_conn_settings *conn)
                         dprintf("Unable to open socket.\n");
                         continue;
                 }
-                dprintf("got socket with fd=%d, protocol=%d\n", sock, res1->ai_protocol);
-                
                 if ((-1 == (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one))))
                                  || (-1 == (setsockopt(sock, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one))))
                                  || (-1 == (setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one))))) {
@@ -470,45 +468,33 @@ bool tls_connect(SSL_CTX **context, struct tls_conn_settings *conn)
                         sock = -1;
                         continue;
                 }
-                dprintf("connect()\n");
-                
                 if (!(ssl = SSL_new(g_TLS_CTX))) {
-                        ERR_error_string_n(ERR_get_error(), buf, MAXLINE);
+                        ERR_error_string_n(ERR_get_error(), buf, sizeof(buf));
                         dprintf("Unable to establish TLS: %s\n", buf);
                         close(sock);
                         sock = -1;
                         continue;                                
                 }
-                dprintf("SSL_new()\n");
-                
                 if (!SSL_set_fd(ssl, sock)) {
-                        ERR_error_string_n(ERR_get_error(), buf, MAXLINE);
+                        ERR_error_string_n(ERR_get_error(), buf, sizeof(buf));
                         dprintf("Unable to connect TLS to socket: %s\n", buf);
                         SSL_free(ssl);
                         close(sock);
                         sock = -1;
                         continue;                                
                 }
-                dprintf("SSL_set_fd(ssl, %d)\n", sock);
-
                 while ((rc = ERR_get_error())) {
-                        ERR_error_string_n(rc, buf, MAXLINE);
+                        ERR_error_string_n(rc, buf, sizeof(buf));
                         dprintf("Found SSL error in queue: %s\n", buf);
                 }
-
                 SSL_set_app_data(ssl, conn);
                 SSL_set_connect_state(ssl);
                 while ((rc = ERR_get_error())) {
-                        ERR_error_string_n(rc, buf, MAXLINE);
+                        ERR_error_string_n(rc, buf, sizeof(buf));
                         dprintf("Found SSL error in queue: %s\n", buf);
                 }
-                dprintf("SSL_set_app_data(), SSL_set_connect_state()\n");
-                
                 /* connect */
-                //rc = SSL_do_handshake(ssl);
-                //dprintf("SSL_do_handshake() returned %d: ", rc);
-                dprintf("SSL_get_fd() gives: %d\n", SSL_get_fd(ssl));
-                dprintf("now calling connect...\n");
+                dprintf("Calling SSL_connect()...\n");
                 errno = 0;  /* reset to be sure we get the right one later on */
                 rc = SSL_connect(ssl);
                 if (rc >= 1) {
@@ -570,7 +556,7 @@ tls_examine_error(char *functionname, SSL *ssl, struct tls_conn_settings *tls_co
 
 /* auxillary code to allocate memory and copy a string */
 bool
-copy_config_value(/*@out@*/ char **mem, char *p, char *q)
+copy_config_value(char **mem, char *p, char *q)
 {
         if (!(*mem = malloc(1 + q - p))) {
                 printf("Couldn't allocate memory for TLS config\n");
@@ -582,7 +568,7 @@ copy_config_value(/*@out@*/ char **mem, char *p, char *q)
 }
 
 bool
-copy_config_value_quoted(char *keyword, char **mem, /*@null@*/char **p, /*@null@*/char **q)
+copy_config_value_quoted(char *keyword, char **mem, char **p, char **q)
 {
         if (strncmp(*p, keyword, strlen(keyword)))
                 return false;
@@ -596,18 +582,6 @@ copy_config_value_quoted(char *keyword, char **mem, /*@null@*/char **p, /*@null@
         *p = ++(*q);
         return true;
 }
-
-/* 
- * Auxiliary function because TAILQ_HEAD_INITIALIZER is defined for
- * initialization and cannot be used in an assignment after malloc()
- * (?)
- */
-inline struct buf_queue_head
-makebuf_queue_head(struct filed *f)
-{
-        struct buf_queue_head bqh = TAILQ_HEAD_INITIALIZER(f->f_un.f_tls.qhead);
-        return bqh;
-}        
 
 bool
 parse_tls_destination(char *line, struct filed *f)
@@ -632,7 +606,9 @@ parse_tls_destination(char *line, struct filed *f)
         /* default values */
         bzero(f->f_un.f_tls.tls_conn, sizeof(struct tls_conn_settings));
         f->f_un.f_tls.tls_conn->x509verify = X509VERIFY_NONE;
-        f->f_un.f_tls.qhead = makebuf_queue_head(f);
+        f->f_un.f_tls.qhead = 
+                ((struct buf_queue_head)
+                TAILQ_HEAD_INITIALIZER(f->f_un.f_tls.qhead));
         TAILQ_INIT(&f->f_un.f_tls.qhead);
 
         if (!(copy_config_value(&(f->f_un.f_tls.tls_conn->hostname), p, q)))
@@ -700,12 +676,14 @@ void
 tls_reconnect(struct kevent *ev)
 {
         struct filed *f = (struct filed *) ev->ident;
-        
+        struct kevent *newev;
+
         dprintf("reconnect timer expired\n");
         if (!tls_connect(&global_TLS_CTX, f->f_un.f_tls.tls_conn)) {
                 logerror("Unable to connect to TLS server %s", f->f_un.f_tls.tls_conn->hostname);
-                EV_SET(ev, (uintptr_t)f, EVFILT_TIMER, EV_ADD | EV_ENABLE | EV_ONESHOT,
-                    0, 3*1000*TLS_RECONNECT_SEC, KEVENT_UDATA_CAST tls_reconnect); 
+                newev = allocevchange();
+                EV_SET(newev, (uintptr_t)f, EVFILT_TIMER, EV_ADD | EV_ENABLE | EV_ONESHOT,
+                    0, 1000*TLS_RECONNECT_SEC, KEVENT_UDATA_CAST tls_reconnect); 
         } else {
                 tls_send_queue(f);
         }        
@@ -918,6 +896,13 @@ try_SSL_read:
                                         usleep(TLS_SLEEP_USEC);
                                         goto try_SSL_read;
                                 }
+                                /* serious problem:
+                                 * if TLS layer is too slow we might leave the
+                                 * data in the TLS buffer.
+                                 * Especially bad: if client disconnects
+                                 * immediately after sending then we never
+                                 * get a kevent to read again.   :-(
+                                 */
                                 break;
                         case TLS_TEMP_ERROR:
                                 if (c->tls_conn->errorcount < TLS_MAXERRORCOUNT)

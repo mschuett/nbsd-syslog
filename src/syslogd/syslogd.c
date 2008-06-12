@@ -125,7 +125,7 @@ int     repeatinterval[] = { 30, 120, 600 };    /* # of secs before flush */
  * it does not result in additionally compiled code  */
 #define F_TLS       8 
 
-char    *TypeNames[9] = {
+const char *TypeNames[] = {
         "UNUSED",       "FILE",         "TTY",          "CONSOLE",
         "FORW",         "USERS",        "WALL",         "PIPE",
         "TLS"
@@ -1567,7 +1567,7 @@ die(struct kevent *ev)
         struct filed *f;
         char **p;
 #ifndef DISABLE_TLS
-        struct TLS_Incoming_Conn *tls_in;
+        struct TLS_Incoming_Conn *tls_in, *tls_tmp;
         int i;
 #endif /* !DISABLE_TLS */
 
@@ -1582,7 +1582,7 @@ die(struct kevent *ev)
                         if (close(TLS_Listen_Set[i+1]) < 0)
                                 logerror("close() failed");
         /* close incoming TLS connections */
-        SLIST_FOREACH(tls_in, &TLS_Incoming_Head, entries) {
+        SLIST_FOREACH_SAFE(tls_in, &TLS_Incoming_Head, entries, tls_tmp) {
                 free_tls_conn(tls_in->tls_conn);
                 free(tls_in);
         }
@@ -1627,7 +1627,7 @@ init(struct kevent *ev)
         char host[MAXHOSTNAMELEN];
         char hostMsg[2*MAXHOSTNAMELEN + 40];
 #ifndef DISABLE_TLS
-        struct TLS_Incoming_Conn *tls_in;
+        struct TLS_Incoming_Conn *tls_in, *tls_tmp;
 #endif /* !DISABLE_TLS */
 
         dprintf("init\n");
@@ -1651,7 +1651,7 @@ init(struct kevent *ev)
                         if (close(TLS_Listen_Set[i+1]) < 0)
                                 logerror("close() failed");
         /* close incoming TLS connections */
-        SLIST_FOREACH(tls_in, &TLS_Incoming_Head, entries) {
+        SLIST_FOREACH_SAFE(tls_in, &TLS_Incoming_Head, entries, tls_tmp) {
                 free_tls_conn(tls_in->tls_conn);
                 free(tls_in);
         }

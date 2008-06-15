@@ -51,7 +51,7 @@ const char *SSL_ERRCODE[] = {
 /* definitions in syslogd.c */
 extern short int Debug;
 
-extern SSL_CTX *global_TLS_CTX;
+extern struct tls_global_options_t tls_opt;
 extern struct TLS_Incoming TLS_Incoming_Head;
 extern char *linebuf;
 extern size_t linebufsize;
@@ -69,9 +69,17 @@ extern struct kevent *allocevchange(void);
  * x509verify determines the level of certificate validation
  */
 SSL_CTX *
-init_global_TLS_CTX(char const *keyfilename, char const *certfilename, char const *CAfile, char const *CApath, char x509verify)
+init_global_TLS_CTX(char const *keyfilename, char const *certfilename,
+                char const *CAfile, char const *CApath, char const *strx509verify)
 {
         SSL_CTX *ctx;
+        int x509verify = X509VERIFY_ALWAYS;
+        
+        if (strx509verify && !strncasecmp(strx509verify, "off", strlen("off")))
+                x509verify = X509VERIFY_NONE;
+        else if (strx509verify && !strncasecmp(strx509verify, "opt", strlen("opt")))
+                x509verify = X509VERIFY_IFPRESENT;
+        
         SSL_load_error_strings();
         (void) SSL_library_init();
         OpenSSL_add_all_digests();
@@ -345,7 +353,6 @@ check_peer_cert(int preverify_ok, X509_STORE_CTX * ctx)
  * To be used like socksetup(), hostname and port are optional,
  * returns bound stream sockets. 
  */
-extern bool TLSClientOnly;
 int *
 socksetup_tls(int af, const char *bindhostname, const char *port)
 {
@@ -354,7 +361,7 @@ socksetup_tls(int af, const char *bindhostname, const char *port)
         int error, maxs, *s, *socks;
         const int on = 1;
 
-        if(TLSClientOnly)
+        if(tls_opt.client_only)
                 return(NULL);
 
         memset(&hints, 0, sizeof(hints));
@@ -426,14 +433,13 @@ socksetup_tls(int af, const char *bindhostname, const char *port)
 /*
  * establish TLS connection 
  */
-bool tls_connect(SSL_CTX **context, struct tls_conn_settings *conn)
+bool tls_connect(SSL_CTX *context, struct tls_conn_settings *conn)
 {
         struct addrinfo hints, *res, *res1;
         int    error, rc, sock;
         const int one = 1;
         char   buf[MAXLINE];
         SSL    *ssl; 
-        SSL_CTX *g_TLS_CTX = *context;
         
         memset(&hints, 0, sizeof(hints));
         hints.ai_family = AF_UNSPEC;
@@ -446,8 +452,8 @@ bool tls_connect(SSL_CTX **context, struct tls_conn_settings *conn)
                 return false;
         }
         
-        if (!g_TLS_CTX) {
-                g_TLS_CTX = init_global_TLS_CTX(MYKEY, MYCERT, MYCA, MYCAPATH, X509VERIFY);
+        if (!context) {
+                logerror("No TLS context in tls_connect()");
         }
         
         sock = -1;
@@ -467,7 +473,7 @@ bool tls_connect(SSL_CTX **context, struct tls_conn_settings *conn)
                         sock = -1;
                         continue;
                 }
-                if (!(ssl = SSL_new(g_TLS_CTX))) {
+                if (!(ssl = SSL_new(context))) {
                         ERR_error_string_n(ERR_get_error(), buf, sizeof(buf));
                         DPRINTF("Unable to establish TLS: %s\n", buf);
                         close(sock);
@@ -569,7 +575,7 @@ copy_config_value(char **mem, char *p, char *q)
 bool
 copy_config_value_quoted(char *keyword, char **mem, char **p, char **q)
 {
-        if (strncmp(*p, keyword, strlen(keyword)))
+        if (strncasecmp(*p, keyword, strlen(keyword)))
                 return false;
         *q = *p += strlen(keyword);
         if (!(*q = strchr(*p, '"'))) {
@@ -678,7 +684,7 @@ tls_reconnect(struct kevent *ev)
         struct kevent *newev;
 
         DPRINTF("reconnect timer expired\n");
-        if (!tls_connect(&global_TLS_CTX, f->f_un.f_tls.tls_conn)) {
+        if (!tls_connect(tls_opt.global_TLS_CTX, f->f_un.f_tls.tls_conn)) {
                 logerror("Unable to connect to TLS server %s", f->f_un.f_tls.tls_conn->hostname);
                 newev = allocevchange();
                 EV_SET(newev, (uintptr_t)f, EVFILT_TIMER, EV_ADD | EV_ENABLE | EV_ONESHOT,
@@ -724,6 +730,7 @@ dispatch_accept_tls(struct kevent *ev)
         int rc, error, tries = 0;
         struct TLS_Incoming_Conn *tls_in;
 
+        DPRINTF("start TLS on connection\n");
         /* non-blocking might require several calls? */
 try_SSL_accept:        
         rc = SSL_accept(conn_info->sslptr);
@@ -798,8 +805,8 @@ dispatch_accept_socket(struct kevent *ev)
         char hbuf[NI_MAXHOST];
         char *peername;
 
-        DPRINTF("incoming TLS connection\n");
-        if (!global_TLS_CTX) {
+        DPRINTF("incoming TCP connection\n");
+        if (!tls_opt.global_TLS_CTX) {
                 logerror("global_TLS_CTX not initialized!");
                 return;
         }
@@ -841,7 +848,7 @@ dispatch_accept_socket(struct kevent *ev)
                 DPRINTF("Unable to fcntl(sock, O_NONBLOCK): %s\n", strerror(errno));
         }
         
-        if (!(ssl = SSL_new(global_TLS_CTX))) {
+        if (!(ssl = SSL_new(tls_opt.global_TLS_CTX))) {
                 DPRINTF("Unable to establish TLS: %s\n", ERR_error_string(ERR_get_error(), NULL));
                 close(newsock);
                 return;                                

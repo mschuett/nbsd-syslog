@@ -207,8 +207,7 @@ int *TLS_Listen_Set;
 struct TLS_Incoming TLS_Incoming_Head = \
         SLIST_HEAD_INITIALIZER(TLS_Incoming_Head);
 extern char *SSL_ERRCODE[];
-SSL_CTX *global_TLS_CTX;
-bool TLSClientOnly = 0;
+struct tls_global_options_t tls_opt;
 
 #endif /* !DISABLE_TLS */
 
@@ -269,6 +268,11 @@ main(int argc, char *argv[])
                         break;
                 case 's':               /* no network listen mode */
                         SecureMode++;
+#ifndef DISABLE_TLS
+                        /* there will be a seperate option to enable/disable
+                         * TLS network listen mode independently later */
+                        tls_opt.client_only = true;
+#endif /* !DISABLE_TLS */
                         break;
                 case 'S':
                         SyncKernel = 1;
@@ -436,8 +440,12 @@ getgroup:
          * terminal and would not be logged because syslogd dies. 
          * All die() calls are behind us, we can call daemon()
          */
+        /* TODO: current version does not work in non-Debug mode  :(
+         * run from gdb it exits in daemon(), without gdb the process
+         * stays alive but does not listen on UDP or TCP ports */ 
         if (!Debug) {
-                (void)daemon(0, 0);
+                if(daemon(0, 0))
+                        logerror("Unable to daemonize");
                 daemonized = 1;
                 /* tuck my process id away, if i'm not in debug mode */
 #ifndef _NO_NETBSD_USR_SRC_
@@ -1185,6 +1193,7 @@ sendagain:
 
 #ifndef DISABLE_TLS
         case F_TLS:
+                printf("[%s]\n", f->f_un.f_tls.tls_conn->hostname);
                 j = snprintf(tlsline, sizeof(tlsline)-1, "%d %s", l, line);
 
                 if ((!f->f_un.f_tls.tls_conn->sslptr)
@@ -1201,8 +1210,6 @@ sendagain:
                                 TAILQ_INSERT_TAIL(&f->f_un.f_tls.qhead, qentry, entries);
                         }                        
                 }
-                else
-                        printf("[%s]\n", f->f_un.f_tls.tls_conn->hostname);
                 break;
 #endif /* !DISABLE_TLS */
 
@@ -1600,8 +1607,21 @@ die(struct kevent *ev)
                 if (f->f_type == F_TLS) {
                         free_tls_conn(f->f_un.f_tls.tls_conn);        
                 }
-#endif /* !DISABLE_TLS */
         }
+        if (tls_opt.CAdir)
+                free(tls_opt.CAdir);
+        if (tls_opt.CAfile)
+                free(tls_opt.CAfile);
+        if (tls_opt.keyfile)
+                free(tls_opt.keyfile);
+        if (tls_opt.certfile)
+                free(tls_opt.certfile);
+        if (tls_opt.global_TLS_CTX)
+                SSL_CTX_free(tls_opt.global_TLS_CTX);
+#else
+        }
+#endif /* !DISABLE_TLS */
+
         errno = 0;
         if (ev != NULL)
                 logerror("Exiting on signal %d", (int) ev->ident);
@@ -1628,6 +1648,7 @@ init(struct kevent *ev)
         char hostMsg[2*MAXHOSTNAMELEN + 40];
 #ifndef DISABLE_TLS
         struct TLS_Incoming_Conn *tls_in, *tls_tmp;
+        char *q;
 #endif /* !DISABLE_TLS */
 
         DPRINTF("init\n");
@@ -1672,6 +1693,13 @@ init(struct kevent *ev)
          * Or we check inside init() if new kevents arrive
          * for the incoming sockets...
          */
+         
+        /* init with new TLS_CTX
+         * as far as I see one cannot change the cert/key of an existing CTX
+         */
+        if (tls_opt.global_TLS_CTX) {
+                SSL_CTX_free(tls_opt.global_TLS_CTX);
+        }
 #endif /* !DISABLE_TLS */
 
         /*
@@ -1747,6 +1775,37 @@ init(struct kevent *ev)
                 return;
         }
 
+#ifndef DISABLE_TLS
+        /* 
+         * global TLS settings
+         * I introduced a second parsing loop, because I do not want
+         * errors caused by exotic line ordering.
+         */
+        while (fgets(cline, sizeof(cline), cf) != NULL) {
+                for (p = cline; isspace((unsigned char)*p); ++p)
+                        continue;
+                if ((*p == '\0') || (*p == '#'))
+                        continue;
+                if (copy_config_value_quoted("tls_ca=\"", &tls_opt.CAfile, &p, &q)
+                 || copy_config_value_quoted("tls_cadir=\"", &tls_opt.CAdir, &p, &q)
+                 || copy_config_value_quoted("tls_cert=\"", &tls_opt.certfile, &p, &q)
+                 || copy_config_value_quoted("tls_key=\"", &tls_opt.keyfile, &p, &q)
+                 || copy_config_value_quoted("tls_verify=\"", &tls_opt.x509verify, &p, &q)
+                 || copy_config_value_quoted("tls_bindport=\"", &tls_opt.bindport, &p, &q)
+                 || copy_config_value_quoted("tls_bindhost=\"", &tls_opt.bindhost, &p, &q))
+                        continue;
+        }
+        DPRINTF("Parsed TLS options: tls_ca: %s, tls_cadir: %s, "
+                "tls_cert: %s, tls_key: %s, tls_verify: %s, bind: %s:%s\n",
+                tls_opt.CAfile, tls_opt.CAdir, tls_opt.certfile,
+                tls_opt.keyfile, tls_opt.x509verify, tls_opt.bindhost,
+                tls_opt.bindport);
+        tls_opt.global_TLS_CTX = init_global_TLS_CTX(tls_opt.keyfile,
+                                        tls_opt.certfile, tls_opt.CAfile,
+                                        tls_opt.CAdir, tls_opt.x509verify);
+        rewind(cf);
+#endif /* !DISABLE_TLS */
+
         /*
          *  Foreach line in the conf table, open that file.
          */
@@ -1768,6 +1827,17 @@ init(struct kevent *ev)
                         if (*p != '!' && *p != '+' && *p != '-')
                                 continue;
                 }
+                if(!strncasecmp(p, "tls_ca", strlen("tls_ca"))
+                 ||!strncasecmp(p, "tls_cadir", strlen("tls_cadir"))
+                 ||!strncasecmp(p, "tls_cert", strlen("tls_cert"))
+                 ||!strncasecmp(p, "tls_key", strlen("tls_key"))
+                 ||!strncasecmp(p, "tls_verify", strlen("tls_verify"))
+                 ||!strncasecmp(p, "tls_bindport", strlen("tls_bindport"))
+                 ||!strncasecmp(p, "tls_bindhost", strlen("tls_bindhost"))) {
+                        DPRINTF("skip cline\n");
+                        continue;
+                 }
+
                 if (*p == '+' || *p == '-') {
                         host[0] = *p++;
                         while (isspace((unsigned char)*p))
@@ -1877,18 +1947,8 @@ init(struct kevent *ev)
         }
 
 #ifndef DISABLE_TLS
-        /* TODO: get TLS settings from the config file
-         *  (CA certs, fingerprints, maybe hostname/port to bind to, ...)
-         */
         DPRINTF("Preparing sockets for TLS\n");
         TLS_Listen_Set = socksetup_tls(PF_UNSPEC, bindhostname, SERVICENAME);
-        /* init with new TLS_CTX
-         * TODO: keep the old one and only change the X.509 settings on config change
-         */
-        if (global_TLS_CTX) {
-                SSL_CTX_free(global_TLS_CTX);
-        }
-        global_TLS_CTX = init_global_TLS_CTX(MYKEY, MYCERT, MYCA, MYCAPATH, X509VERIFY);
 #endif /* !DISABLE_TLS */
 
         logmsg(LOG_SYSLOG|LOG_INFO, "syslogd: restart", LocalHostName, ADDDATE);
@@ -2086,7 +2146,13 @@ cfline(char *line, struct filed *f, char *prog, char *host)
                                 logerror("Unable to parse action %s", p);
                                 break;
                         }
-                        if (!tls_connect(&global_TLS_CTX, f->f_un.f_tls.tls_conn)) {
+                        if(!tls_opt.global_TLS_CTX)
+                                tls_opt.global_TLS_CTX = init_global_TLS_CTX(
+                                        tls_opt.keyfile, tls_opt.certfile,
+                                        tls_opt.CAfile, tls_opt.CAdir,
+                                        tls_opt.x509verify);
+
+                        if (!tls_connect(tls_opt.global_TLS_CTX, f->f_un.f_tls.tls_conn)) {
                                 logerror("Unable to connect to TLS server %s", f->f_un.f_tls.tls_conn->hostname);
                                 /* Reconnect after x seconds  */
                                 newev = allocevchange();

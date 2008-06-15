@@ -147,6 +147,20 @@ struct filed {
 
 
 #ifndef DISABLE_TLS
+
+/* config options for TLS server-side */
+struct tls_global_options_t {
+        SSL_CTX *global_TLS_CTX;
+        char *keyfile;      /* file with private key */
+        char *certfile;     /* file with own certificate */
+        char *CAfile;       /* file with CA certificate */
+        char *CAdir;        /* alternative: path to directory with CA certs */
+        char *x509verify;   /* level of peer verification */
+        char *bindhost; /* hostname/IP to bind to */ 
+        char *bindport; /* port/service to bind to */
+        bool client_only;   /* do not listen te incoming TLS */
+};
+
 /* TLS needs three sets of sockets:
  * - listening sockets: a fixed size array TLS_Listen_Set, just like finet for UDP.
  * - outgoing connections: managed as part of struct filed.

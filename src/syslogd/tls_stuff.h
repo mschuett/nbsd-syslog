@@ -18,11 +18,13 @@
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 
+/*
 #define MYKEY "localhost.key"
 #define MYCERT  "localhost.crt"
 #define MYCA  "testca.crt"
 #define MYCAPATH NULL
 #define X509VERIFY X509VERIFY_NONE
+*/
 #define SERVICENAME "55555"
 #define TLSBACKLOG 4
 #define TLS_MAXERRORCOUNT 4
@@ -99,9 +101,9 @@ struct daemon_status {
 #define TLS_TEMP_ERROR 2        /* recoverable error condition, but try again */
 #define TLS_PERM_ERROR 3        /* non-recoverable error condition, closed TLS and socket */
 
-SSL_CTX *init_global_TLS_CTX(char const *keyfilename, char const *certfilename, char const *CAfile, char const *CApath, char x509verify);
+SSL_CTX *init_global_TLS_CTX(char const *keyfilename, char const *certfilename, char const *CAfile, char const *CApath, char const *x509verify);
 int check_peer_cert(int preverify_ok, X509_STORE_CTX * store);
-bool tls_connect(SSL_CTX **context, struct tls_conn_settings *conn);
+bool tls_connect(SSL_CTX *context, struct tls_conn_settings *conn);
 bool get_fingerprint(X509 * cert, char **returnstring, char *alg_name);
 bool match_hostnames(X509 * cert, struct tls_conn_settings *conn);
 bool match_fingerprint(X509 * cert, struct tls_conn_settings *conn);

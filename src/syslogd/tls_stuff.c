@@ -564,7 +564,7 @@ bool
 copy_config_value(char **mem, char *p, char *q)
 {
         if (!(*mem = malloc(1 + q - p))) {
-                printf("Couldn't allocate memory for TLS config\n");
+                logerror("Couldn't allocate memory for TLS config\n");
                 return false;
         }
         strncpy(*mem, p, q - p);
@@ -579,7 +579,7 @@ copy_config_value_quoted(char *keyword, char **mem, char **p, char **q)
                 return false;
         *q = *p += strlen(keyword);
         if (!(*q = strchr(*p, '"'))) {
-                printf("unterminated \"\n");
+                logerror("unterminated \"\n");
                 return false;
         }
         if (!(copy_config_value(mem, *p, *q)))
@@ -977,6 +977,7 @@ tls_split_messages(struct TLS_Incoming_Conn *c)
                 free_tls_conn(c->tls_conn);
                 SLIST_REMOVE(&TLS_Incoming_Head, c, TLS_Incoming_Conn, entries);
                 free(c);
+                return;
         }
         if (!c->read_pos)
                 return;

@@ -134,14 +134,14 @@ const char *TypeNames[] = {
 struct  filed *Files;
 struct  filed consfile;
 
-int     Debug;                  /* debug flag */
+int     Debug = 0;              /* debug flag */
 int     daemonized = 0;         /* we are not daemonized yet */
 char    LocalHostName[MAXHOSTNAMELEN];  /* our hostname */
 char    oldLocalHostName[MAXHOSTNAMELEN];/* previous hostname */
 char    *LocalDomain;           /* our local domain name */
 size_t  LocalDomainLen;         /* length of LocalDomain */
 int     *finet = NULL;          /* Internet datagram sockets */
-int     Initialized;            /* set when we have initialized ourselves */
+int     Initialized = 0;        /* set when we have initialized ourselves */
 int     ShuttingDown;           /* set when we die() */
 int     MarkInterval = 20 * 60; /* interval between marks in seconds */
 int     MarkSeq = 0;            /* mark sequence number */
@@ -433,19 +433,14 @@ getgroup:
                 logerror("Failed to set uid to `%d'", uid);
                 die(NULL);
         }
-
         /* 
          * We cannot detach from the terminal before we are sure we won't 
          * have a fatal error, because error message would not go to the
          * terminal and would not be logged because syslogd dies. 
          * All die() calls are behind us, we can call daemon()
          */
-        /* TODO: current version does not work in non-Debug mode  :(
-         * run from gdb it exits in daemon(), without gdb the process
-         * stays alive but does not listen on UDP or TCP ports */ 
         if (!Debug) {
-                if(daemon(0, 0))
-                        logerror("Unable to daemonize");
+                (void)daemon(0, 0);
                 daemonized = 1;
                 /* tuck my process id away, if i'm not in debug mode */
 #ifndef _NO_NETBSD_USR_SRC_
@@ -1193,12 +1188,12 @@ sendagain:
 
 #ifndef DISABLE_TLS
         case F_TLS:
-                printf("[%s]\n", f->f_un.f_tls.tls_conn->hostname);
+                DPRINTF("[%s]\n", f->f_un.f_tls.tls_conn->hostname);
                 j = snprintf(tlsline, sizeof(tlsline)-1, "%d %s", l, line);
 
                 if ((!f->f_un.f_tls.tls_conn->sslptr)
                  || (!tls_send(f, tlsline, j))) {
-                        printf("-- enqueued for unconnected [%s]\n", f->f_un.f_tls.tls_conn->hostname);
+                        DPRINTF("-- enqueued for unconnected [%s]\n", f->f_un.f_tls.tls_conn->hostname);
                         if (!(qentry = malloc(sizeof(struct buf_queue)))
                          || !(qentry->msg = malloc(sizeof(struct buf_msg)))
                          || !(qentry->msg->line = malloc(j)))
@@ -1608,16 +1603,12 @@ die(struct kevent *ev)
                         free_tls_conn(f->f_un.f_tls.tls_conn);        
                 }
         }
-        if (tls_opt.CAdir)
-                free(tls_opt.CAdir);
-        if (tls_opt.CAfile)
-                free(tls_opt.CAfile);
-        if (tls_opt.keyfile)
-                free(tls_opt.keyfile);
-        if (tls_opt.certfile)
-                free(tls_opt.certfile);
-        if (tls_opt.global_TLS_CTX)
-                SSL_CTX_free(tls_opt.global_TLS_CTX);
+        
+        FREEPTR(tls_opt.CAdir);
+        FREEPTR(tls_opt.CAfile);
+        FREEPTR(tls_opt.keyfile);
+        FREEPTR(tls_opt.certfile);
+        FREE_SSL_CTX(tls_opt.global_TLS_CTX);
 #else
         }
 #endif /* !DISABLE_TLS */
@@ -1663,6 +1654,7 @@ init(struct kevent *ev)
                 LocalDomain = "";
         LocalDomainLen = strlen(LocalDomain);
 
+        Initialized = 0;
 #ifndef DISABLE_TLS
         /* 
          * close all listening and connected TLS sockets
@@ -1697,15 +1689,12 @@ init(struct kevent *ev)
         /* init with new TLS_CTX
          * as far as I see one cannot change the cert/key of an existing CTX
          */
-        if (tls_opt.global_TLS_CTX) {
-                SSL_CTX_free(tls_opt.global_TLS_CTX);
-        }
+        FREE_SSL_CTX(tls_opt.global_TLS_CTX);
 #endif /* !DISABLE_TLS */
 
         /*
          *  Close all open log files.
          */
-        Initialized = 0;
         for (f = Files; f != NULL; f = next) {
                 /* flush any pending output */
                 if (f->f_prevcount)
@@ -1803,6 +1792,9 @@ init(struct kevent *ev)
         tls_opt.global_TLS_CTX = init_global_TLS_CTX(tls_opt.keyfile,
                                         tls_opt.certfile, tls_opt.CAfile,
                                         tls_opt.CAdir, tls_opt.x509verify);
+        DPRINTF("Preparing sockets for TLS\n");
+        TLS_Listen_Set = socksetup_tls(PF_UNSPEC, tls_opt.bindhost, tls_opt.bindport);
+
         rewind(cf);
 #endif /* !DISABLE_TLS */
 
@@ -1827,6 +1819,7 @@ init(struct kevent *ev)
                         if (*p != '!' && *p != '+' && *p != '-')
                                 continue;
                 }
+#ifndef DISABLE_TLS
                 if(!strncasecmp(p, "tls_ca", strlen("tls_ca"))
                  ||!strncasecmp(p, "tls_cadir", strlen("tls_cadir"))
                  ||!strncasecmp(p, "tls_cert", strlen("tls_cert"))
@@ -1837,7 +1830,7 @@ init(struct kevent *ev)
                         DPRINTF("skip cline\n");
                         continue;
                  }
-
+#endif /* !DISABLE_TLS */
                 if (*p == '+' || *p == '-') {
                         host[0] = *p++;
                         while (isspace((unsigned char)*p))
@@ -1945,11 +1938,6 @@ init(struct kevent *ev)
                         DPRINTF("Listening on inet and/or inet6 socket\n");
                 DPRINTF("Sending on inet and/or inet6 socket\n");
         }
-
-#ifndef DISABLE_TLS
-        DPRINTF("Preparing sockets for TLS\n");
-        TLS_Listen_Set = socksetup_tls(PF_UNSPEC, bindhostname, SERVICENAME);
-#endif /* !DISABLE_TLS */
 
         logmsg(LOG_SYSLOG|LOG_INFO, "syslogd: restart", LocalHostName, ADDDATE);
         DPRINTF("syslogd: restarted\n");

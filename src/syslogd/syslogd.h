@@ -83,6 +83,9 @@ TAILQ_HEAD(buf_queue_head, buf_queue);
 
 #define DPRINTF(...)    if (Debug) printf(__VA_ARGS__)
 
+#define FREEPTR(x)      if (x)     { free(x);         x = NULL; }
+#define FREE_SSL_CTX(x) if (x)     { SSL_CTX_free(x); x = NULL; }
+
 #define MAXUNAMES       20      /* maximum number of user names */
 
 /*

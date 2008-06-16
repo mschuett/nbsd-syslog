@@ -110,6 +110,7 @@ bool match_fingerprint(X509 * cert, struct tls_conn_settings *conn);
 int *socksetup_tls(int af, const char *bindhostname, const char *port);
 void free_tls_sslptr(struct tls_conn_settings *tls_conn);
 void free_tls_conn(struct tls_conn_settings *tls_conn);
+void free_msg_queue(struct filed *f);
 int tls_examine_error(char *functionname, SSL *ssl, struct tls_conn_settings *tls_conn, int rc);
 
 /* forward declarations */

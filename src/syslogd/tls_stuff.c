@@ -60,7 +60,6 @@ extern int     RemoteAddDate;
 extern void    logerror(const char *, ...);
 extern void    printline(char *, char *, int);
 extern void    die(struct kevent *);
-extern void    dispatch_accept_socket(struct kevent *ev);
 extern struct kevent *allocevchange(void);
 
 /*
@@ -399,8 +398,9 @@ socksetup_tls(int af, const char *bindhostname, const char *port)
                         close(*s);
                         continue;
                 }
-                if (bind(*s, r->ai_addr, r->ai_addrlen) < 0) {
+                if ((error = bind(*s, r->ai_addr, r->ai_addrlen)) < 0) {
                         logerror("bind() failed: %s", strerror(errno));
+                        /* is there a better way to handle a EADDRINUSE? */
                         close(*s);
                         continue;
                 }
@@ -1141,13 +1141,29 @@ free_tls_conn(struct tls_conn_settings *tls_conn)
 {
         if (tls_conn->sslptr)
                 free_tls_sslptr(tls_conn);
-        /* TODO: free queue */
         if (tls_conn->port)        free(tls_conn->port);
         if (tls_conn->subject)     free(tls_conn->subject);
         if (tls_conn->hostname)    free(tls_conn->hostname);
         if (tls_conn->certfile)    free(tls_conn->certfile);
         if (tls_conn->fingerprint) free(tls_conn->fingerprint);
         if (tls_conn)              free(tls_conn);
+}
+
+void
+free_msg_queue(struct filed *f)
+{
+        struct buf_queue *q, *tmp;
+        
+        /* try to send first */
+        tls_send_queue(f);
+        
+        TAILQ_FOREACH_SAFE(q, &f->f_un.f_tls.qhead, entries, tmp) {
+                TAILQ_REMOVE(&f->f_un.f_tls.qhead, q, entries);
+                if (--(q->msg->refcount) == 0)
+                        free(q->msg->line);
+                        free(q->msg);
+                free(q);
+        }
 }
 
 /*

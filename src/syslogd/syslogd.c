@@ -1191,6 +1191,12 @@ sendagain:
                 DPRINTF("[%s]\n", f->f_un.f_tls.tls_conn->hostname);
                 j = snprintf(tlsline, sizeof(tlsline)-1, "%d %s", l, line);
 
+                /* TODO: when creating buf_msg here, every destination gets
+                 * its own copy of the message.
+                 * Instead create buf_msg in printlog and pass the same
+                 * struct to all destinations, so even if queued there
+                 * will only be one copy.
+                 */
                 if ((!f->f_un.f_tls.tls_conn->sslptr)
                  || (!tls_send(f, tlsline, j))) {
                         DPRINTF("-- enqueued for unconnected [%s]\n", f->f_un.f_tls.tls_conn->hostname);
@@ -1600,7 +1606,8 @@ die(struct kevent *ev)
                 }
 #ifndef DISABLE_TLS
                 if (f->f_type == F_TLS) {
-                        free_tls_conn(f->f_un.f_tls.tls_conn);        
+                        free_tls_conn(f->f_un.f_tls.tls_conn);
+                        free_msg_queue(f);
                 }
         }
         
@@ -1640,6 +1647,7 @@ init(struct kevent *ev)
 #ifndef DISABLE_TLS
         struct TLS_Incoming_Conn *tls_in, *tls_tmp;
         char *q;
+        struct kevent *newev;
 #endif /* !DISABLE_TLS */
 
         DPRINTF("init\n");
@@ -1721,6 +1729,7 @@ init(struct kevent *ev)
 #ifndef DISABLE_TLS
                 case F_TLS:
                         free_tls_conn(f->f_un.f_tls.tls_conn);
+                        free_msg_queue(f);
                         break;
 #endif /* !DISABLE_TLS */
                 }
@@ -1784,17 +1793,6 @@ init(struct kevent *ev)
                  || copy_config_value_quoted("tls_bindhost=\"", &tls_opt.bindhost, &p, &q))
                         continue;
         }
-        DPRINTF("Parsed TLS options: tls_ca: %s, tls_cadir: %s, "
-                "tls_cert: %s, tls_key: %s, tls_verify: %s, bind: %s:%s\n",
-                tls_opt.CAfile, tls_opt.CAdir, tls_opt.certfile,
-                tls_opt.keyfile, tls_opt.x509verify, tls_opt.bindhost,
-                tls_opt.bindport);
-        tls_opt.global_TLS_CTX = init_global_TLS_CTX(tls_opt.keyfile,
-                                        tls_opt.certfile, tls_opt.CAfile,
-                                        tls_opt.CAdir, tls_opt.x509verify);
-        DPRINTF("Preparing sockets for TLS\n");
-        TLS_Listen_Set = socksetup_tls(PF_UNSPEC, tls_opt.bindhost, tls_opt.bindport);
-
         rewind(cf);
 #endif /* !DISABLE_TLS */
 
@@ -1939,6 +1937,38 @@ init(struct kevent *ev)
                 DPRINTF("Sending on inet and/or inet6 socket\n");
         }
 
+#ifndef DISABLE_TLS
+        /* TLS setup -- after all local destinations opened  */
+        DPRINTF("Parsed TLS options: tls_ca: %s, tls_cadir: %s, "
+                "tls_cert: %s, tls_key: %s, tls_verify: %s, bind: %s:%s\n",
+                tls_opt.CAfile, tls_opt.CAdir, tls_opt.certfile,
+                tls_opt.keyfile, tls_opt.x509verify, tls_opt.bindhost,
+                tls_opt.bindport);
+        tls_opt.global_TLS_CTX = init_global_TLS_CTX(tls_opt.keyfile,
+                                        tls_opt.certfile, tls_opt.CAfile,
+                                        tls_opt.CAdir, tls_opt.x509verify);
+        DPRINTF("Preparing sockets for TLS\n");
+        TLS_Listen_Set = socksetup_tls(PF_UNSPEC, tls_opt.bindhost, tls_opt.bindport);
+
+        for (f = Files; f; f = f->f_next) {
+                if (f->f_type != F_TLS)
+                        continue;
+                if(!tls_opt.global_TLS_CTX)
+                        tls_opt.global_TLS_CTX = init_global_TLS_CTX(
+                                tls_opt.keyfile, tls_opt.certfile,
+                                tls_opt.CAfile, tls_opt.CAdir,
+                                tls_opt.x509verify);
+                if (!tls_connect(tls_opt.global_TLS_CTX, f->f_un.f_tls.tls_conn)) {
+                        logerror("Unable to connect to TLS server %s", f->f_un.f_tls.tls_conn->hostname);
+                        /* Reconnect after x seconds  */
+                        newev = allocevchange();
+                        EV_SET(newev, (uintptr_t)f, EVFILT_TIMER, EV_ADD | EV_ENABLE | EV_ONESHOT,
+                            0, 1000*TLS_RECONNECT_SEC, KEVENT_UDATA_CAST tls_reconnect);
+                        DPRINTF("scheduled reconnect in %d seconds\n", TLS_RECONNECT_SEC);
+                }
+        }
+#endif /* !DISABLE_TLS */
+
         logmsg(LOG_SYSLOG|LOG_INFO, "syslogd: restart", LocalHostName, ADDDATE);
         DPRINTF("syslogd: restarted\n");
         /*
@@ -1964,9 +1994,6 @@ cfline(char *line, struct filed *f, char *prog, char *host)
         int    error, i, pri, syncfile;
         char   *bp, *p, *q;
         char   buf[MAXLINE];
-#ifndef DISABLE_TLS
-        struct kevent *newev;
-#endif /* !DISABLE_TLS */
 
         DPRINTF("cfline(\"%s\", f, \"%s\", \"%s\")\n", line, prog, host);
 
@@ -2133,20 +2160,6 @@ cfline(char *line, struct filed *f, char *prog, char *host)
                         if (!parse_tls_destination(p, f)) {
                                 logerror("Unable to parse action %s", p);
                                 break;
-                        }
-                        if(!tls_opt.global_TLS_CTX)
-                                tls_opt.global_TLS_CTX = init_global_TLS_CTX(
-                                        tls_opt.keyfile, tls_opt.certfile,
-                                        tls_opt.CAfile, tls_opt.CAdir,
-                                        tls_opt.x509verify);
-
-                        if (!tls_connect(tls_opt.global_TLS_CTX, f->f_un.f_tls.tls_conn)) {
-                                logerror("Unable to connect to TLS server %s", f->f_un.f_tls.tls_conn->hostname);
-                                /* Reconnect after x seconds  */
-                                newev = allocevchange();
-                                EV_SET(newev, (uintptr_t)f, EVFILT_TIMER, EV_ADD | EV_ENABLE | EV_ONESHOT,
-                                    0, 1000*TLS_RECONNECT_SEC, KEVENT_UDATA_CAST tls_reconnect);
-                                DPRINTF("scheduled reconnect in %d seconds\n", TLS_RECONNECT_SEC);
                         }
                         f->f_type = F_TLS;
                         break;

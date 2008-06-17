@@ -76,8 +76,12 @@ TAILQ_HEAD(buf_queue_head, buf_queue);
 #endif /* !DISABLE_TLS */
 
 #include "pathnames.h"
-
 #include <sys/syslog.h>
+
+#ifdef _NO_NETBSD_USR_SRC_
+#undef _PATH_UNIX
+#define _PATH_UNIX "kernel"
+#endif /* _NO_NETBSD_USR_SRC_ */
 
 #ifdef LIBWRAP
 #include <tcpd.h>

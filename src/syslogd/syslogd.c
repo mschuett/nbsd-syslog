@@ -381,12 +381,12 @@ getgroup:
         linebufsize++;
         linebuf = malloc(linebufsize);
         
-        msgbuf = malloc(sizeof(struct buf_msg));
+        msgbuf = malloc(sizeof(*msgbuf));
         if (linebuf == NULL || msgbuf == NULL) {
                 logerror("Couldn't allocate buffer");
                 die(NULL);
         }
-        bzero(msgbuf, sizeof(struct buf_msg));
+        (void)memset(msgbuf, 0, sizeof(*msgbuf));
         msgbuf->refcount = 1;
 
 #ifndef SUN_LEN
@@ -1038,7 +1038,7 @@ logmsg(int pri, char *msg, char *from, int flags)
                         TIMESTAMPLEN, timestamp, from);
                 /* someone wants to queue this msg --> copy */
                 msgbuf->linelen = strlen(msg);
-                if (!(msgbuf_new = malloc(sizeof(struct buf_msg)))
+                if (!(msgbuf_new = malloc(sizeof(*msgbuf_new)))
                  || !(msgbuf->line = malloc(msgbuf->linelen + 1))
                  || !(msgbuf->timestamp = malloc(TIMESTAMPLEN+1))
                  || !(msgbuf->host = malloc(strlen(from)+1))) {
@@ -1056,7 +1056,7 @@ logmsg(int pri, char *msg, char *from, int flags)
                 strcpy(msgbuf->host, from);
                 msgbuf->flags = flags;
                 
-                bzero(msgbuf_new, sizeof(struct buf_msg));
+                (void)memset(msgbuf_new, 0, sizeof(*msgbuf_new));
                 msgbuf_new->refcount = 1;
                 msgbuf->refcount--;
                 msgbuf = msgbuf_new;
@@ -1261,8 +1261,10 @@ sendagain:
 
 #ifndef DISABLE_TLS
         case F_TLS:
-                DPRINTF("[%s]\t", f->f_un.f_tls.tls_conn->hostname);
-                j = snprintf(tlsline, sizeof(tlsline)-1, "%d %s", l, line);
+                DPRINTF("[%s]\n", f->f_un.f_tls.tls_conn->hostname);
+                j = snprintf(tlsline, sizeof(tlsline), "%d %s", l, line);
+                if (j >= sizeof(tlsline))
+                        j = sizeof(tlsline) - 1;
 
                 if ((f->f_un.f_tls.tls_conn->sslptr)
                  && (tls_send(f, tlsline, j))) {
@@ -1868,6 +1870,7 @@ init(struct kevent *ev)
                  || copy_config_value_quoted("tls_bindport=\"", &tls_opt.bindport, &p, &q)
                  || copy_config_value_quoted("tls_bindhost=\"", &tls_opt.bindhost, &p, &q))
                         continue;
+                /* TODO: check for invalid keywords and give warning */ 
         }
         rewind(cf);
 #endif /* !DISABLE_TLS */
@@ -1894,13 +1897,13 @@ init(struct kevent *ev)
                                 continue;
                 }
 #ifndef DISABLE_TLS
-                if(!strncasecmp(p, "tls_ca", strlen("tls_ca"))
-                 ||!strncasecmp(p, "tls_cadir", strlen("tls_cadir"))
-                 ||!strncasecmp(p, "tls_cert", strlen("tls_cert"))
-                 ||!strncasecmp(p, "tls_key", strlen("tls_key"))
-                 ||!strncasecmp(p, "tls_verify", strlen("tls_verify"))
-                 ||!strncasecmp(p, "tls_bindport", strlen("tls_bindport"))
-                 ||!strncasecmp(p, "tls_bindhost", strlen("tls_bindhost"))) {
+                if(!strncasecmp(p, "tls_ca", sizeof("tls_ca")-1)
+                 ||!strncasecmp(p, "tls_cadir", sizeof("tls_cadir")-1)
+                 ||!strncasecmp(p, "tls_cert", sizeof("tls_cert")-1)
+                 ||!strncasecmp(p, "tls_key", sizeof("tls_key")-1)
+                 ||!strncasecmp(p, "tls_verify", sizeof("tls_verify")-1)
+                 ||!strncasecmp(p, "tls_bindport", sizeof("tls_bindport")-1)
+                 ||!strncasecmp(p, "tls_bindhost", sizeof("tls_bindhost")-1)) {
                         DPRINTF("skip cline\n");
                         continue;
                  }

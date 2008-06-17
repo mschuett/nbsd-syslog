@@ -5,17 +5,8 @@
 #ifndef _TLS_STUFF_H
 #define _TLS_STUFF_H
 
-/* includes data from TLS/tls_stuff.h and TLS/common.h */
-#include <stdbool.h>
-#include <strings.h>
-#include <string.h>
-#include <stdlib.h>
-#include <openssl/ssl.h>
-#include <openssl/err.h>
-#include <openssl/x509.h>
 #include <openssl/x509v3.h>
-#include <openssl/asn1.h>
-#include <openssl/evp.h>
+#include <openssl/err.h>
 #include <openssl/rand.h>
 
 #define SERVICENAME "55555"
@@ -94,22 +85,22 @@ struct daemon_status {
 #define TLS_TEMP_ERROR 2        /* recoverable error condition, but try again */
 #define TLS_PERM_ERROR 3        /* non-recoverable error condition, closed TLS and socket */
 
-SSL_CTX *init_global_TLS_CTX(char const *keyfilename, char const *certfilename, char const *CAfile, char const *CApath, char const *x509verify);
+SSL_CTX *init_global_TLS_CTX(const char *keyfilename, const char *certfilename, const char *CAfile, const char *CApath, const char *strx509verify);
 int check_peer_cert(int preverify_ok, X509_STORE_CTX * store);
 bool tls_connect(SSL_CTX *context, struct tls_conn_settings *conn);
-bool get_fingerprint(X509 * cert, char **returnstring, char *alg_name);
-bool match_hostnames(X509 * cert, struct tls_conn_settings *conn);
-bool match_fingerprint(X509 * cert, struct tls_conn_settings *conn);
-int *socksetup_tls(int af, const char *bindhostname, const char *port);
+bool get_fingerprint(const X509 *cert, char **returnstring, const char *alg_name);
+bool match_hostnames(X509 *cert, const struct tls_conn_settings *conn);
+bool match_fingerprint(const X509 *cert, const struct tls_conn_settings *conn);
+int *socksetup_tls(const int af, const char *bindhostname, const char *port);
 void free_tls_sslptr(struct tls_conn_settings *tls_conn);
 void free_tls_conn(struct tls_conn_settings *tls_conn);
 void free_msg_queue(struct filed *f);
-int tls_examine_error(char *functionname, SSL *ssl, struct tls_conn_settings *tls_conn, int rc);
+int tls_examine_error(const char *functionname, const SSL *ssl, struct tls_conn_settings *tls_conn, const int rc);
 
 /* forward declarations */
-bool copy_config_value(char **mem, char *p, char *q);
-bool copy_config_value_quoted(char *keyword, char **mem, char **p, char **q);
-bool parse_tls_destination(char *line, struct filed *f);
+bool copy_config_value(char **mem, const char *p, const char *q);
+bool copy_config_value_quoted(const char *keyword, char **mem, char **p, char **q);
+bool parse_tls_destination(char *p, struct filed *f);
 void tls_split_messages(struct TLS_Incoming_Conn *c);
 
 void dispatch_accept_socket(struct kevent *ev);

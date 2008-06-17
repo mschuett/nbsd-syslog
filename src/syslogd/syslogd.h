@@ -95,7 +95,7 @@ TAILQ_HEAD(buf_queue_head, buf_queue);
 #define FREE_SSL_CTX(x) if (x)     { SSL_CTX_free(x); x = NULL; }
 
 #define MAXUNAMES       20      /* maximum number of user names */
-#define TIMESTAMPLEN    16
+#define TIMESTAMPLEN    15
 
 /*
  * Flags to logmsg().
@@ -183,7 +183,9 @@ struct tls_global_options_t {
 SLIST_HEAD(TLS_Incoming, TLS_Incoming_Conn);
  
 struct TLS_Incoming_Conn {
-        char inbuf[2*MAXLINE];           /* input buffer */
+        /* char inbuf[2*MAXLINE]; */
+        char *inbuf;                    /* input buffer */
+        size_t inbuflen;
         SLIST_ENTRY(TLS_Incoming_Conn) entries;
         struct tls_conn_settings *tls_conn;
         SSL *ssl;
@@ -191,8 +193,9 @@ struct TLS_Incoming_Conn {
         unsigned int cur_msg_len;       /* length of current msg */
         unsigned int cur_msg_start;     /* beginning of current msg */
         unsigned int read_pos;          /* ring buffer position to write to */
-        unsigned int errorcount;         /* to close faulty connections */
-        bool closenow;                   /* close connection as soon as buffer processed */
+        unsigned int errorcount;        /* to close faulty connections */
+        bool closenow;                  /* close connection as soon as buffer processed */
+        bool dontsave;                  /* for receiving oversized messages w/o saving them */
 };
 
 #endif /* !DISABLE_TLS */

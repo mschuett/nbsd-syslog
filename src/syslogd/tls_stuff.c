@@ -137,7 +137,7 @@ get_fingerprint(const X509 *cert, char **returnstring, const char *alg_name)
          * + alg_name with delimiter */
         memsize = (len * 3) + strlen(OBJ_nid2sn(EVP_MD_type(digest))) + 1;
         if (!(*returnstring = malloc(memsize))) {
-                DPRINTF("cannot allocate %d bytes memory\n", memsize);
+                logerror("Unable to allocate memory");
                 return false;
         }
         /* 'normalise' the algorithm name */
@@ -217,8 +217,8 @@ match_hostnames(X509 *cert, const struct tls_conn_settings *conn)
                 if (len > 0) {
                         DPRINTF("found CN: %.*s\n", len, ubuf);
                         /* hostname */
-                        if ((conn->subject && !strncasecmp(conn->subject, (char*)ubuf, len))
-                            || (conn->hostname && !strncasecmp(conn->hostname, (char*)ubuf, len))) {
+                        if ((conn->subject && !strncasecmp(conn->subject, (const char*)ubuf, len))
+                            || (conn->hostname && !strncasecmp(conn->hostname, (const char*)ubuf, len))) {
                                 OPENSSL_free(ubuf);
                                 return true;
                         }
@@ -364,7 +364,7 @@ socksetup_tls(const int af, const char *bindhostname, const char *port)
                 continue;
         socks = malloc((maxs+1) * sizeof(int));
         if (!socks) {
-                logerror("Couldn't allocate memory for sockets");
+                logerror("Unable to allocate memory for sockets");
                 die(NULL);
         }
 
@@ -546,19 +546,17 @@ copy_config_value(char **mem, const char *p, const char *q)
 {
         const size_t len = 1 + q - p;
         if (!(*mem = malloc(len))) {
-                logerror("Couldn't allocate memory for TLS config\n");
+                logerror("Unable to allocate memory for TLS config\n");
                 return false;
         }
         strlcpy(*mem, p, len);
-        if ((*mem)[q - p] != '\0')
-                logerror("copy_config_value(): (*mem)[q - p] != '\0'");
         return true;
 }
 
 bool
 copy_config_value_quoted(const char *keyword, char **mem, char **p, char **q)
 {
-        if (strcasecmp(*p, keyword))
+        if (strncasecmp(*p, keyword, strlen(keyword)))
                 return false;
         *q = *p += strlen(keyword);
         if (!(*q = strchr(*p, '"'))) {
@@ -586,12 +584,11 @@ parse_tls_destination(char *p, struct filed *f)
                 return false;
         }
 
-        if (!(f->f_un.f_tls.tls_conn = malloc(sizeof(*f->f_un.f_tls.tls_conn)))) {
+        if (!(f->f_un.f_tls.tls_conn = calloc(1, sizeof(*f->f_un.f_tls.tls_conn)))) {
                 logerror("Couldn't allocate memory for TLS config");
                 return false;
         }
         /* default values */
-        (void)memset(f->f_un.f_tls.tls_conn, 0, sizeof(*f->f_un.f_tls.tls_conn));
         f->f_un.f_tls.tls_conn->x509verify = X509VERIFY_NONE;
         f->f_un.f_tls.qhead = 
                 ((struct buf_queue_head)
@@ -694,7 +691,7 @@ tls_send_queue(struct filed *f)
                 qptr = TAILQ_FIRST(&f->f_un.f_tls.qhead);
                 i = qptr->msg->refcount;
                 
-                strncpy(f_tmp.f_lasttime, qptr->msg->timestamp, TIMESTAMPLEN);
+                strlcpy(f_tmp.f_lasttime, qptr->msg->timestamp, TIMESTAMPLEN+1);
                 f_tmp.f_host = qptr->msg->host;
                 
                 fprintlog(&f_tmp, qptr->msg->flags, qptr->msg->line, qptr->msg);
@@ -718,6 +715,7 @@ tls_send_queue(struct filed *f)
                         } else {
                                 logerror("Lost message in queue, will be duplicated");
                         }
+                        return;
                 }
         }                
 }
@@ -758,18 +756,18 @@ try_SSL_accept:
                 return;
         }
         /* else */
-        if (!(tls_in = malloc(sizeof(*tls_in)))) {
+        if (!(tls_in = calloc(1, sizeof(*tls_in)))
+         || !(tls_in->inbuf = malloc(MAXLINE))) {
                 logerror("Unable to allocate memory for accepted connection");
+                free(tls_in);
                 free_tls_conn(conn_info);
                 return;
         }        
-        (void)memset(tls_in, 0, sizeof(*tls_in));
         tls_in->tls_conn = conn_info;
         tls_in->socket = SSL_get_fd(conn_info->sslptr);
         tls_in->ssl = conn_info->sslptr;
         tls_in->inbuf[0] = '\0';
-        tls_in->read_pos = tls_in->cur_msg_start = \
-                tls_in->cur_msg_len = tls_in->closenow = 0;
+        tls_in->inbuflen = MAXLINE;
         SLIST_INSERT_HEAD(&TLS_Incoming_Head, tls_in, entries);
 
         newev = allocevchange();
@@ -805,7 +803,6 @@ dispatch_accept_socket(struct kevent *ev)
         int newsock, rc;
         SSL *ssl;
         struct tls_conn_settings *conn_info;
-        struct TLS_Incoming_Conn *tls_in;
         struct kevent newev;
         char hbuf[NI_MAXHOST];
         char *peername;
@@ -822,10 +819,8 @@ dispatch_accept_socket(struct kevent *ev)
         reject = !hosts_access(&req);
 #endif
         addrlen = sizeof(frominet);
-        if (!(conn_info = malloc(sizeof(*conn_info)))
-         || !(tls_in = malloc(sizeof(*tls_in)))) {
-                free(conn_info);
-                logerror("cannot allocate memory");
+        if (!(conn_info = calloc(1, sizeof(*conn_info)))) {
+                logerror("Unable to allocate memory");
                 return;
         }
           
@@ -840,7 +835,7 @@ dispatch_accept_socket(struct kevent *ev)
         }
         else {
                 if (!(peername = malloc(strlen(hbuf)+1))) {
-                        DPRINTF("cannot allocate %d bytes memory\n", strlen(hbuf)+1);
+                        logerror("Unable to allocate memory\n");
                         return;
                 }
                 (void)strlcpy(peername, hbuf, strlen(hbuf)+1);
@@ -868,7 +863,6 @@ dispatch_accept_socket(struct kevent *ev)
         }
         /* store connection details inside ssl object, used to verify
          * cert and immediately match against hostname */
-        (void)memset(conn_info, 0, sizeof(*conn_info));
         conn_info->hostname = peername;
         conn_info->x509verify = X509VERIFY_NONE;
         conn_info->sslptr = ssl;
@@ -929,8 +923,8 @@ try_SSL_read:
         DPRINTF("incoming status is msg_start %d, msg_len %d, pos %d\n",
                 c->cur_msg_start, c->cur_msg_len, c->read_pos);
         DPRINTF("calling SSL_read(%p, %p, %d)\n", c->ssl,
-                &(c->inbuf[c->read_pos]), sizeof(c->inbuf) - c->read_pos);
-        rc = SSL_read(c->ssl, &(c->inbuf[c->read_pos]), sizeof(c->inbuf) - c->read_pos);
+                &(c->inbuf[c->read_pos]), c->inbuflen - c->read_pos);
+        rc = SSL_read(c->ssl, &(c->inbuf[c->read_pos]), c->inbuflen - c->read_pos);
         if (rc <= 0) {
                 error = tls_examine_error("SSL_read()", c->ssl, c->tls_conn, rc);
                 switch (error) {
@@ -966,14 +960,18 @@ try_SSL_read:
 
 /* moved message splitting out of dispatching function.
  * now we can call it recursively.
+ * 
+ * TODO: the code for oversized messages still needs testing,
+ * especially for the skipping case.
  */
 void
 tls_split_messages(struct TLS_Incoming_Conn *c)
 {
 /* define only to make it better readable */
 #define MSG_END_OFFSET (c->cur_msg_start + c->cur_msg_len)
-        uint_fast16_t offset;
-        char numbuf[PREFIXLENGTH+1];
+        unsigned int offset = 0;
+        unsigned int msglen = 0;
+        char *newbuf;
         
         DPRINTF("tls_split_messages() -- incoming status is " \
                 "msg_start %d, msg_len %d, pos %d\n",
@@ -982,29 +980,66 @@ tls_split_messages(struct TLS_Incoming_Conn *c)
         if(c->closenow && !c->read_pos) {
                 /* close socket */
                 free_tls_conn(c->tls_conn);
+                FREEPTR(c->inbuf);
                 SLIST_REMOVE(&TLS_Incoming_Head, c, TLS_Incoming_Conn, entries);
                 free(c);
                 return;
         }
         if (!c->read_pos)
                 return;
-        if (c->read_pos < MSG_END_OFFSET)
+                
+        if (c->dontsave && c->read_pos < MSG_END_OFFSET) {
+                c->cur_msg_len -= c->read_pos;
+                c->read_pos = 0;
+        } else if (c->dontsave && c->read_pos == MSG_END_OFFSET) {
+                c->cur_msg_start = c->cur_msg_len = c->read_pos = 0;
+                c->dontsave = false;
+        } else if (c->dontsave && c->read_pos > MSG_END_OFFSET) {
+                /* move remaining input to start of buffer */
+                DPRINTF("move inbuf of length %d by %d chars\n",
+                        c->read_pos - (MSG_END_OFFSET),
+                        MSG_END_OFFSET);
+                memmove(&c->inbuf[0],
+                        &c->inbuf[MSG_END_OFFSET],
+                        c->read_pos - (MSG_END_OFFSET));
+                c->read_pos -= (MSG_END_OFFSET);
+                c->cur_msg_start = c->cur_msg_len = 0;
+                c->dontsave = false;
+        }
+        if (c->read_pos < MSG_END_OFFSET) {
                 return;
+        }
                 
         /* read length prefix, always at start of buffer */
-        offset = 0;
         while (isdigit((unsigned char)c->inbuf[offset])
-                && offset < c->read_pos
-                && offset < PREFIXLENGTH) {
-                numbuf[offset] = c->inbuf[offset];
-                numbuf[++offset] = '\0';
+                && offset < c->read_pos) {
+                msglen *= 10;
+                msglen += c->inbuf[offset] - '0';
+                offset++;
         }
         if (offset == c->read_pos) {
+                /* next invocation will have more data */
                 return;
         }
-        if (((c->inbuf[offset] != ' ') && !isdigit((unsigned char)c->inbuf[offset]))
-                || offset == PREFIXLENGTH) {
-                /* found non-digit in prefix or filled buffer */
+        if (c->inbuf[offset] == ' ') {
+                c->cur_msg_len = msglen;
+                c->cur_msg_start = offset + 1;
+                if (MSG_END_OFFSET > c->inbuflen) {
+                        newbuf = realloc(c->inbuf, MSG_END_OFFSET);
+                        if (newbuf) {
+                                DPRINTF("Reallocated inbuf\n");
+                                c->inbuflen = MSG_END_OFFSET;
+                                c->inbuf = newbuf;
+                        } else {
+                                logerror("Couldn't reallocate buffer, will skip this message");
+                                c->dontsave = true;
+                                c->cur_msg_len -= c->read_pos;
+                                c->cur_msg_start = 0;
+                                c->read_pos = 0;
+                        }
+                }
+        } else {
+                /* found non-digit in prefix */
                 /* Question: would it be useful to skip this message and
                  * try to find next message by looking for its beginning?
                  * IMHO not.   
@@ -1015,17 +1050,7 @@ tls_split_messages(struct TLS_Incoming_Conn *c)
                 SLIST_REMOVE(&TLS_Incoming_Head, c, TLS_Incoming_Conn, entries);
                 free(c);
                 return;
-        } else if (c->inbuf[offset] == ' ') {
-                c->cur_msg_len = strtol(numbuf, NULL, 10);
-                c->cur_msg_start = offset + 1;
-                if (c->cur_msg_len > linebufsize) {
-                        /* TODO: handle messages too large for our buffer
-                         *  --> either receive and truncate or malloc()
-                         */
-                        logerror("c->cur_msg_len > linebufsize");
-                        die(NULL);
-                }
-        }
+        } 
         /* read one syslog message */        
         if (c->read_pos >= MSG_END_OFFSET) {
                 /* process complete msg */

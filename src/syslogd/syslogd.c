@@ -381,12 +381,11 @@ getgroup:
         linebufsize++;
         linebuf = malloc(linebufsize);
         
-        msgbuf = malloc(sizeof(*msgbuf));
+        msgbuf = calloc(1, sizeof(*msgbuf));
         if (linebuf == NULL || msgbuf == NULL) {
                 logerror("Couldn't allocate buffer");
                 die(NULL);
         }
-        (void)memset(msgbuf, 0, sizeof(*msgbuf));
         msgbuf->refcount = 1;
 
 #ifndef SUN_LEN
@@ -881,7 +880,7 @@ logmsg(int pri, char *msg, char *from, int flags)
          * Check to see if msg looks non-standard.
          */
         msglen = strlen(msg);
-        if (msglen < 16 || msg[3] != ' ' || msg[6] != ' ' ||
+        if (msglen < TIMESTAMPLEN+1 || msg[3] != ' ' || msg[6] != ' ' ||
             msg[9] != ':' || msg[12] != ':' || msg[15] != ' ')
                 flags |= ADDDATE;
 
@@ -890,8 +889,8 @@ logmsg(int pri, char *msg, char *from, int flags)
                 timestamp = ctime(&now) + 4;
         else {
                 timestamp = msg;
-                msg += 16;
-                msglen -= 16;
+                msg += TIMESTAMPLEN+1;
+                msglen -= TIMESTAMPLEN+1;
         }
 
         /* skip leading whitespace */
@@ -1038,25 +1037,23 @@ logmsg(int pri, char *msg, char *from, int flags)
                         TIMESTAMPLEN, timestamp, from);
                 /* someone wants to queue this msg --> copy */
                 msgbuf->linelen = strlen(msg);
-                if (!(msgbuf_new = malloc(sizeof(*msgbuf_new)))
+                if (!(msgbuf_new = calloc(1, sizeof(*msgbuf_new)))
                  || !(msgbuf->line = malloc(msgbuf->linelen + 1))
                  || !(msgbuf->timestamp = malloc(TIMESTAMPLEN+1))
                  || !(msgbuf->host = malloc(strlen(from)+1))) {
                         free(msgbuf_new);
                         free(msgbuf->line);
                         free(msgbuf->timestamp);
-                        free(msgbuf->host);
                         logerror("Unable to allocate memory");
                         return;
                 }
                 memcpy(msgbuf->line, msg, msgbuf->linelen);
                 msgbuf->line[msgbuf->linelen] = '\0';
-                memcpy(msgbuf->timestamp, timestamp, TIMESTAMPLEN);
-                msgbuf->timestamp[TIMESTAMPLEN] = '\0';
+
+                strlcpy(msgbuf->timestamp, timestamp, TIMESTAMPLEN+1);
                 strcpy(msgbuf->host, from);
                 msgbuf->flags = flags;
-                
-                (void)memset(msgbuf_new, 0, sizeof(*msgbuf_new));
+
                 msgbuf_new->refcount = 1;
                 msgbuf->refcount--;
                 msgbuf = msgbuf_new;
@@ -1100,6 +1097,7 @@ fprintlog(struct filed *f, int flags, char *msg, struct buf_msg *buffer)
         struct buf_queue *qentry;
 #endif /* !DISABLE_TLS */
 
+        DPRINTF("fprintlog(%p, %d, %p, %p)\n", f, flags, msg, buffer);
         v = iov;
         if (f->f_type == F_WALL) {
                 v->iov_base = greetings;
@@ -1272,9 +1270,9 @@ sendagain:
                         break;
                 }
                 if(buffer && msg) {
-                        qentry = malloc(sizeof(struct buf_queue));
+                        qentry = malloc(sizeof(*qentry));
                         if (!qentry) {
-                                DPRINTF("unconnected, msg dropped\n");
+                                DPRINTF("unconnected, no memory, msg dropped\n");
                                 logerror("Unable to allocate memory");
                                 break;
                         }
@@ -1667,6 +1665,7 @@ die(struct kevent *ev)
         while (!SLIST_EMPTY(&TLS_Incoming_Head)) {
                 tls_in = SLIST_FIRST(&TLS_Incoming_Head);
                 SLIST_REMOVE_HEAD(&TLS_Incoming_Head, entries);
+                FREEPTR(tls_in->inbuf);
                 free_tls_conn(tls_in->tls_conn);
                 free(tls_in);
         }
@@ -1752,6 +1751,7 @@ init(struct kevent *ev)
         while (!SLIST_EMPTY(&TLS_Incoming_Head)) {
                 tls_in = SLIST_FIRST(&TLS_Incoming_Head);
                 SLIST_REMOVE_HEAD(&TLS_Incoming_Head, entries);
+                FREEPTR(tls_in->inbuf);
                 free_tls_conn(tls_in->tls_conn);
                 free(tls_in);
         }
@@ -1869,7 +1869,7 @@ init(struct kevent *ev)
                  || copy_config_value_quoted("tls_verify=\"", &tls_opt.x509verify, &p, &q)
                  || copy_config_value_quoted("tls_bindport=\"", &tls_opt.bindport, &p, &q)
                  || copy_config_value_quoted("tls_bindhost=\"", &tls_opt.bindhost, &p, &q))
-                        continue;
+                        DPRINTF("found tls-option\n");
                 /* TODO: check for invalid keywords and give warning */ 
         }
         rewind(cf);
@@ -2574,7 +2574,10 @@ log_deadchild(pid_t pid, int status, const char *name)
         logerror(buf);
 }
 
-static struct kevent changebuf[8];
+/* I found the original value (8) too small.
+ * Is there any way to determine it dynamically? */
+#define KEVENT_CHANGEBUF_SIZE 16
+static struct kevent changebuf[KEVENT_CHANGEBUF_SIZE];
 static int nchanges;
 
 struct kevent *

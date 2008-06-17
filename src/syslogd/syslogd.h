@@ -57,9 +57,13 @@
 
 /* simple message buffer container */
 struct buf_msg {
+        char *timestamp;
+        char *host;
         char *line;
-        size_t len;
-        unsigned short int refcount;
+        size_t linelen;
+        int pri;
+        int flags;
+        unsigned int refcount;
 };
 
 /* queue of messages */
@@ -87,6 +91,7 @@ TAILQ_HEAD(buf_queue_head, buf_queue);
 #define FREE_SSL_CTX(x) if (x)     { SSL_CTX_free(x); x = NULL; }
 
 #define MAXUNAMES       20      /* maximum number of user names */
+#define TIMESTAMPLEN    16
 
 /*
  * Flags to logmsg().

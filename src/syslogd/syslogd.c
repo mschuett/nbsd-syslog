@@ -162,7 +162,7 @@ int     deadq_remove(pid_t);
 int     decode(const char *, CODE *);
 void    die(struct kevent *);   /* SIGTERM kevent dispatch routine */
 void    domark(struct kevent *);/* timer kevent dispatch routine */
-void    fprintlog(struct filed *, int, char *);
+void    fprintlog(struct filed *, int, char *, struct buf_msg *);
 int     getmsgbufsize(void);
 int*    socksetup(int, const char *);
 void    init(struct kevent *);  /* SIGHUP kevent dispatch routine */
@@ -197,6 +197,18 @@ static void dispatch_read_funix(struct kevent *);
  */
 char *linebuf;
 size_t linebufsize;
+
+/*
+ * New line buffer:
+ * In normal operation this struct exists only once and is
+ * reused for every new message.
+ * If a received message is too large then a second buffer
+ * can be allocated for that message.
+ * If a message cannot be delivered, then its linebuf can be
+ * queued and a new one has to be allocated
+ */ 
+struct buf_msg *msgbuf;
+
 static const char *bindhostname = NULL;
 
 #define A_CNT(x)        (sizeof((x)) / sizeof((x)[0]))
@@ -368,10 +380,14 @@ getgroup:
                 linebufsize = MAXLINE;
         linebufsize++;
         linebuf = malloc(linebufsize);
-        if (linebuf == NULL) {
-                logerror("Couldn't allocate line buffer");
+        
+        msgbuf = malloc(sizeof(struct buf_msg));
+        if (linebuf == NULL || msgbuf == NULL) {
+                logerror("Couldn't allocate buffer");
                 die(NULL);
         }
+        bzero(msgbuf, sizeof(struct buf_msg));
+        msgbuf->refcount = 1;
 
 #ifndef SUN_LEN
 #define SUN_LEN(unp) (strlen((unp)->sun_path) + 2)
@@ -403,7 +419,7 @@ getgroup:
         if ((fklog = open(_PATH_KLOG, O_RDONLY, 0)) < 0) {
                 DPRINTF("Can't open `%s' (%d)\n", _PATH_KLOG, errno);
         } else {
-                DPRINTF("Listening on kernel log `%s'\n", _PATH_KLOG);
+                DPRINTF("Listening on kernel log `%s' with fd %d\n", _PATH_KLOG, fklog);
         }
 
 #ifndef DISABLE_TLS
@@ -505,6 +521,7 @@ getgroup:
 
         if (fklog >= 0) {
                 ev = allocevchange();
+                DPRINTF("register klog for fd %d with ev@%p\n", fklog, ev);
                 EV_SET(ev, fklog, EVFILT_READ, EV_ADD | EV_ENABLE,
                     0, 0, KEVENT_UDATA_CAST dispatch_read_klog);
         }
@@ -557,7 +574,7 @@ dispatch_read_klog(struct kevent *ev)
         ssize_t rv;
         int fd = ev->ident;
 
-        DPRINTF("Kernel log active\n");
+        DPRINTF("Kernel log active (ev@%p, fd %d, linebuf@%p, size %d)\n", ev, fd, linebuf, linebufsize-1);
 
         rv = read(fd, linebuf, linebufsize - 1);
         if (rv > 0) {
@@ -599,7 +616,7 @@ dispatch_read_funix(struct kevent *ev)
                 return;
         }
 
-        DPRINTF("Unix socket (%.*s) active\n", (myname.sun_len-sizeof(myname.sun_len)-sizeof(myname.sun_family)), myname.sun_path);
+        DPRINTF("Unix socket (%.*s) active (ev@%p, fd %d, linebuf@%p, size %d)\n", (myname.sun_len-sizeof(myname.sun_len)-sizeof(myname.sun_family)), myname.sun_path, ev, fd, linebuf, linebufsize-1);
 
         sunlen = sizeof(fromunix);
         rv = recvfrom(fd, linebuf, MAXLINE, 0,
@@ -627,7 +644,7 @@ dispatch_read_finet(struct kevent *ev)
         int fd = ev->ident;
         int reject = 0;
 
-        DPRINTF("inet socket active\n");
+        DPRINTF("inet socket active (ev@%p, fd %d, linebuf@%p, size %d)\n", ev, fd, linebuf, linebufsize-1);
 
 #ifdef LIBWRAP
         request_init(&req, RQ_DAEMON, "syslogd", RQ_FILE, fd, NULL);
@@ -848,12 +865,18 @@ logmsg(int pri, char *msg, char *from, int flags)
         char *timestamp;
         char prog[NAME_MAX + 1];
         char buf[MAXLINE + 1];
+        struct buf_msg *msgbuf_new;
 
         DPRINTF("logmsg: pri 0%o, flags 0x%x, from %s, msg %s\n",
             pri, flags, from, msg);
 
         omask = sigblock(sigmask(SIGHUP)|sigmask(SIGALRM));
 
+        /* prepare msgbuf */
+        if (msgbuf->refcount != 1) {
+                DPRINTF("msgbuf->refcount != 1\n");
+        }
+        
         /*
          * Check to see if msg looks non-standard.
          */
@@ -908,7 +931,7 @@ logmsg(int pri, char *msg, char *from, int flags)
 
                 if (f->f_file >= 0) {
                         (void)strncpy(f->f_lasttime, timestamp, 15);
-                        fprintlog(f, flags, msg);
+                        fprintlog(f, flags, msg, NULL);
                         (void)close(f->f_file);
                 }
                 (void)sigsetmask(omask);
@@ -986,13 +1009,13 @@ logmsg(int pri, char *msg, char *from, int flags)
                          * in the future.
                          */
                         if (now > REPEATTIME(f)) {
-                                fprintlog(f, flags, (char *)NULL);
+                                fprintlog(f, flags, (char *)NULL, NULL);
                                 BACKOFF(f);
                         }
                 } else {
                         /* new line, save it */
                         if (f->f_prevcount)
-                                fprintlog(f, 0, (char *)NULL);
+                                fprintlog(f, 0, (char *)NULL, NULL);
                         f->f_repeatcount = 0;
                         f->f_prevpri = pri;
                         (void)strncpy(f->f_lasttime, timestamp, 15);
@@ -1002,19 +1025,69 @@ logmsg(int pri, char *msg, char *from, int flags)
                                 f->f_prevlen = msglen;
                                 (void)strlcpy(f->f_prevline, msg,
                                     sizeof(f->f_prevline));
-                                fprintlog(f, flags, (char *)NULL);
+                                fprintlog(f, flags, (char *)NULL, NULL);
                         } else {
                                 f->f_prevline[0] = 0;
                                 f->f_prevlen = 0;
-                                fprintlog(f, flags, msg);
+                                fprintlog(f, flags, msg, msgbuf);
                         }
                 }
+        }
+        if (msgbuf->refcount > 1) {
+                DPRINTF("copying message: %p, %.*s %s\n", msgbuf,
+                        TIMESTAMPLEN, timestamp, from);
+                /* someone wants to queue this msg --> copy */
+                msgbuf->linelen = strlen(msg);
+                if (!(msgbuf_new = malloc(sizeof(struct buf_msg)))
+                 || !(msgbuf->line = malloc(msgbuf->linelen + 1))
+                 || !(msgbuf->timestamp = malloc(TIMESTAMPLEN+1))
+                 || !(msgbuf->host = malloc(strlen(from)+1))) {
+                        free(msgbuf_new);
+                        free(msgbuf->line);
+                        free(msgbuf->timestamp);
+                        free(msgbuf->host);
+                        logerror("Unable to allocate memory");
+                        return;
+                }
+                memcpy(msgbuf->line, msg, msgbuf->linelen);
+                msgbuf->line[msgbuf->linelen] = '\0';
+                memcpy(msgbuf->timestamp, timestamp, TIMESTAMPLEN);
+                msgbuf->timestamp[TIMESTAMPLEN] = '\0';
+                strcpy(msgbuf->host, from);
+                msgbuf->flags = flags;
+                
+                bzero(msgbuf_new, sizeof(struct buf_msg));
+                msgbuf_new->refcount = 1;
+                msgbuf->refcount--;
+                msgbuf = msgbuf_new;
         }
         (void)sigsetmask(omask);
 }
 
+/* 
+ * Added parameter struct buf_msg *buffer
+ * If present (!= NULL) then a destination that is unable to send the
+ * message can queue the message for later delivery.
+ * To do so it has to save the pointer (ie add it to its queue)
+ * and increment buffer->refcount.
+ *
+ * Note: At this time buffer->refcount is the only valid field in the buffer.
+ * All other fields are undefined. Only after fprintlog() increases it
+ * the caller will allocate space and copy the required data.
+ * 
+ * This design avoids memory allocations and copies in 'normal mode'
+ * where every message is delivered immediately and only consumes the
+ * additional space and time if a destination is really unavailable.
+ * 
+ * 2nd Note: several parts of the message are assembled in fprintlog.
+ * So buf_msg does not contain the line as it will be send to the network,
+ * but several parts that will have to be joined and formatted again.
+ * 
+ * TODO: split fprintlog into two functions, one for formatting
+ * and one for sending? 
+ */
 void
-fprintlog(struct filed *f, int flags, char *msg)
+fprintlog(struct filed *f, int flags, char *msg, struct buf_msg *buffer)
 {
         struct iovec iov[10];
         struct iovec *v;
@@ -1188,28 +1261,27 @@ sendagain:
 
 #ifndef DISABLE_TLS
         case F_TLS:
-                DPRINTF("[%s]\n", f->f_un.f_tls.tls_conn->hostname);
+                DPRINTF("[%s]\t", f->f_un.f_tls.tls_conn->hostname);
                 j = snprintf(tlsline, sizeof(tlsline)-1, "%d %s", l, line);
 
-                /* TODO: when creating buf_msg here, every destination gets
-                 * its own copy of the message.
-                 * Instead create buf_msg in printlog and pass the same
-                 * struct to all destinations, so even if queued there
-                 * will only be one copy.
-                 */
-                if ((!f->f_un.f_tls.tls_conn->sslptr)
-                 || (!tls_send(f, tlsline, j))) {
-                        DPRINTF("-- enqueued for unconnected [%s]\n", f->f_un.f_tls.tls_conn->hostname);
-                        if (!(qentry = malloc(sizeof(struct buf_queue)))
-                         || !(qentry->msg = malloc(sizeof(struct buf_msg)))
-                         || !(qentry->msg->line = malloc(j)))
-                                logerror("Unable to allocate memory, dropping undelivered TLS message\n");
-                        else {
-                                memcpy(qentry->msg->line, tlsline, j);
-                                qentry->msg->len = j;
-                                qentry->msg->refcount = 1;
-                                TAILQ_INSERT_TAIL(&f->f_un.f_tls.qhead, qentry, entries);
-                        }                        
+                if ((f->f_un.f_tls.tls_conn->sslptr)
+                 && (tls_send(f, tlsline, j))) {
+                        DPRINTF("sent\n");
+                        break;
+                }
+                if(buffer && msg) {
+                        qentry = malloc(sizeof(struct buf_queue));
+                        if (!qentry) {
+                                DPRINTF("unconnected, msg dropped\n");
+                                logerror("Unable to allocate memory");
+                                break;
+                        }
+                        qentry->msg = buffer;
+                        buffer->refcount++;
+                        TAILQ_INSERT_TAIL(&f->f_un.f_tls.qhead, qentry, entries);
+                        DPRINTF("unconnected, msg queued\n");
+                } else {
+                        DPRINTF("unconnected, msg dropped\n");
                 }
                 break;
 #endif /* !DISABLE_TLS */
@@ -1495,7 +1567,7 @@ domark(struct kevent *ev)
                         DPRINTF("Flush %s: repeated %d times, %d sec.\n",
                             TypeNames[f->f_type], f->f_prevcount,
                             repeatinterval[f->f_repeatcount]);
-                        fprintlog(f, 0, (char *)NULL);
+                        fprintlog(f, 0, (char *)NULL, NULL);
                         BACKOFF(f);
                 }
         }
@@ -1575,7 +1647,7 @@ die(struct kevent *ev)
         struct filed *f;
         char **p;
 #ifndef DISABLE_TLS
-        struct TLS_Incoming_Conn *tls_in, *tls_tmp;
+        struct TLS_Incoming_Conn *tls_in;
         int i;
 #endif /* !DISABLE_TLS */
 
@@ -1589,17 +1661,20 @@ die(struct kevent *ev)
                 for (i = 0; i < *TLS_Listen_Set; i++)
                         if (close(TLS_Listen_Set[i+1]) < 0)
                                 logerror("close() failed");
-        /* close incoming TLS connections */
-        SLIST_FOREACH_SAFE(tls_in, &TLS_Incoming_Head, entries, tls_tmp) {
+        /* close/free incoming TLS connections */
+        while (!SLIST_EMPTY(&TLS_Incoming_Head)) {
+                tls_in = SLIST_FIRST(&TLS_Incoming_Head);
+                SLIST_REMOVE_HEAD(&TLS_Incoming_Head, entries);
                 free_tls_conn(tls_in->tls_conn);
                 free(tls_in);
         }
+
 #endif /* !DISABLE_TLS */
 
         for (f = Files; f != NULL; f = f->f_next) {
                 /* flush any pending output */
                 if (f->f_prevcount)
-                        fprintlog(f, 0, (char *)NULL);
+                        fprintlog(f, 0, (char *)NULL, NULL);
                 if (f->f_type == F_PIPE && f->f_un.f_pipe.f_pid > 0) {
                         (void) close(f->f_file);
                         f->f_un.f_pipe.f_pid = 0;
@@ -1645,7 +1720,7 @@ init(struct kevent *ev)
         char host[MAXHOSTNAMELEN];
         char hostMsg[2*MAXHOSTNAMELEN + 40];
 #ifndef DISABLE_TLS
-        struct TLS_Incoming_Conn *tls_in, *tls_tmp;
+        struct TLS_Incoming_Conn *tls_in;
         char *q;
         struct kevent *newev;
 #endif /* !DISABLE_TLS */
@@ -1671,12 +1746,13 @@ init(struct kevent *ev)
                 for (i = 0; i < *TLS_Listen_Set; i++)
                         if (close(TLS_Listen_Set[i+1]) < 0)
                                 logerror("close() failed");
-        /* close incoming TLS connections */
-        SLIST_FOREACH_SAFE(tls_in, &TLS_Incoming_Head, entries, tls_tmp) {
+        /* close/free incoming TLS connections */
+        while (!SLIST_EMPTY(&TLS_Incoming_Head)) {
+                tls_in = SLIST_FIRST(&TLS_Incoming_Head);
+                SLIST_REMOVE_HEAD(&TLS_Incoming_Head, entries);
                 free_tls_conn(tls_in->tls_conn);
                 free(tls_in);
         }
-        /* no effect: SLIST_EMPTY(&TLS_Incoming_Head); */
 
         /* TODO: I wonder whether TLS connections should
          * use a multi-step shutdown:
@@ -1706,7 +1782,7 @@ init(struct kevent *ev)
         for (f = Files; f != NULL; f = next) {
                 /* flush any pending output */
                 if (f->f_prevcount)
-                        fprintlog(f, 0, (char *)NULL);
+                        fprintlog(f, 0, (char *)NULL, NULL);
 
                 switch (f->f_type) {
                 case F_FILE:
@@ -2274,7 +2350,7 @@ getmsgbufsize(void)
         }
         return (msgbufsize);
 #else
-        return 1024;
+        return 16368;  /* value on my NetBSD/i386 */
 #endif /* !_NO_NETBSD_USR_SRC_ */
 }
 

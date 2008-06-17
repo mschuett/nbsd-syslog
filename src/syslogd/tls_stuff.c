@@ -58,10 +58,10 @@ extern size_t linebufsize;
 extern int     RemoteAddDate; 
 
 extern void    logerror(const char *, ...);
+extern void    fprintlog(struct filed *, int, char *, struct buf_msg *);
 extern void    printline(char *, char *, int);
 extern void    die(struct kevent *);
 extern struct kevent *allocevchange(void);
-
 /*
  * init OpenSSL lib and one context. returns NULL on error, otherwise SSL_CTX
  * all pointer arguments may be NULL (at least for clients)
@@ -462,9 +462,7 @@ bool tls_connect(SSL_CTX *context, struct tls_conn_settings *conn)
                         DPRINTF("Unable to open socket.\n");
                         continue;
                 }
-                if ((-1 == (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one))))
-                                 || (-1 == (setsockopt(sock, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one))))
-                                 || (-1 == (setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one))))) {
+                if (-1 == setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one))) {
                         DPRINTF("Unable to setsockopt(): %s\n", strerror(errno));
                 }
                 if (-1 == connect(sock, res1->ai_addr, res1->ai_addrlen)) {
@@ -700,20 +698,43 @@ void
 tls_send_queue(struct filed *f)
 {
         struct buf_queue *qptr;
+        struct filed f_tmp;
+        unsigned int i;
+        
+        /* 1st: we need a new struct filed to feed the message parts into
+         * fprintlog correctly.
+         */
+        memcpy(&f_tmp, f, sizeof(struct filed));
         
         while (!TAILQ_EMPTY(&f->f_un.f_tls.qhead)) {
                 qptr = TAILQ_FIRST(&f->f_un.f_tls.qhead);
+                i = qptr->msg->refcount;
                 
-                if (!tls_send(f, qptr->msg->line, qptr->msg->len))
-                        /* stop on first error --> next reconnect will continue */
-                        return;
+                strncpy(f_tmp.f_lasttime, qptr->msg->timestamp, TIMESTAMPLEN);
+                f_tmp.f_host = qptr->msg->host;
                 
-                TAILQ_REMOVE(&f->f_un.f_tls.qhead, qptr, entries);
-                if (!qptr->msg->refcount) {
-                        free(qptr->msg->line);
-                        free(qptr->msg);
+                fprintlog(&f_tmp, qptr->msg->flags, qptr->msg->line, qptr->msg);
+                /* 2nd: fprintlog does not return a status,
+                 * thus check if the refcount stays the same (=success)
+                 * or if it changes (=msg not delivered but appended to queue again).
+                 */
+                if (i == qptr->msg->refcount) {
+                        /* success */
+                        TAILQ_REMOVE(&f->f_un.f_tls.qhead, qptr, entries);
+                        if (!qptr->msg->refcount) {
+                                free(qptr->msg->line);
+                                free(qptr->msg);
+                        }
+                        free(qptr);
+                } else {
+                        /* failure */
+                        if (qptr == TAILQ_LAST(&f->f_un.f_tls.qhead, buf_queue_head)) {
+                                TAILQ_REMOVE(&f->f_un.f_tls.qhead, qptr, entries);
+                                qptr->msg->refcount--;
+                        } else {
+                                logerror("Lost message in queue, will be duplicated");
+                        }
                 }
-                free(qptr);
         }                
 }
 
@@ -871,7 +892,7 @@ dispatch_accept_socket(struct kevent *ev)
         DPRINTF("socket connection from %s accept()ed with fd %d, " \
                 "calling SSL_accept()...\n",  peername, newsock);
         
-        newev = ((struct kevent) {(uintptr_t)conn_info, 0, 0, 0, 0, NULL});
+        newev = ((struct kevent) {(uintptr_t)conn_info, 0, 0, 0, 0, KEVENT_UDATA_CAST NULL});
         dispatch_accept_tls(&newev);
 }
 
@@ -1031,7 +1052,7 @@ tls_split_messages(struct TLS_Incoming_Conn *c)
                  * this allows debugging with socat  :-)
                  */
                 if (Debug)
-                        while (isspace(c->inbuf[c->read_pos-1])) {
+                        while (isspace((int)c->inbuf[c->read_pos-1])) {
                                 c->read_pos--;
                                 DPRINTF("skip\n"); 
                         }
@@ -1082,7 +1103,7 @@ tls_send(struct filed *f, char *line, size_t len)
 
         /* simple sanity check for length prefix */
         for (i = 0, j = len; j /= 10; i++)
-                if (!isdigit(line[i])) {
+                if (!isdigit((int)line[i])) {
                         DPRINTF("malformed TLS line: %.*s", (len>20 ? 20 : len), line);
                         /* silently discard malformed line, re-queuing it would only cause a loop */
                         return true;
@@ -1152,17 +1173,21 @@ free_tls_conn(struct tls_conn_settings *tls_conn)
 void
 free_msg_queue(struct filed *f)
 {
-        struct buf_queue *q, *tmp;
+        struct buf_queue *q;
         
         /* try to send first */
         tls_send_queue(f);
         
-        TAILQ_FOREACH_SAFE(q, &f->f_un.f_tls.qhead, entries, tmp) {
+        while (TAILQ_FIRST(&f->f_un.f_tls.qhead) != NULL) {
+                q = TAILQ_FIRST(&f->f_un.f_tls.qhead);
                 TAILQ_REMOVE(&f->f_un.f_tls.qhead, q, entries);
-                if (--(q->msg->refcount) == 0)
-                        free(q->msg->line);
+                if (q->msg->refcount == 1) {
+                        FREEPTR(q->msg->line);
+                        FREEPTR(q->msg->host);
+                        FREEPTR(q->msg->timestamp);
                         free(q->msg);
-                free(q);
+                }
+                free(q);                
         }
 }
 

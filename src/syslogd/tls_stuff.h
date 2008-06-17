@@ -18,13 +18,6 @@
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 
-/*
-#define MYKEY "localhost.key"
-#define MYCERT  "localhost.crt"
-#define MYCA  "testca.crt"
-#define MYCAPATH NULL
-#define X509VERIFY X509VERIFY_NONE
-*/
 #define SERVICENAME "55555"
 #define TLSBACKLOG 4
 #define TLS_MAXERRORCOUNT 4

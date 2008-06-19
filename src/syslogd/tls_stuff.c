@@ -38,7 +38,7 @@ extern size_t linebufsize;
 extern int     RemoteAddDate; 
 
 extern void    logerror(const char *, ...);
-extern bool    fprintlog_(struct filed *, int, char *, struct buf_msg *);
+extern bool    fprintlog_noqueue(struct filed *, int, char *, struct buf_msg *);
 extern void    printline(char *, char *, int);
 extern void    die(int fd, short event, void *ev);
 extern struct event *allocev(void);
@@ -680,8 +680,8 @@ tls_send_queue(struct filed *f)
         struct filed f_tmp;
         
         /* 1st: we need a new struct filed to feed the message
-         * parts into fprintlog_() correctly.
-         * We use fprintlog_() so that another failure will not
+         * parts into fprintlog_noqueue() correctly.
+         * We use fprintlog_noqueue() so that another failure will not
          * have the same message queued again.
          */
         memcpy(&f_tmp, f, sizeof(*f));
@@ -692,7 +692,7 @@ tls_send_queue(struct filed *f)
                 strlcpy(f_tmp.f_lasttime, qptr->msg->timestamp, TIMESTAMPLEN+1);
                 f_tmp.f_host = qptr->msg->host;
                 
-                if (fprintlog_(&f_tmp, qptr->msg->flags, qptr->msg->line, qptr->msg))
+                if (fprintlog_noqueue(&f_tmp, qptr->msg->flags, qptr->msg->line, qptr->msg))
                         return;
                 else {
                         TAILQ_REMOVE(&f->f_un.f_tls.qhead, qptr, entries);

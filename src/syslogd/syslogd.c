@@ -155,7 +155,7 @@ int     SyncKernel = 0;         /* write kernel messages synchronously */
 int     UniquePriority = 0;     /* only log specified priority */
 int     LogFacPri = 0;          /* put facility and priority in log messages: */
                                 /* 0=no, 1=numeric, 2=names */
-void    cfline(char *, struct filed *, char *, char *);
+void    cfline(const unsigned int, char *, struct filed *, char *, char *);
 char   *cvthname(struct sockaddr_storage *);
 void    deadq_enter(pid_t, const char *);
 int     deadq_remove(pid_t);
@@ -163,7 +163,7 @@ int     decode(const char *, CODE *);
 void    die(int fd, short event, void *ev);   /* SIGTERM kevent dispatch routine */
 void    domark(int fd, short event, void *ev);/* timer kevent dispatch routine */
 void    fprintlog(struct filed *, int, char *, struct buf_msg *);
-bool    fprintlog_(struct filed *, int, char *, struct buf_msg *);
+bool    fprintlog_noqueue(struct filed *, int, char *, struct buf_msg *);
 int     getmsgbufsize(void);
 int*    socksetup(int, const char *);
 void    init(int fd, short event, void *ev);  /* SIGHUP kevent dispatch routine */
@@ -1043,7 +1043,7 @@ fprintlog(struct filed *f, int flags, char *msg, struct buf_msg *buffer)
         struct buf_queue *qentry;
         bool rc;
         
-        rc = fprintlog_(f, flags, msg, buffer);
+        rc = fprintlog_noqueue(f, flags, msg, buffer);
         /* currently buffering is only for TLS */
         if (!rc && f->f_type == F_TLS) {
                 if(buffer && msg) {
@@ -1092,7 +1092,7 @@ fprintlog(struct filed *f, int flags, char *msg, struct buf_msg *buffer)
  * see no use for that.
  */
 bool
-fprintlog_(struct filed *f, int flags, char *msg, struct buf_msg *buffer)
+fprintlog_noqueue(struct filed *f, int flags, char *msg, struct buf_msg *buffer)
 {
         struct iovec iov[10];
         struct iovec *v;
@@ -1718,6 +1718,7 @@ init(int fd, short event, void *ev)
         char prog[NAME_MAX + 1];
         char host[MAXHOSTNAMELEN];
         char hostMsg[2*MAXHOSTNAMELEN + 40];
+        unsigned int linenum;
 #ifndef DISABLE_TLS
         struct TLS_Incoming_Conn *tls_in;
         char *q;
@@ -1841,13 +1842,13 @@ init(int fd, short event, void *ev)
         if ((cf = fopen(ConfFile, "r")) == NULL) {
                 DPRINTF("Cannot open `%s'\n", ConfFile);
                 *nextp = (struct filed *)calloc(1, sizeof(*f));
-                cfline("*.ERR\t/dev/console", *nextp, "*", "*");
+                cfline(0, "*.ERR\t/dev/console", *nextp, "*", "*");
                 (*nextp)->f_next = (struct filed *)calloc(1, sizeof(*f));
-                cfline("*.PANIC\t*", (*nextp)->f_next, "*", "*");
+                cfline(0, "*.PANIC\t*", (*nextp)->f_next, "*", "*");
                 Initialized = 1;
                 return;
         }
-
+        linenum = 0;
 #ifndef DISABLE_TLS
         /* 
          * global TLS settings
@@ -1855,6 +1856,7 @@ init(int fd, short event, void *ev)
          * errors caused by exotic line ordering.
          */
         while (fgets(cline, sizeof(cline), cf) != NULL) {
+                linenum++;
                 for (p = cline; isspace((unsigned char)*p); ++p)
                         continue;
                 if ((*p == '\0') || (*p == '#'))
@@ -1877,10 +1879,12 @@ init(int fd, short event, void *ev)
                         a = strchr(p, '_');
                         b = strchr(p, '=');
                         if ((a && b && a < b) || strncasecmp(p, "tls", sizeof("tls")-1))
-                                logerror("Unrecognized keyword in line %s\n", p);
+                                logerror("Unrecognized keyword in %s, "
+                                        "line %d: %s\n", ConfFile, linenum, p);
                 }
         }
         rewind(cf);
+        linenum = 0;
 #endif /* !DISABLE_TLS */
 
         /*
@@ -1890,6 +1894,7 @@ init(int fd, short event, void *ev)
         strcpy(prog, "*");
         strcpy(host, "*");
         while (fgets(cline, sizeof(cline), cf) != NULL) {
+                linenum++;
                 /*
                  * check for end-of-section, comments, strip off trailing
                  * spaces and newline character.  #!prog is treated specially:
@@ -1912,7 +1917,7 @@ init(int fd, short event, void *ev)
                  ||!strncasecmp(p, "tls_verify", sizeof("tls_verify")-1)
                  ||!strncasecmp(p, "tls_bindport", sizeof("tls_bindport")-1)
                  ||!strncasecmp(p, "tls_bindhost", sizeof("tls_bindhost")-1)) {
-                        DPRINTF("skip cline\n");
+                        DPRINTF("skip tls_... cline %d\n", linenum);
                         continue;
                  }
 #endif /* !DISABLE_TLS */
@@ -1963,7 +1968,7 @@ init(int fd, short event, void *ev)
                 f = (struct filed *)calloc(1, sizeof(*f));
                 *nextp = f;
                 nextp = &f->f_next;
-                cfline(cline, f, prog, host);
+                cfline(linenum, cline, f, prog, host);
         }
 
         /* close the configuration file */
@@ -2073,14 +2078,14 @@ init(int fd, short event, void *ev)
  * Crack a configuration file line
  */
 void
-cfline(char *line, struct filed *f, char *prog, char *host)
+cfline(const unsigned int linenum, char *line, struct filed *f, char *prog, char *host)
 {
         struct addrinfo hints, *res;
         int    error, i, pri, syncfile;
         char   *bp, *p, *q;
         char   buf[MAXLINE];
 
-        DPRINTF("cfline(\"%s\", f, \"%s\", \"%s\")\n", line, prog, host);
+        DPRINTF("cfline(%d, \"%s\", f, \"%s\", \"%s\")\n", linenum, line, prog, host);
 
         errno = 0;      /* keep strerror() stuff out of logerror messages */
 

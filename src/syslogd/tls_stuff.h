@@ -103,10 +103,10 @@ bool copy_config_value_quoted(const char *keyword, char **mem, char **p, char **
 bool parse_tls_destination(char *p, struct filed *f);
 void tls_split_messages(struct TLS_Incoming_Conn *c);
 
-void dispatch_accept_socket(struct kevent *ev);
-void dispatch_accept_tls(struct kevent *ev);
-void dispatch_read_tls(struct kevent *ev);
-void tls_reconnect(struct kevent *ev);
+void dispatch_accept_socket(int fd_lib, short event, void *ev);
+void dispatch_accept_tls(int fd, short event, void *ev);
+void dispatch_read_tls(int fd_lib, short event, void *ev);
+void tls_reconnect(int fd, short event, void *ev);
 void tls_send_queue(struct filed *f);
 bool tls_send(struct filed *f, char *line, size_t len);
 

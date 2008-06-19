@@ -21,8 +21,9 @@
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <sys/queue.h>
-#include <sys/event.h>
 #include <netinet/in.h>
+#include <sys/event.h>
+#include <event.h>
 
 #include <assert.h>
 #include <ctype.h>

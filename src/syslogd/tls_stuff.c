@@ -40,8 +40,9 @@ extern int     RemoteAddDate;
 extern void    logerror(const char *, ...);
 extern bool    fprintlog_(struct filed *, int, char *, struct buf_msg *);
 extern void    printline(char *, char *, int);
-extern void    die(struct kevent *);
-extern struct kevent *allocevchange(void);
+extern void    die(int fd, short event, void *ev);
+extern struct event *allocev(void);
+
 /*
  * init OpenSSL lib and one context. returns NULL on error, otherwise SSL_CTX
  * all pointer arguments may be NULL (at least for clients)
@@ -340,7 +341,7 @@ int *
 socksetup_tls(const int af, const char *bindhostname, const char *port)
 {
         struct addrinfo hints, *res, *r;
-        struct kevent *ev;
+        struct event *ev;
         int error, maxs, *s, *socks;
         const int on = 1;
 
@@ -356,7 +357,7 @@ socksetup_tls(const int af, const char *bindhostname, const char *port)
         if (error) {
                 logerror(gai_strerror(error));
                 errno = 0;
-                die(NULL);
+                die(0, 0, NULL);
         }
 
         /* Count max number of sockets we may open */
@@ -365,7 +366,7 @@ socksetup_tls(const int af, const char *bindhostname, const char *port)
         socks = malloc((maxs+1) * sizeof(int));
         if (!socks) {
                 logerror("Unable to allocate memory for sockets");
-                die(NULL);
+                die(0, 0, NULL);
         }
 
         *socks = 0;   /* num of sockets counter at start of array */
@@ -392,9 +393,9 @@ socksetup_tls(const int af, const char *bindhostname, const char *port)
                         close(*s);
                         continue;
                 }
-                ev = allocevchange();
-                EV_SET(ev, *s, EVFILT_READ, EV_ADD | EV_ENABLE,
-                    0, 0, KEVENT_UDATA_CAST dispatch_accept_socket);
+                ev = allocev();
+                event_set(ev, *s, EV_READ | EV_PERSIST, dispatch_accept_socket, s);
+                event_add(ev, NULL);
 
                 *socks = *socks + 1;
                 s++;
@@ -405,7 +406,7 @@ socksetup_tls(const int af, const char *bindhostname, const char *port)
                 if(Debug)
                         return(NULL);
                 else
-                        die(NULL);
+                        die(0, 0, NULL);
         }
         if (res)
                 freeaddrinfo(res);
@@ -657,17 +658,14 @@ parse_tls_destination(char *p, struct filed *f)
  * Dispatch routine (triggered by timer) to reconnect to a lost TLS server
  */
 void
-tls_reconnect(struct kevent *ev)
+tls_reconnect(int fd, short event, void *ev)
 {
-        struct filed *f = (struct filed *) ev->ident;
-        struct kevent *newev;
+        struct filed *f = (struct filed *) ev;
 
         DPRINTF("reconnect timer expired\n");
         if (!tls_connect(tls_opt.global_TLS_CTX, f->f_un.f_tls.tls_conn)) {
                 logerror("Unable to connect to TLS server %s", f->f_un.f_tls.tls_conn->hostname);
-                newev = allocevchange();
-                EV_SET(newev, (uintptr_t)f, EVFILT_TIMER, EV_ADD | EV_ENABLE | EV_ONESHOT,
-                    0, 1000*TLS_RECONNECT_SEC, KEVENT_UDATA_CAST tls_reconnect); 
+                event_once(0, 0, tls_reconnect, f, &(struct timeval){TLS_RECONNECT_SEC, 0});
         } else {
                 tls_send_queue(f);
         }        
@@ -716,10 +714,10 @@ tls_send_queue(struct filed *f)
  * a slow handshake with a timer-kevent and continue some msec later.
  */
 void
-dispatch_accept_tls(struct kevent *ev)
+dispatch_accept_tls(int fd, short event, void *ev)
 {
-        struct tls_conn_settings *conn_info = (struct tls_conn_settings *) ev->ident;
-        struct kevent *newev;
+        struct tls_conn_settings *conn_info = (struct tls_conn_settings *) ev;
+        struct event *newev;
         int rc, error, tries = 0;
         struct TLS_Incoming_Conn *tls_in;
 
@@ -737,11 +735,9 @@ try_SSL_accept:
                                 usleep(TLS_NONBLOCKING_USEC);
                                 goto try_SSL_accept;
                         }
-                        newev = allocevchange();
-                        EV_SET(newev, (uintptr_t)conn_info, EVFILT_TIMER,
-                                EV_ADD | EV_ENABLE | EV_ONESHOT,
-                                0, TLS_RETRY_KEVENT_MSEC,
-                                KEVENT_UDATA_CAST dispatch_accept_tls);
+                        event_once(0, 0, dispatch_accept_tls, conn_info,
+                                &(struct timeval){TLS_RETRY_KEVENT_MSEC/1000,
+                                        (TLS_RETRY_KEVENT_MSEC%1000)*1000});
                 }
                 return;
         }
@@ -760,10 +756,9 @@ try_SSL_accept:
         tls_in->inbuflen = MAXLINE;
         SLIST_INSERT_HEAD(&TLS_Incoming_Head, tls_in, entries);
 
-        newev = allocevchange();
-        EV_SET(newev, tls_in->socket, EVFILT_READ, EV_ADD | EV_ENABLE,
-            0, 0, KEVENT_UDATA_CAST dispatch_read_tls);
-
+        newev = allocev();
+        event_set(newev, tls_in->socket, EV_READ | EV_PERSIST, dispatch_read_tls, &tls_in->socket);
+        event_add(newev, NULL);
         DPRINTF("established TLS connection from %s\n", conn_info->hostname);
         
         /*
@@ -780,20 +775,23 @@ try_SSL_accept:
  * TODO: how do we handle fingerprint auth for incoming?
  *       set up a list of tls_conn_settings and pick one matching the hostname?
  */
+/* note on arguments: the file descriptor is passed by reference
+ * in void *ev. -- that enables us to call/reschedule the function
+ * to be called without 'real' new data at the fd.
+ */ 
 void
-dispatch_accept_socket(struct kevent *ev)
+dispatch_accept_socket(int fd_lib, short event, void *ev)
 {
 #ifdef LIBWRAP
         struct request_info req;
 #endif
+        int fd = *(int*) ev;
         struct sockaddr_storage frominet;
         socklen_t addrlen;
-        int fd = ev->ident;
         int reject = 0;
         int newsock, rc;
         SSL *ssl;
         struct tls_conn_settings *conn_info;
-        struct kevent newev;
         char hbuf[NI_MAXHOST];
         char *peername;
 
@@ -862,8 +860,7 @@ dispatch_accept_socket(struct kevent *ev)
         DPRINTF("socket connection from %s accept()ed with fd %d, " \
                 "calling SSL_accept()...\n",  peername, newsock);
         
-        newev = ((struct kevent) {(uintptr_t)conn_info, 0, 0, 0, 0, KEVENT_UDATA_CAST NULL});
-        dispatch_accept_tls(&newev);
+        dispatch_accept_tls(newsock, 0, conn_info);
 }
 
 /*
@@ -876,14 +873,17 @@ dispatch_accept_socket(struct kevent *ev)
  *     fast enough. A possible optimization would be keeping track of
  *     message counts and moving busy sources to the front of the list.
  */
+/* note on arguments: the file descriptor is passed by reference
+ * in void *ev. -- that enables us to call/reschedule the function
+ * to be called without 'real' new data at the fd.
+ */ 
 void
-dispatch_read_tls(struct kevent *ev)
+dispatch_read_tls(int fd_lib, short event, void *ev)
 {
-        int fd = ev->ident;
         int error, tries;
         int_fast16_t rc;
         struct TLS_Incoming_Conn *c;
-        struct kevent *newev;
+        int fd = *(int*) ev;
 
         DPRINTF("active TLS socket %d\n", fd);
         
@@ -923,11 +923,11 @@ try_SSL_read:
                                         usleep(TLS_NONBLOCKING_USEC);
                                         goto try_SSL_read;
                                 }
-                                newev = allocevchange();
-                                EV_SET(newev, fd, EVFILT_TIMER,
-                                        EV_ADD | EV_ENABLE | EV_ONESHOT,
-                                        0, TLS_RETRY_KEVENT_MSEC,
-                                        KEVENT_UDATA_CAST dispatch_read_tls); 
+                                event_once(0, 0,
+                                        dispatch_read_tls, &fd,
+                                        &(struct timeval){
+                                          TLS_RETRY_KEVENT_MSEC/1000,
+                                          (TLS_RETRY_KEVENT_MSEC%1000)*1000});
                                 break;
                         case TLS_TEMP_ERROR:
                                 if (c->tls_conn->errorcount < TLS_MAXERRORCOUNT)
@@ -1082,7 +1082,6 @@ tls_send(struct filed *f, char *line, size_t len)
         int i, retry, rc, error;
         char *tlslineptr = line;
         size_t tlslen = len;
-        struct kevent *newev;
         
         DPRINTF("tls_send(f=%p, line=\"%.*s...\", len=%d) to %sconnected dest.\n",
                 f, (len>24 ? 24 : len), line, len,
@@ -1121,9 +1120,11 @@ try_SSL_write:
                                 /* else fallthrough */
                         case TLS_PERM_ERROR:
                                 /* Reconnect after x seconds  */
-                                newev = allocevchange();
-                                EV_SET(newev, (uintptr_t)f, EVFILT_TIMER, EV_ADD | EV_ENABLE | EV_ONESHOT,
-                                    0, 1000*TLS_RECONNECT_SEC, KEVENT_UDATA_CAST tls_reconnect);
+                                event_once(0, 0,
+                                        dispatch_read_tls, f,
+                                        &((struct timeval){
+                                          TLS_RETRY_KEVENT_MSEC/1000,
+                                          (TLS_RETRY_KEVENT_MSEC%1000)*1000}));
                                 DPRINTF("scheduled reconnect in %d seconds\n", TLS_RECONNECT_SEC);
                                 break;
                         default:break;

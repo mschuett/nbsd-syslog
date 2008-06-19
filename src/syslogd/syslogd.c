@@ -160,13 +160,13 @@ char   *cvthname(struct sockaddr_storage *);
 void    deadq_enter(pid_t, const char *);
 int     deadq_remove(pid_t);
 int     decode(const char *, CODE *);
-void    die(struct kevent *);   /* SIGTERM kevent dispatch routine */
-void    domark(struct kevent *);/* timer kevent dispatch routine */
+void    die(int fd, short event, void *ev);   /* SIGTERM kevent dispatch routine */
+void    domark(int fd, short event, void *ev);/* timer kevent dispatch routine */
 void    fprintlog(struct filed *, int, char *, struct buf_msg *);
 bool    fprintlog_(struct filed *, int, char *, struct buf_msg *);
 int     getmsgbufsize(void);
 int*    socksetup(int, const char *);
-void    init(struct kevent *);  /* SIGHUP kevent dispatch routine */
+void    init(int fd, short event, void *ev);  /* SIGHUP kevent dispatch routine */
 void    logerror(const char *, ...);
 void    logmsg(int, char *, char *, int);
 void    log_deadchild(pid_t, int, const char *);
@@ -176,21 +176,17 @@ void    printline(char *, char *, int);
 void    printsys(char *);
 int     p_open(char *, pid_t *);
 void    trim_localdomain(char *);
-void    reapchild(struct kevent *); /* SIGCHLD kevent dispatch routine */
+void    reapchild(int fd, short event, void *ev); /* SIGCHLD kevent dispatch routine */
 void    usage(void);
 void    wallmsg(struct filed *, struct iovec *, size_t);
 int     main(int, char *[]);
 void    logpath_add(char ***, int *, int *, char *);
 void    logpath_fileadd(char ***, int *, int *, char *);
 
-static int fkq;
-
-struct kevent *allocevchange(void);
-static int wait_for_events(struct kevent *, size_t);
-
-static void dispatch_read_klog(struct kevent *);
-static void dispatch_read_finet(struct kevent *);
-static void dispatch_read_funix(struct kevent *);
+struct event *allocev(void);
+static void dispatch_read_klog(int fd, short event, void *ev);
+static void dispatch_read_finet(int fd, short event, void *ev);
+static void dispatch_read_funix(int fd, short event, void *ev);
 
 /*
  * Global line buffer.  Since we only process one event at a time,
@@ -229,10 +225,9 @@ main(int argc, char *argv[])
 {
         int ch, *funix, j, fklog;
         int funixsize = 0, funixmaxsize = 0;
-        struct kevent events[16];
         struct sockaddr_un sunx;
         char **pp;
-        struct kevent *ev;
+        struct event *ev;
         uid_t uid = 0;
         gid_t gid = 0;
         char *user = NULL;
@@ -329,7 +324,7 @@ main(int argc, char *argv[])
                         if (uid != l) {
                                 errno = 0;
                                 logerror("UID out of range");
-                                die(NULL);
+                                die(0, 0, NULL);
                         }
                 } else {
 getuser:
@@ -338,7 +333,7 @@ getuser:
                         } else {
                                 errno = 0;  
                                 logerror("Cannot find user `%s'", user);
-                                die(NULL);
+                                die(0, 0, NULL);
                         }
                 }
         }
@@ -354,7 +349,7 @@ getuser:
                         if (gid != l) {
                                 errno = 0;
                                 logerror("GID out of range");
-                                die(NULL);
+                                die(0, 0, NULL);
                         }
                 } else {
 getgroup:
@@ -363,14 +358,14 @@ getgroup:
                         } else {
                                 errno = 0;
                                 logerror("Cannot find group `%s'", group);
-                                die(NULL);
+                                die(0, 0, NULL);
                         }
                 }
         }
 
         if (access(root, F_OK | R_OK)) {
                 logerror("Cannot access `%s'", root);
-                die(NULL);
+                die(0, 0, NULL);
         }
 
         consfile.f_type = F_CONSOLE;
@@ -385,7 +380,7 @@ getgroup:
         msgbuf = calloc(1, sizeof(*msgbuf));
         if (linebuf == NULL || msgbuf == NULL) {
                 logerror("Couldn't allocate buffer");
-                die(NULL);
+                die(0, 0, NULL);
         }
         msgbuf->refcount = 1;
 
@@ -398,7 +393,7 @@ getgroup:
         funix = (int *)malloc(sizeof(int) * funixsize);
         if (funix == NULL) {
                 logerror("Couldn't allocate funix descriptors");
-                die(NULL);
+                die(0, 0, NULL);
         }
         for (j = 0, pp = LogPaths; *pp; pp++, j++) {
                 DPRINTF("Making unix dgram socket `%s'\n", *pp);
@@ -411,7 +406,7 @@ getgroup:
                     (struct sockaddr *)&sunx, SUN_LEN(&sunx)) < 0 ||
                     chmod(*pp, 0666) < 0) {
                         logerror("Cannot create `%s'", *pp);
-                        die(NULL);
+                        die(0, 0, NULL);
                 }
                 DPRINTF("Listening on unix dgram socket `%s'\n", *pp);
         }
@@ -437,17 +432,17 @@ getgroup:
         DPRINTF("Attempt to chroot to `%s'\n", root);  
         if (chroot(root)) {
                 logerror("Failed to chroot to `%s'", root);
-                die(NULL);
+                die(0, 0, NULL);
         }
         DPRINTF("Attempt to set GID/EGID to `%d'\n", gid);  
         if (setgid(gid) || setegid(gid)) {
                 logerror("Failed to set gid to `%d'", gid);
-                die(NULL);
+                die(0, 0, NULL);
         }
         DPRINTF("Attempt to set UID/EUID to `%d'\n", uid);  
         if (setuid(uid) || seteuid(uid)) {
                 logerror("Failed to set uid to `%d'", uid);
-                die(NULL);
+                die(0, 0, NULL);
         }
         /* 
          * We cannot detach from the terminal before we are sure we won't 
@@ -471,17 +466,14 @@ getgroup:
          * API dictates that kqueue descriptors are not inherited
          * across forks (lame!).
          */
-        if ((fkq = kqueue()) < 0) {
-                logerror("Cannot create event queue");
-                die(NULL);      /* XXX This error is lost! */
-        }
-
+        (void)event_init();
+        
         /*
          * We must read the configuration file for the first time
          * after the kqueue descriptor is created, because we install
          * events during this process.
          */
-        init(NULL);
+        init(0, 0, NULL);
 
         /*
          * Always exit on SIGTERM.  Also exit on SIGINT and SIGQUIT
@@ -490,67 +482,52 @@ getgroup:
         (void)signal(SIGTERM, SIG_IGN);
         (void)signal(SIGINT, SIG_IGN);
         (void)signal(SIGQUIT, SIG_IGN);
-        ev = allocevchange();
-        EV_SET(ev, SIGTERM, EVFILT_SIGNAL, EV_ADD | EV_ENABLE, 0, 0,
-            KEVENT_UDATA_CAST die);
+        
+        ev = allocev();
+        signal_set(ev, SIGTERM, die, ev);
+        signal_add(ev, NULL);
+        
         if (Debug) {
-                ev = allocevchange();
-                EV_SET(ev, SIGINT, EVFILT_SIGNAL, EV_ADD | EV_ENABLE, 0, 0,
-                    KEVENT_UDATA_CAST die);
-
-                ev = allocevchange();
-                EV_SET(ev, SIGQUIT, EVFILT_SIGNAL, EV_ADD | EV_ENABLE, 0, 0,
-                    KEVENT_UDATA_CAST die);
+                ev = allocev();
+                signal_set(ev, SIGINT, die, ev);
+                signal_add(ev, NULL);
+                
+                ev = allocev();
+                signal_set(ev, SIGQUIT, die, ev);
+                signal_add(ev, NULL);
         }
 
-        ev = allocevchange();
-        EV_SET(ev, SIGCHLD, EVFILT_SIGNAL, EV_ADD | EV_ENABLE, 0, 0,
-            KEVENT_UDATA_CAST reapchild);
+        ev = allocev();
+        signal_set(ev, SIGCHLD, reapchild, ev);
+        signal_add(ev, NULL);
 
-        ev = allocevchange();
-        EV_SET(ev, 0, EVFILT_TIMER, EV_ADD | EV_ENABLE, 0,
-            TIMERINTVL * 1000 /* seconds -> ms */, KEVENT_UDATA_CAST domark);
+        ev = allocev();
+        evtimer_set(ev, domark, ev);
+        event_add(ev, &(struct timeval){TIMERINTVL, 0});  /* {tv_sec, tv_usec} */
 
         (void)signal(SIGPIPE, SIG_IGN); /* We'll catch EPIPE instead. */
 
         /* Re-read configuration on SIGHUP. */
         (void) signal(SIGHUP, SIG_IGN);
-        ev = allocevchange();
-        EV_SET(ev, SIGHUP, EVFILT_SIGNAL, EV_ADD | EV_ENABLE, 0, 0,
-            KEVENT_UDATA_CAST init);
+        ev = allocev();
+        signal_set(ev, SIGHUP, init, ev);
+        signal_add(ev, NULL);
 
         if (fklog >= 0) {
-                ev = allocevchange();
+                ev = allocev();
                 DPRINTF("register klog for fd %d with ev@%p\n", fklog, ev);
-                EV_SET(ev, fklog, EVFILT_READ, EV_ADD | EV_ENABLE,
-                    0, 0, KEVENT_UDATA_CAST dispatch_read_klog);
+                event_set(ev, fklog, EV_READ | EV_PERSIST, dispatch_read_klog, ev);
+                event_add(ev, NULL);
         }
         for (j = 0, pp = LogPaths; *pp; pp++, j++) {
-                ev = allocevchange();
-                EV_SET(ev, funix[j], EVFILT_READ, EV_ADD | EV_ENABLE,
-                    0, 0, KEVENT_UDATA_CAST dispatch_read_funix);
+                ev = allocev();
+                event_set(ev, funix[j], EV_READ | EV_PERSIST, dispatch_read_funix, ev);
+                event_add(ev, NULL);
         }
 
         DPRINTF("Off & running....\n");
-
-        for (;;) {
-                void (*handler)(struct kevent *);
-                int i, rv;
-
-                rv = wait_for_events(events, A_CNT(events));
-                if (rv == 0)
-                        continue;
-                if (rv < 0) {
-                        if (errno != EINTR)
-                                logerror("kevent() failed");
-                        continue;
-                }
-                DPRINTF("Got an event (%d)\n", rv);
-                for (i = 0; i < rv; i++) {
-                        handler = (void *) events[i].udata;
-                        (*handler)(&events[i]);
-                }
-        }
+        
+        event_dispatch();
 }
 
 void
@@ -569,10 +546,9 @@ usage(void)
  * Dispatch routine for reading /dev/klog
  */
 static void
-dispatch_read_klog(struct kevent *ev)
+dispatch_read_klog(int fd, short event, void *ev)
 {
         ssize_t rv;
-        int fd = ev->ident;
 
         DPRINTF("Kernel log active (ev@%p, fd %d, linebuf@%p, size %d)\n", ev, fd, linebuf, linebufsize-1);
 
@@ -585,10 +561,8 @@ dispatch_read_klog(struct kevent *ev)
                  * /dev/klog has croaked.  Disable the event
                  * so it won't bother us again.
                  */
-                struct kevent *cev = allocevchange();
                 logerror("klog failed");
-                EV_SET(cev, fd, EVFILT_READ, EV_DISABLE,
-                    0, 0, KEVENT_UDATA_CAST dispatch_read_klog);
+                event_del(ev);
         }
 }
 
@@ -596,12 +570,11 @@ dispatch_read_klog(struct kevent *ev)
  * Dispatch routine for reading Unix domain sockets.
  */
 static void
-dispatch_read_funix(struct kevent *ev)
+dispatch_read_funix(int fd, short event, void *ev)
 {
         struct sockaddr_un myname, fromunix;
         ssize_t rv;
         socklen_t sunlen;
-        int fd = ev->ident;
 
         sunlen = sizeof(myname);
         if (getsockname(fd, (struct sockaddr *)&myname, &sunlen) != 0) {
@@ -609,10 +582,8 @@ dispatch_read_funix(struct kevent *ev)
                  * This should never happen, so ensure that it doesn't
                  * happen again.
                  */
-                struct kevent *cev = allocevchange();
                 logerror("getsockname() unix failed");
-                EV_SET(cev, fd, EVFILT_READ, EV_DISABLE,
-                    0, 0, KEVENT_UDATA_CAST dispatch_read_funix);
+                event_del(ev);
                 return;
         }
 
@@ -633,7 +604,7 @@ dispatch_read_funix(struct kevent *ev)
  * Dispatch routine for reading Internet sockets.
  */
 static void
-dispatch_read_finet(struct kevent *ev)
+dispatch_read_finet(int fd, short event, void *ev)
 {
 #ifdef LIBWRAP
         struct request_info req;
@@ -641,7 +612,6 @@ dispatch_read_finet(struct kevent *ev)
         struct sockaddr_storage frominet;
         ssize_t rv;
         socklen_t len;
-        int fd = ev->ident;
         int reject = 0;
 
         DPRINTF("inet socket active (ev@%p, fd %d, linebuf@%p, size %d)\n", ev, fd, linebuf, linebufsize-1);
@@ -691,14 +661,14 @@ logpath_add(char ***lp, int *szp, int *maxszp, char *new)
                 nlp = realloc(*lp, sizeof(char *) * (newmaxsz + 1));
                 if (nlp == NULL) {
                         logerror("Couldn't allocate line buffer");
-                        die(NULL);
+                        die(0, 0, NULL);
                 }
                 *lp = nlp;
                 *maxszp = newmaxsz;
         }
         if (((*lp)[(*szp)++] = strdup(new)) == NULL) {
                 logerror("Couldn't allocate logpath");
-                die(NULL);
+                die(0, 0, NULL);
         }
         (*lp)[(*szp)] = NULL;           /* always keep it NULL terminated */
 }
@@ -714,7 +684,7 @@ logpath_fileadd(char ***lp, int *szp, int *maxszp, char *file)
         fp = fopen(file, "r");
         if (fp == NULL) {
                 logerror("Could not open socket file list `%s'", file);
-                die(NULL);
+                die(0, 0, NULL);
         }
 
         while ((line = fgetln(fp, &len))) {
@@ -1490,7 +1460,7 @@ wallmsg(struct filed *f, struct iovec *iov, size_t iovcnt)
 }
 
 void
-reapchild(struct kevent *ev)
+reapchild(int fd, short event, void *ev)
 {
         int status;
         pid_t pid;
@@ -1572,7 +1542,7 @@ trim_localdomain(char *host)
 }
 
 void
-domark(struct kevent *ev)
+domark(int fd, short event, void *ev)
 {
         struct filed *f;
         dq_t q, nextq;
@@ -1670,7 +1640,7 @@ logerror(const char *fmt, ...)
 }
 
 void
-die(struct kevent *ev)
+die(int fd, short event, void *ev)
 {
         struct filed *f;
         char **p;
@@ -1726,7 +1696,7 @@ die(struct kevent *ev)
 
         errno = 0;
         if (ev != NULL)
-                logerror("Exiting on signal %d", (int) ev->ident);
+                logerror("Exiting on signal %d", fd);
         else
                 logerror("Fatal error, exiting");
         for (p = LogPaths; p && *p; p++)
@@ -1738,7 +1708,7 @@ die(struct kevent *ev)
  *  INIT -- Initialize syslogd from configuration table
  */
 void
-init(struct kevent *ev)
+init(int fd, short event, void *ev)
 {
         size_t i;
         FILE *cf;
@@ -1751,7 +1721,6 @@ init(struct kevent *ev)
 #ifndef DISABLE_TLS
         struct TLS_Incoming_Conn *tls_in;
         char *q;
-        struct kevent *newev;
 #endif /* !DISABLE_TLS */
 
         DPRINTF("init\n");
@@ -1857,7 +1826,7 @@ init(struct kevent *ev)
                 for (i = 0; i < *finet; i++) {
                         if (close(finet[i+1]) < 0) {
                                 logerror("close() failed");
-                                die(NULL);
+                                die(0, 0, NULL);
                         }
                 }
         }
@@ -2047,7 +2016,7 @@ init(struct kevent *ev)
                         for (i = 0; i < *finet; i++) {
                                 if (shutdown(finet[i+1], SHUT_RD) < 0) {
                                         logerror("shutdown() failed");
-                                        die(NULL);
+                                        die(0, 0, NULL);
                                 }
                         }
                 } else
@@ -2079,9 +2048,7 @@ init(struct kevent *ev)
                 if (!tls_connect(tls_opt.global_TLS_CTX, f->f_un.f_tls.tls_conn)) {
                         logerror("Unable to connect to TLS server %s", f->f_un.f_tls.tls_conn->hostname);
                         /* Reconnect after x seconds  */
-                        newev = allocevchange();
-                        EV_SET(newev, (uintptr_t)f, EVFILT_TIMER, EV_ADD | EV_ENABLE | EV_ONESHOT,
-                            0, 1000*TLS_RECONNECT_SEC, KEVENT_UDATA_CAST tls_reconnect);
+                        event_once(0, 0, tls_reconnect, f, &(struct timeval){TLS_RECONNECT_SEC, 0});
                         DPRINTF("scheduled reconnect in %d seconds\n", TLS_RECONNECT_SEC);
                 }
         }
@@ -2400,7 +2367,7 @@ int *
 socksetup(int af, const char *hostname)
 {
         struct addrinfo hints, *res, *r;
-        struct kevent *ev;
+        struct event *ev;
         int error, maxs, *s, *socks;
         const int on = 1;
 
@@ -2415,7 +2382,7 @@ socksetup(int af, const char *hostname)
         if (error) {
                 logerror(gai_strerror(error));
                 errno = 0;
-                die(NULL);
+                die(0, 0, NULL);
         }
 
         /* Count max number of sockets we may open */
@@ -2424,7 +2391,7 @@ socksetup(int af, const char *hostname)
         socks = malloc((maxs+1) * sizeof(int));
         if (!socks) {
                 logerror("Couldn't allocate memory for sockets");
-                die(NULL);
+                die(0, 0, NULL);
         }
 
         *socks = 0;   /* num of sockets counter at start of array */
@@ -2448,9 +2415,9 @@ socksetup(int af, const char *hostname)
                                 close(*s);
                                 continue;
                         }
-                        ev = allocevchange();
-                        EV_SET(ev, *s, EVFILT_READ, EV_ADD | EV_ENABLE,
-                            0, 0, KEVENT_UDATA_CAST dispatch_read_finet);
+                        ev = allocev();
+                        event_set(ev, *s, EV_READ | EV_PERSIST, dispatch_read_finet, ev);
+                        event_add(ev, NULL);
                 }
 
                 *socks = *socks + 1;
@@ -2462,7 +2429,7 @@ socksetup(int af, const char *hostname)
                 if(Debug)
                         return(NULL);
                 else
-                        die(NULL);
+                        die(0, 0, NULL);
         }
         if (res)
                 freeaddrinfo(res);
@@ -2613,31 +2580,17 @@ log_deadchild(pid_t pid, int status, const char *name)
         logerror(buf);
 }
 
-/* I found the original value (8) too small.
- * Is there any way to determine it dynamically? */
-#define KEVENT_CHANGEBUF_SIZE 16
-static struct kevent changebuf[KEVENT_CHANGEBUF_SIZE];
-static int nchanges;
-
-struct kevent *
-allocevchange(void)
+struct event *
+allocev(void)
 {
-
-        if (nchanges == A_CNT(changebuf)) {
-                /* XXX Error handling could be improved. */
-                (void) wait_for_events(NULL, 0);
+        struct event *ev;
+        
+        ev = malloc(sizeof(*ev));
+        if (ev) {
+                return ev;
+        } else {
+                logerror("Unable to allocate memory.");
+                die(0, 0, NULL);
+                return NULL;
         }
-
-        return (&changebuf[nchanges++]);
-}
-
-static int
-wait_for_events(struct kevent *events, size_t nevents)
-{
-        int rv;
-
-        rv = kevent(fkq, nchanges ? changebuf : NULL, nchanges,
-                    events, nevents, NULL);
-        nchanges = 0;
-        return (rv);
 }

@@ -2,7 +2,7 @@
 # dependencies from /usr/src
 
 CC=gcc
-CFLAGS= -std=c99 -Wall -g -ggdb -D_NO_NETBSD_USR_SRC_ -lssl
+CFLAGS= -std=c99 -Wall -g -ggdb -D_NO_NETBSD_USR_SRC_ -lssl -levent
 CFLAGS+= -DINET6 -DLIBWRAP -lwrap 
 # only on my machine, NetBSD 4.0 has current OpenSSL libraries in base
 CFLAGS+= -I/usr/local/include -L/usr/local/lib 

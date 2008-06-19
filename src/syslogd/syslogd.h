@@ -89,7 +89,9 @@ TAILQ_HEAD(buf_queue_head, buf_queue);
 
 #define FDMASK(fd)      (1 << (fd))
 
-#define DPRINTF(...)    if (Debug) printf(__VA_ARGS__)
+#define DPRINTF(...)    if (Debug) { \
+                                printf("%s:%d\t", __FILE__, __LINE__); \
+                                printf(__VA_ARGS__); }
 
 #define FREEPTR(x)      if (x)     { free(x);         x = NULL; }
 #define FREE_SSL_CTX(x) if (x)     { SSL_CTX_free(x); x = NULL; }

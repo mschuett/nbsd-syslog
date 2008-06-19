@@ -163,6 +163,7 @@ int     decode(const char *, CODE *);
 void    die(struct kevent *);   /* SIGTERM kevent dispatch routine */
 void    domark(struct kevent *);/* timer kevent dispatch routine */
 void    fprintlog(struct filed *, int, char *, struct buf_msg *);
+bool    fprintlog_(struct filed *, int, char *, struct buf_msg *);
 int     getmsgbufsize(void);
 int*    socksetup(int, const char *);
 void    init(struct kevent *);  /* SIGHUP kevent dispatch routine */
@@ -1061,6 +1062,36 @@ logmsg(int pri, char *msg, char *from, int flags)
         (void)sigsetmask(omask);
 }
 
+/*
+ * wrapper arround fprintlog() to queue undeliverable messages.
+ * this allows tls_send_queue() to call fprintlog() directly without
+ * having the messages re-queued all over again.
+ */
+void
+fprintlog(struct filed *f, int flags, char *msg, struct buf_msg *buffer)
+{
+        struct buf_queue *qentry;
+        bool rc;
+        
+        rc = fprintlog_(f, flags, msg, buffer);
+        /* currently buffering is only for TLS */
+        if (!rc && f->f_type == F_TLS) {
+                if(buffer && msg) {
+                        if (!(qentry = malloc(sizeof(*qentry)))) {
+                                logerror("Unable to allocate memory");
+                                DPRINTF("unconnected, no memory, msg dropped\n");
+                        } else {
+                                qentry->msg = buffer;
+                                buffer->refcount++;
+                                TAILQ_INSERT_TAIL(&f->f_un.f_tls.qhead, qentry, entries);
+                                DPRINTF("unconnected, msg queued\n");
+                        }
+                } else {
+                        DPRINTF("unconnected, msg dropped\n");
+                }
+        }
+}
+
 /* 
  * Added parameter struct buf_msg *buffer
  * If present (!= NULL) then a destination that is unable to send the
@@ -1079,12 +1110,19 @@ logmsg(int pri, char *msg, char *from, int flags)
  * 2nd Note: several parts of the message are assembled in fprintlog.
  * So buf_msg does not contain the line as it will be send to the network,
  * but several parts that will have to be joined and formatted again.
- * 
- * TODO: split fprintlog into two functions, one for formatting
- * and one for sending? 
  */
-void
-fprintlog(struct filed *f, int flags, char *msg, struct buf_msg *buffer)
+/*
+ * Introduced return code.
+ * This makes it easier to check if a delivery failed/succeeded.
+ * Used return codes:
+ * false - failure, message not written/sent
+ * true - success, message written/sent or not determinable
+ * 
+ * A third code for 'unknown' (like with UDP) is possible but I currently
+ * see no use for that.
+ */
+bool
+fprintlog_(struct filed *f, int flags, char *msg, struct buf_msg *buffer)
 {
         struct iovec iov[10];
         struct iovec *v;
@@ -1093,8 +1131,8 @@ fprintlog(struct filed *f, int flags, char *msg, struct buf_msg *buffer)
         char line[MAXLINE + 1], repbuf[80], greetings[200];
 #define ADDEV() assert(++v - iov < A_CNT(iov))
 #ifndef DISABLE_TLS
+        /* TODO: remove size limit */
         char tlsline[MAXLINE + 1 + PREFIXLENGTH + 1]; /* line + space + decimal length + null */
-        struct buf_queue *qentry;
 #endif /* !DISABLE_TLS */
 
         DPRINTF("fprintlog(%p, %d, %p, %p)\n", f, flags, msg, buffer);
@@ -1253,6 +1291,7 @@ sendagain:
                         if (lsent != l && fail) {
                                 f->f_type = F_UNUSED;
                                 logerror("sendto() failed");
+                                return false;
                         }
                 }
                 break;
@@ -1267,21 +1306,9 @@ sendagain:
                 if ((f->f_un.f_tls.tls_conn->sslptr)
                  && (tls_send(f, tlsline, j))) {
                         DPRINTF("sent\n");
-                        break;
-                }
-                if(buffer && msg) {
-                        qentry = malloc(sizeof(*qentry));
-                        if (!qentry) {
-                                DPRINTF("unconnected, no memory, msg dropped\n");
-                                logerror("Unable to allocate memory");
-                                break;
-                        }
-                        qentry->msg = buffer;
-                        buffer->refcount++;
-                        TAILQ_INSERT_TAIL(&f->f_un.f_tls.qhead, qentry, entries);
-                        DPRINTF("unconnected, msg queued\n");
+                        return true;
                 } else {
-                        DPRINTF("unconnected, msg dropped\n");
+                        return false;
                 }
                 break;
 #endif /* !DISABLE_TLS */
@@ -1407,6 +1434,7 @@ sendagain:
                 break;
         }
         f->f_prevcount = 0;
+        return 1;
 }
 
 /*
@@ -1868,9 +1896,20 @@ init(struct kevent *ev)
                  || copy_config_value_quoted("tls_key=\"", &tls_opt.keyfile, &p, &q)
                  || copy_config_value_quoted("tls_verify=\"", &tls_opt.x509verify, &p, &q)
                  || copy_config_value_quoted("tls_bindport=\"", &tls_opt.bindport, &p, &q)
-                 || copy_config_value_quoted("tls_bindhost=\"", &tls_opt.bindhost, &p, &q))
+                 || copy_config_value_quoted("tls_bindhost=\"", &tls_opt.bindhost, &p, &q)) {
                         DPRINTF("found tls-option\n");
-                /* TODO: check for invalid keywords and give warning */ 
+                 } else {
+                        char *a, *b;
+                        /* problem: distinguish wrong keywords
+                         * from selector/action lines.
+                         * simple try: either have a _ before a =
+                         * or a line beginning with tls
+                         *  */
+                        a = strchr(p, '_');
+                        b = strchr(p, '=');
+                        if ((a && b && a < b) || strncasecmp(p, "tls", sizeof("tls")-1))
+                                logerror("Unrecognized keyword in line %s\n", p);
+                }
         }
         rewind(cf);
 #endif /* !DISABLE_TLS */

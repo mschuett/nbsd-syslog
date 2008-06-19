@@ -38,7 +38,7 @@ extern size_t linebufsize;
 extern int     RemoteAddDate; 
 
 extern void    logerror(const char *, ...);
-extern void    fprintlog(struct filed *, int, char *, struct buf_msg *);
+extern bool    fprintlog_(struct filed *, int, char *, struct buf_msg *);
 extern void    printline(char *, char *, int);
 extern void    die(struct kevent *);
 extern struct kevent *allocevchange(void);
@@ -680,42 +680,32 @@ tls_send_queue(struct filed *f)
 {
         struct buf_queue *qptr;
         struct filed f_tmp;
-        unsigned int i;
         
-        /* 1st: we need a new struct filed to feed the message parts into
-         * fprintlog correctly.
+        /* 1st: we need a new struct filed to feed the message
+         * parts into fprintlog_() correctly.
+         * We use fprintlog_() so that another failure will not
+         * have the same message queued again.
          */
         memcpy(&f_tmp, f, sizeof(*f));
-        
+
         while (!TAILQ_EMPTY(&f->f_un.f_tls.qhead)) {
                 qptr = TAILQ_FIRST(&f->f_un.f_tls.qhead);
-                i = qptr->msg->refcount;
                 
                 strlcpy(f_tmp.f_lasttime, qptr->msg->timestamp, TIMESTAMPLEN+1);
                 f_tmp.f_host = qptr->msg->host;
                 
-                fprintlog(&f_tmp, qptr->msg->flags, qptr->msg->line, qptr->msg);
-                /* 2nd: fprintlog does not return a status,
-                 * thus check if the refcount stays the same (=success)
-                 * or if it changes (=msg not delivered but appended to queue again).
-                 */
-                if (i == qptr->msg->refcount) {
-                        /* success */
-                        TAILQ_REMOVE(&f->f_un.f_tls.qhead, qptr, entries);
-                        if (!qptr->msg->refcount) {
-                                free(qptr->msg->line);
-                                free(qptr->msg);
-                        }
-                        free(qptr);
-                } else {
-                        /* failure */
-                        if (qptr == TAILQ_LAST(&f->f_un.f_tls.qhead, buf_queue_head)) {
-                                TAILQ_REMOVE(&f->f_un.f_tls.qhead, qptr, entries);
-                                qptr->msg->refcount--;
-                        } else {
-                                logerror("Lost message in queue, will be duplicated");
-                        }
+                if (fprintlog_(&f_tmp, qptr->msg->flags, qptr->msg->line, qptr->msg))
                         return;
+                else {
+                        TAILQ_REMOVE(&f->f_un.f_tls.qhead, qptr, entries);
+                        qptr->msg->refcount--;
+                        if (!qptr->msg->refcount) {
+                                FREEPTR(qptr->msg->timestamp);
+                                FREEPTR(qptr->msg->host);
+                                FREEPTR(qptr->msg->line);
+                                FREEPTR(qptr->msg);
+                        }
+                        FREEPTR(qptr);
                 }
         }                
 }

@@ -137,7 +137,6 @@ struct filed {
                 } f_forw;               /* UDP forwarding address */
 #ifndef DISABLE_TLS
                 struct {
-                        struct buf_queue_head qhead;    /* queue for undelivered msgs */
                         SSL     *ssl;                   /* SSL object  */
                         struct tls_conn_settings *tls_conn;  /* certificate info */ 
                 } f_tls;                /* TLS forwarding address */
@@ -148,6 +147,8 @@ struct filed {
                         pid_t   f_pid;
                 } f_pipe;
         } f_un;
+        struct buf_queue_head f_qhead;          /* undelivered msgs queue */
+        unsigned int f_qelements;               /* elements in queue */
         char    f_prevline[MAXSVLINE];          /* last message logged */
         char    f_lasttime[16];                 /* time of last occurrence */
         char    f_prevhost[MAXHOSTNAMELEN];     /* host from which recd. */

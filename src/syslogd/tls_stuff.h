@@ -107,7 +107,6 @@ void dispatch_accept_socket(int fd_lib, short event, void *ev);
 void dispatch_accept_tls(int fd, short event, void *ev);
 void dispatch_read_tls(int fd_lib, short event, void *ev);
 void tls_reconnect(int fd, short event, void *ev);
-void tls_send_queue(struct filed *f);
 bool tls_send(struct filed *f, char *line, size_t len);
 
 #endif /* !_TLS_STUFF_H */

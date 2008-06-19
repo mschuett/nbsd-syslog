@@ -131,6 +131,15 @@ const char *TypeNames[] = {
         "TLS"
 };
 
+/* maximum number of buffered messages
+ * -1 means no limit
+ * TODO: make configurable
+ */
+int f_queue_limit[] = {   0, 1024, 0,    0,
+                          0,    0, 0, 1024,
+                       1024
+};
+
 struct  filed *Files;
 struct  filed consfile;
 
@@ -187,6 +196,9 @@ struct event *allocev(void);
 static void dispatch_read_klog(int fd, short event, void *ev);
 static void dispatch_read_finet(int fd, short event, void *ev);
 static void dispatch_read_funix(int fd, short event, void *ev);
+
+unsigned int purge_message_queue(struct filed *, unsigned int);
+void send_queue(struct filed *);
 
 /*
  * Global line buffer.  Since we only process one event at a time,
@@ -1034,7 +1046,7 @@ logmsg(int pri, char *msg, char *from, int flags)
 
 /*
  * wrapper arround fprintlog() to queue undeliverable messages.
- * this allows tls_send_queue() to call fprintlog() directly without
+ * this allows send_queue() to call fprintlog() directly without
  * having the messages re-queued all over again.
  */
 void
@@ -1044,20 +1056,46 @@ fprintlog(struct filed *f, int flags, char *msg, struct buf_msg *buffer)
         bool rc;
         
         rc = fprintlog_noqueue(f, flags, msg, buffer);
-        /* currently buffering is only for TLS */
-        if (!rc && f->f_type == F_TLS) {
-                if(buffer && msg) {
-                        if (!(qentry = malloc(sizeof(*qentry)))) {
-                                logerror("Unable to allocate memory");
-                                DPRINTF("unconnected, no memory, msg dropped\n");
-                        } else {
-                                qentry->msg = buffer;
-                                buffer->refcount++;
-                                TAILQ_INSERT_TAIL(&f->f_un.f_tls.qhead, qentry, entries);
-                                DPRINTF("unconnected, msg queued\n");
-                        }
+
+        /* problem: how much control over memory usage do we need?
+         * currently the message buffer is shared among all destinations,
+         * but can only be accessed through f->f_qhead. So we cannot
+         * configure different memory usage limits for files and TLS.
+         * To change that we would need a global buffer queue, in which
+         * every element would need to have backreferences to all destinations
+         * that it belongs to  :-/  
+         * 
+         * So as a practical solution I set up a maximum number of
+         * queue elements per destination type.
+         */
+        /* unlikely but possible lock situation:
+         * if we cannot allocate a storage buffer, then we also will
+         * not be able to allocate the needed buffer in tls_send().
+         * then we might have a working connection and still be unable to
+         * send the messages away, ending up with shifting messages
+         * through the queue.
+         * 
+         * in practice it is enough to have enaugh variation in
+         * message lengths. then deleting a long message frees
+         * enough memory to send the following shorter ones and
+         * the lock situation is resolved.
+         */ 
+        /* note on TAILQ: newest message added at TAIL,
+         *                oldest to be removed is FIRST
+         */
+        if (!rc && buffer && msg) {
+                purge_message_queue(f, 0);
+                while (!(qentry = malloc(sizeof(*qentry)))
+                      && purge_message_queue(f, 1))
+                     /* try allocating memory */;
+                if (!qentry) {
+                        logerror("Unable to allocate memory");
+                        DPRINTF("no memory, msg dropped\n");
                 } else {
-                        DPRINTF("unconnected, msg dropped\n");
+                        qentry->msg = buffer;
+                        buffer->refcount++;
+                        TAILQ_INSERT_TAIL(&f->f_qhead, qentry, entries);
+                        DPRINTF("unconnected, msg queued\n");
                 }
         }
 }
@@ -1082,14 +1120,9 @@ fprintlog(struct filed *f, int flags, char *msg, struct buf_msg *buffer)
  * but several parts that will have to be joined and formatted again.
  */
 /*
- * Introduced return code.
- * This makes it easier to check if a delivery failed/succeeded.
  * Used return codes:
- * false - failure, message not written/sent
- * true - success, message written/sent or not determinable
- * 
- * A third code for 'unknown' (like with UDP) is possible but I currently
- * see no use for that.
+ * false - temporary failure, message not written/sent but should be queued
+ * true - einter success or permanent failure, message should not be queued
  */
 bool
 fprintlog_noqueue(struct filed *f, int flags, char *msg, struct buf_msg *buffer)
@@ -1261,7 +1294,6 @@ sendagain:
                         if (lsent != l && fail) {
                                 f->f_type = F_UNUSED;
                                 logerror("sendto() failed");
-                                return false;
                         }
                 }
                 break;
@@ -1276,8 +1308,8 @@ sendagain:
                 if ((f->f_un.f_tls.tls_conn->sslptr)
                  && (tls_send(f, tlsline, j))) {
                         DPRINTF("sent\n");
-                        return true;
                 } else {
+                        f->f_prevcount = 0;
                         return false;
                 }
                 break;
@@ -1289,12 +1321,15 @@ sendagain:
                 v->iov_len = 1;
                 ADDEV();
                 if (f->f_un.f_pipe.f_pid == 0) {
+                        /* (re-)open */
                         if ((f->f_file = p_open(f->f_un.f_pipe.f_pname,
                                                 &f->f_un.f_pipe.f_pid)) < 0) {
                                 f->f_type = F_UNUSED;
                                 logerror(f->f_un.f_pipe.f_pname);
                                 break;
                         }
+                        else
+                                send_queue(f);
                 }
                 if (writev(f->f_file, iov, v - iov) < 0) {
                         int e = errno;
@@ -1331,6 +1366,8 @@ sendagain:
                                                         f->f_un.f_pipe.f_pname);
                                         }
                                         f->f_un.f_pipe.f_pid = 0;
+                                        f->f_prevcount = 0;
+                                        return false;
                                 } else
                                         e = 0;
                         }
@@ -1367,7 +1404,8 @@ sendagain:
                                 f->f_lasterror = e;
                                 if (lasterror != e)
                                         logerror(f->f_un.f_fname);
-                                break;
+                                f->f_prevcount = 0;
+                                return false;
                         }
                         (void)close(f->f_file);
                         /*
@@ -1404,7 +1442,7 @@ sendagain:
                 break;
         }
         f->f_prevcount = 0;
-        return 1;
+        return true;
 }
 
 /*
@@ -2598,4 +2636,74 @@ allocev(void)
                 die(0, 0, NULL);
                 return NULL;
         }
+}
+
+/* send message queue after reconnect */
+void
+send_queue(struct filed *f)
+{
+        struct buf_queue *qptr;
+        struct filed f_tmp;
+        
+        /* 1st: we need a new struct filed to feed the message
+         * parts into fprintlog_noqueue() correctly.
+         * We use fprintlog_noqueue() so that another failure will not
+         * have the same message queued again.
+         */
+        memcpy(&f_tmp, f, sizeof(*f));
+
+        while (!TAILQ_EMPTY(&f->f_qhead)) {
+                qptr = TAILQ_FIRST(&f->f_qhead);
+                
+                strlcpy(f_tmp.f_lasttime, qptr->msg->timestamp, TIMESTAMPLEN+1);
+                f_tmp.f_host = qptr->msg->host;
+                
+                if (fprintlog_noqueue(&f_tmp, qptr->msg->flags, qptr->msg->line, qptr->msg))
+                        return;
+                else {
+                        purge_message_queue(f, 1);
+                }
+        }                
+}
+
+/*
+ * checks length of a destination's message queue
+ * if del_entries == 0 then assert queue length is
+ *   less or equal to configured number of queue elements
+ * otherwise del_entries tells how many entries to delete
+ * 
+ * returns the number of removed queue elements
+ * (which not necessarily means free'd messages)
+ */
+unsigned int
+purge_message_queue(struct filed *f, unsigned int del_entries)
+{
+        struct buf_queue *qentry;
+        int removed = 0;
+
+        /* check global limits */
+        /* question on style:
+         * is there a way to format the boolean condition readable?
+         */
+        while (!TAILQ_EMPTY(&f->f_qhead)
+                && (del_entries > removed
+                   || (f_queue_limit[f->f_type] != -1
+                      && f_queue_limit[f->f_type] <= f->f_qelements
+                      ))) {
+                if (!(qentry = TAILQ_FIRST(&f->f_qhead))) {
+                        /* empty queue */
+                        return (bool) removed;
+                }
+                TAILQ_REMOVE(&f->f_qhead, qentry, entries);
+                removed++;
+                qentry->msg->refcount--;
+                if (!qentry->msg->refcount) {
+                        FREEPTR(qentry->msg->timestamp);
+                        FREEPTR(qentry->msg->host);
+                        FREEPTR(qentry->msg->line);
+                        FREEPTR(qentry->msg);
+                }
+                FREEPTR(qentry);
+        }
+        return removed;
 }

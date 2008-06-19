@@ -42,6 +42,8 @@ extern bool    fprintlog_noqueue(struct filed *, int, char *, struct buf_msg *);
 extern void    printline(char *, char *, int);
 extern void    die(int fd, short event, void *ev);
 extern struct event *allocev(void);
+extern unsigned int purge_message_queue(struct filed *, unsigned int);
+extern void    send_queue(struct filed *);
 
 /*
  * init OpenSSL lib and one context. returns NULL on error, otherwise SSL_CTX
@@ -591,10 +593,10 @@ parse_tls_destination(char *p, struct filed *f)
         }
         /* default values */
         f->f_un.f_tls.tls_conn->x509verify = X509VERIFY_NONE;
-        f->f_un.f_tls.qhead = 
+        f->f_qhead = 
                 ((struct buf_queue_head)
-                TAILQ_HEAD_INITIALIZER(f->f_un.f_tls.qhead));
-        TAILQ_INIT(&f->f_un.f_tls.qhead);
+                TAILQ_HEAD_INITIALIZER(f->f_qhead));
+        TAILQ_INIT(&f->f_qhead);
 
         if (!(copy_config_value(&(f->f_un.f_tls.tls_conn->hostname), p, q)))
                 return false;
@@ -667,45 +669,9 @@ tls_reconnect(int fd, short event, void *ev)
                 logerror("Unable to connect to TLS server %s", f->f_un.f_tls.tls_conn->hostname);
                 event_once(0, 0, tls_reconnect, f, &(struct timeval){TLS_RECONNECT_SEC, 0});
         } else {
-                tls_send_queue(f);
+                send_queue(f);
         }        
         return;
-}
-
-/* send message queue after reconnect */
-void
-tls_send_queue(struct filed *f)
-{
-        struct buf_queue *qptr;
-        struct filed f_tmp;
-        
-        /* 1st: we need a new struct filed to feed the message
-         * parts into fprintlog_noqueue() correctly.
-         * We use fprintlog_noqueue() so that another failure will not
-         * have the same message queued again.
-         */
-        memcpy(&f_tmp, f, sizeof(*f));
-
-        while (!TAILQ_EMPTY(&f->f_un.f_tls.qhead)) {
-                qptr = TAILQ_FIRST(&f->f_un.f_tls.qhead);
-                
-                strlcpy(f_tmp.f_lasttime, qptr->msg->timestamp, TIMESTAMPLEN+1);
-                f_tmp.f_host = qptr->msg->host;
-                
-                if (fprintlog_noqueue(&f_tmp, qptr->msg->flags, qptr->msg->line, qptr->msg))
-                        return;
-                else {
-                        TAILQ_REMOVE(&f->f_un.f_tls.qhead, qptr, entries);
-                        qptr->msg->refcount--;
-                        if (!qptr->msg->refcount) {
-                                FREEPTR(qptr->msg->timestamp);
-                                FREEPTR(qptr->msg->host);
-                                FREEPTR(qptr->msg->line);
-                                FREEPTR(qptr->msg);
-                        }
-                        FREEPTR(qptr);
-                }
-        }                
 }
 
 /*
@@ -1165,11 +1131,11 @@ free_msg_queue(struct filed *f)
         struct buf_queue *q;
         
         /* try to send first */
-        tls_send_queue(f);
+        send_queue(f);
         
-        while (TAILQ_FIRST(&f->f_un.f_tls.qhead) != NULL) {
-                q = TAILQ_FIRST(&f->f_un.f_tls.qhead);
-                TAILQ_REMOVE(&f->f_un.f_tls.qhead, q, entries);
+        while (TAILQ_FIRST(&f->f_qhead) != NULL) {
+                q = TAILQ_FIRST(&f->f_qhead);
+                TAILQ_REMOVE(&f->f_qhead, q, entries);
                 if (q->msg->refcount == 1) {
                         FREEPTR(q->msg->line);
                         FREEPTR(q->msg->host);

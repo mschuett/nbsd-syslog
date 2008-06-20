@@ -98,8 +98,9 @@ void free_msg_queue(struct filed *f);
 int tls_examine_error(const char *functionname, const SSL *ssl, struct tls_conn_settings *tls_conn, const int rc);
 
 /* forward declarations */
-bool copy_config_value(char **mem, const char *p, const char *q);
+bool copy_string(char **mem, const char *p, const char *q);
 bool copy_config_value_quoted(const char *keyword, char **mem, char **p, char **q);
+bool copy_config_value(const char *, char **, char **, char **, const char *, const int);
 bool parse_tls_destination(char *p, struct filed *f);
 void tls_split_messages(struct TLS_Incoming_Conn *c);
 

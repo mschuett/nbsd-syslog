@@ -131,16 +131,22 @@ const char *TypeNames[] = {
         "TLS"
 };
 
-/* maximum number of buffered messages
+/*
+ * maximum number of buffered messages
  * -1 means no limit
- * TODO: make configurable
  */
-int f_queue_limit[] = {   0, 1024, 0,    0,
-                          0,    0, 0, 1024,
-                       1024
+char *f_queue_limit_string[] = {   "0", "1024", "0",   "0",
+                                   "0",    "0", "0", "1024",
+                                  "-1", NULL
+};
+/* filled by init() */
+/* is there a way to make its size depend on the size of TypeNames? */
+int f_queue_limit[] = {   0, 0, 0, 0,
+                          0, 0, 0, 0,
+                          0
 };
 
-struct  filed *Files;
+struct  filed *Files = NULL;
 struct  filed consfile;
 
 int     Debug = 0;              /* debug flag */
@@ -1757,9 +1763,29 @@ init(int fd, short event, void *ev)
         char host[MAXHOSTNAMELEN];
         char hostMsg[2*MAXHOSTNAMELEN + 40];
         unsigned int linenum;
+        bool found_keyword;
 #ifndef DISABLE_TLS
         struct TLS_Incoming_Conn *tls_in;
         char *q;
+        
+        /* central list of recognized configuration keywords
+         * and an address for their values as strings */
+        const struct config_keywords {
+                char *keyword;
+                char **variable;
+                bool numeric;
+        } config_keywords[] = { 
+                {"tls_ca",          &tls_opt.CAfile},
+                {"tls_cadir",       &tls_opt.CAdir},
+                {"tls_cert",        &tls_opt.certfile},
+                {"tls_key",         &tls_opt.keyfile},
+                {"tls_verify",      &tls_opt.x509verify},
+                {"tls_bindport",    &tls_opt.bindport},
+                {"tls_bindhost",    &tls_opt.bindhost},
+                {"tls_queue_size",  &f_queue_limit_string[F_TLS]},
+                {"file_queue_size", &f_queue_limit_string[F_FILE]},
+                {"pipe_queue_size", &f_queue_limit_string[F_PIPE]}
+        };
 #endif /* !DISABLE_TLS */
 
         DPRINTF("init\n");
@@ -1899,27 +1925,18 @@ init(int fd, short event, void *ev)
                         continue;
                 if ((*p == '\0') || (*p == '#'))
                         continue;
-                if (copy_config_value_quoted("tls_ca=\"", &tls_opt.CAfile, &p, &q)
-                 || copy_config_value_quoted("tls_cadir=\"", &tls_opt.CAdir, &p, &q)
-                 || copy_config_value_quoted("tls_cert=\"", &tls_opt.certfile, &p, &q)
-                 || copy_config_value_quoted("tls_key=\"", &tls_opt.keyfile, &p, &q)
-                 || copy_config_value_quoted("tls_verify=\"", &tls_opt.x509verify, &p, &q)
-                 || copy_config_value_quoted("tls_bindport=\"", &tls_opt.bindport, &p, &q)
-                 || copy_config_value_quoted("tls_bindhost=\"", &tls_opt.bindhost, &p, &q)) {
-                        DPRINTF("found tls-option\n");
-                 } else {
-                        char *a, *b;
-                        /* problem: distinguish wrong keywords
-                         * from selector/action lines.
-                         * simple try: either have a _ before a =
-                         * or a line beginning with tls
-                         *  */
-                        a = strchr(p, '_');
-                        b = strchr(p, '=');
-                        if ((a && b && a < b) || strncasecmp(p, "tls", sizeof("tls")-1))
-                                logerror("Unrecognized keyword in %s, "
-                                        "line %d: %s\n", ConfFile, linenum, p);
+
+                for (i = 0; i < A_CNT(config_keywords); i++) {
+                        if (copy_config_value(config_keywords[i].keyword,
+                                                config_keywords[i].variable,
+                                                &p, &q, ConfFile, linenum)) {
+                                DPRINTF("found option %s\n", config_keywords[i].keyword);
+                                break;
+                        }
                 }
+        }
+        for (i = 0; f_queue_limit_string[i]; i++) {
+                f_queue_limit[i] = strtol(f_queue_limit_string[i], NULL, 10);
         }
         rewind(cf);
         linenum = 0;
@@ -1933,6 +1950,7 @@ init(int fd, short event, void *ev)
         strcpy(host, "*");
         while (fgets(cline, sizeof(cline), cf) != NULL) {
                 linenum++;
+                found_keyword = false;
                 /*
                  * check for end-of-section, comments, strip off trailing
                  * spaces and newline character.  #!prog is treated specially:
@@ -1947,18 +1965,16 @@ init(int fd, short event, void *ev)
                         if (*p != '!' && *p != '+' && *p != '-')
                                 continue;
                 }
-#ifndef DISABLE_TLS
-                if(!strncasecmp(p, "tls_ca", sizeof("tls_ca")-1)
-                 ||!strncasecmp(p, "tls_cadir", sizeof("tls_cadir")-1)
-                 ||!strncasecmp(p, "tls_cert", sizeof("tls_cert")-1)
-                 ||!strncasecmp(p, "tls_key", sizeof("tls_key")-1)
-                 ||!strncasecmp(p, "tls_verify", sizeof("tls_verify")-1)
-                 ||!strncasecmp(p, "tls_bindport", sizeof("tls_bindport")-1)
-                 ||!strncasecmp(p, "tls_bindhost", sizeof("tls_bindhost")-1)) {
-                        DPRINTF("skip tls_... cline %d\n", linenum);
+
+                for (i = 0; i < A_CNT(config_keywords); i++) {
+                        if (!strncasecmp(p, config_keywords[i].keyword, strlen(config_keywords[i].keyword))) {
+                                DPRINTF("skip cline %d with keyword %s\n", linenum, config_keywords[i].keyword);
+                                found_keyword = true;
+                        }
+                }
+                if (found_keyword)
                         continue;
-                 }
-#endif /* !DISABLE_TLS */
+
                 if (*p == '+' || *p == '-') {
                         host[0] = *p++;
                         while (isspace((unsigned char)*p))
@@ -2069,11 +2085,13 @@ init(int fd, short event, void *ev)
 
 #ifndef DISABLE_TLS
         /* TLS setup -- after all local destinations opened  */
-        DPRINTF("Parsed TLS options: tls_ca: %s, tls_cadir: %s, "
-                "tls_cert: %s, tls_key: %s, tls_verify: %s, bind: %s:%s\n",
+        DPRINTF("Parsed options: tls_ca: %s, tls_cadir: %s, "
+                "tls_cert: %s, tls_key: %s, tls_verify: %s, "
+                "bind: %s:%s, queue_limits: %d, %d, %d\n",
                 tls_opt.CAfile, tls_opt.CAdir, tls_opt.certfile,
                 tls_opt.keyfile, tls_opt.x509verify, tls_opt.bindhost,
-                tls_opt.bindport);
+                tls_opt.bindport, f_queue_limit[F_TLS],
+                f_queue_limit[F_FILE], f_queue_limit[F_PIPE]);
         tls_opt.global_TLS_CTX = init_global_TLS_CTX(tls_opt.keyfile,
                                         tls_opt.certfile, tls_opt.CAfile,
                                         tls_opt.CAdir, tls_opt.x509verify);

@@ -44,7 +44,7 @@ extern void    die(int fd, short event, void *ev);
 extern struct event *allocev(void);
 extern unsigned int purge_message_queue(struct filed *, unsigned int);
 extern void    send_queue(struct filed *);
-
+extern inline void schedule_event(struct event **, struct timeval *, void (*)(int, short, void *), void *);
 /*
  * init OpenSSL lib and one context. returns NULL on error, otherwise SSL_CTX
  * all pointer arguments may be NULL (at least for clients)
@@ -339,13 +339,13 @@ check_peer_cert(int preverify_ok, X509_STORE_CTX *ctx)
  * To be used like socksetup(), hostname and port are optional,
  * returns bound stream sockets. 
  */
-int *
+struct socketEvent *
 socksetup_tls(const int af, const char *bindhostname, const char *port)
 {
         struct addrinfo hints, *res, *r;
-        struct event *ev;
-        int error, maxs, *s, *socks;
+        int error, maxs;
         const int on = 1;
+        struct socketEvent *s, *socks;
 
         if(tls_opt.client_only)
                 return(NULL);
@@ -365,45 +365,47 @@ socksetup_tls(const int af, const char *bindhostname, const char *port)
         /* Count max number of sockets we may open */
         for (maxs = 0, r = res; r; r = r->ai_next, maxs++)
                 continue;
-        socks = malloc((maxs+1) * sizeof(int));
+        socks = malloc((maxs+1) * sizeof(*socks));
         if (!socks) {
                 logerror("Unable to allocate memory for sockets");
                 die(0, 0, NULL);
         }
 
-        *socks = 0;   /* num of sockets counter at start of array */
+        socks->fd = 0;   /* num of sockets counter at start of array */
         s = socks + 1;
         for (r = res; r; r = r->ai_next) {
-                if ((*s = socket(r->ai_family, r->ai_socktype, r->ai_protocol)) == -1) {
+                if ((s->fd = socket(r->ai_family, r->ai_socktype, r->ai_protocol)) == -1) {
                         logerror("socket() failed: %s", strerror(errno));
                         continue;
                 }
                 if (r->ai_family == AF_INET6
-                 && setsockopt(*s, IPPROTO_IPV6, IPV6_V6ONLY, &on, sizeof(on)) == -1) {
+                 && setsockopt(s->fd, IPPROTO_IPV6, IPV6_V6ONLY, &on, sizeof(on)) == -1) {
                         logerror("setsockopt(IPV6_V6ONLY) failed: %s", strerror(errno));
-                        close(*s);
+                        close(s->fd);
                         continue;
                 }
-                if ((error = bind(*s, r->ai_addr, r->ai_addrlen)) == -1) {
+                if ((error = bind(s->fd, r->ai_addr, r->ai_addrlen)) == -1) {
                         logerror("bind() failed: %s", strerror(errno));
                         /* is there a better way to handle a EADDRINUSE? */
-                        close(*s);
+                        close(s->fd);
                         continue;
                 }
-                if (listen(*s, TLSBACKLOG) == -1) {
+                if (listen(s->fd, TLSBACKLOG) == -1) {
                         logerror("listen() failed: %s", strerror(errno));
-                        close(*s);
+                        close(s->fd);
                         continue;
                 }
-                ev = allocev();
-                event_set(ev, *s, EV_READ | EV_PERSIST, dispatch_accept_socket, s);
-                event_add(ev, NULL);
+                s->ev = allocev();
+                event_set(s->ev, s->fd, EV_READ | EV_PERSIST, dispatch_accept_socket, s->ev);
+                if (event_add(s->ev, NULL) == -1) {
+                        DPRINTF("Failure in event_add()\n");
+                }
 
-                *socks = *socks + 1;
+                socks->fd = socks->fd + 1;  /* num counter */
                 s++;
         }
 
-        if (*socks == 0) {
+        if (socks->fd == 0) {
                 free (socks);
                 if(Debug)
                         return(NULL);
@@ -584,14 +586,14 @@ copy_config_value(const char *keyword, char **mem, char **p, char **q, const cha
                 return false;
         *p += strlen(keyword);
 
-        while (isspace(**p))
+        while (isspace((unsigned char)**p))
                 *p += 1;
         if (**p != '=') {
                 logerror("expected \"=\" in file %s, line %d", file, line);
                 return false;
         }
         *p += 1;
-        while (isspace(**p))
+        while (isspace((unsigned char)**p))
                 *p += 1;
 
         if (**p == '"')
@@ -696,14 +698,17 @@ parse_tls_destination(char *p, struct filed *f)
  * Dispatch routine (triggered by timer) to reconnect to a lost TLS server
  */
 void
-tls_reconnect(int fd, short event, void *ev)
+tls_reconnect(int fd, short event, void *arg)
 {
-        struct filed *f = (struct filed *) ev;
-
+        struct filed *f = (struct filed *) arg;
+        
         DPRINTF("reconnect timer expired\n");
+
         if (!tls_connect(tls_opt.global_TLS_CTX, f->f_un.f_tls.tls_conn)) {
                 logerror("Unable to connect to TLS server %s", f->f_un.f_tls.tls_conn->hostname);
-                event_once(0, 0, tls_reconnect, f, &(struct timeval){TLS_RECONNECT_SEC, 0});
+                schedule_event(&f->f_un.f_tls.tls_conn->event,
+                        &((struct timeval){TLS_RECONNECT_SEC, 0}),
+                        tls_reconnect, f);
         } else {
                 send_queue(f);
         }        
@@ -716,15 +721,14 @@ tls_reconnect(int fd, short event, void *ev)
  * a slow handshake with a timer-kevent and continue some msec later.
  */
 void
-dispatch_accept_tls(int fd, short event, void *ev)
+dispatch_accept_tls(int fd, short event, void *arg)
 {
-        struct tls_conn_settings *conn_info = (struct tls_conn_settings *) ev;
-        struct event *newev;
+        struct tls_conn_settings *conn_info = (struct tls_conn_settings *) arg;
         int rc, error, tries = 0;
         struct TLS_Incoming_Conn *tls_in;
 
         DPRINTF("start TLS on connection\n");
-        /* non-blocking might require several calls? */
+        
 try_SSL_accept:        
         rc = SSL_accept(conn_info->sslptr);
         if (0 >= rc) {
@@ -737,9 +741,9 @@ try_SSL_accept:
                                 usleep(TLS_NONBLOCKING_USEC);
                                 goto try_SSL_accept;
                         }
-                        event_once(0, 0, dispatch_accept_tls, conn_info,
-                                &(struct timeval){TLS_RETRY_KEVENT_MSEC/1000,
-                                        (TLS_RETRY_KEVENT_MSEC%1000)*1000});
+                        schedule_event(&conn_info->event, 
+                                &((struct timeval){0, TLS_RETRY_KEVENT_USEC}),
+                                dispatch_accept_tls, conn_info);
                 }
                 return;
         }
@@ -758,9 +762,10 @@ try_SSL_accept:
         tls_in->inbuflen = MAXLINE;
         SLIST_INSERT_HEAD(&TLS_Incoming_Head, tls_in, entries);
 
-        newev = allocev();
-        event_set(newev, tls_in->socket, EV_READ | EV_PERSIST, dispatch_read_tls, &tls_in->socket);
-        event_add(newev, NULL);
+        event_set(conn_info->event, tls_in->socket, EV_READ | EV_PERSIST, dispatch_read_tls, &tls_in->socket);
+        if (event_add(conn_info->event, NULL) == -1) {
+                DPRINTF("Failure in event_add()\n");
+        }
         DPRINTF("established TLS connection from %s\n", conn_info->hostname);
         
         /*
@@ -777,17 +782,12 @@ try_SSL_accept:
  * TODO: how do we handle fingerprint auth for incoming?
  *       set up a list of tls_conn_settings and pick one matching the hostname?
  */
-/* note on arguments: the file descriptor is passed by reference
- * in void *ev. -- that enables us to call/reschedule the function
- * to be called without 'real' new data at the fd.
- */ 
 void
-dispatch_accept_socket(int fd_lib, short event, void *ev)
+dispatch_accept_socket(int fd, short event, void *ev)
 {
 #ifdef LIBWRAP
         struct request_info req;
 #endif
-        int fd = *(int*) ev;
         struct sockaddr_storage frominet;
         socklen_t addrlen;
         int reject = 0;
@@ -809,7 +809,9 @@ dispatch_accept_socket(int fd_lib, short event, void *ev)
         reject = !hosts_access(&req);
 #endif
         addrlen = sizeof(frominet);
-        if (!(conn_info = calloc(1, sizeof(*conn_info)))) {
+        if (!(conn_info = calloc(1, sizeof(*conn_info)))
+         || !(conn_info->event = calloc(1, sizeof(*conn_info->event)))) {
+                free(conn_info);
                 logerror("Unable to allocate memory");
                 return;
         }
@@ -875,10 +877,7 @@ dispatch_accept_socket(int fd_lib, short event, void *ev)
  *     fast enough. A possible optimization would be keeping track of
  *     message counts and moving busy sources to the front of the list.
  */
-/* note on arguments: the file descriptor is passed by reference
- * in void *ev. -- that enables us to call/reschedule the function
- * to be called without 'real' new data at the fd.
- */ 
+/* uses the fd as passed by reference in ev */
 void
 dispatch_read_tls(int fd_lib, short event, void *ev)
 {
@@ -925,11 +924,11 @@ try_SSL_read:
                                         usleep(TLS_NONBLOCKING_USEC);
                                         goto try_SSL_read;
                                 }
-                                event_once(0, 0,
-                                        dispatch_read_tls, &fd,
-                                        &(struct timeval){
-                                          TLS_RETRY_KEVENT_MSEC/1000,
-                                          (TLS_RETRY_KEVENT_MSEC%1000)*1000});
+                                /* problem: we cannot use c->tls_conn->event,
+                                 * which is still used for fd EV_READ */
+                                schedule_event(&c->tls_conn->event2,
+                                        &((struct timeval){0, TLS_RETRY_KEVENT_USEC}),
+                                        dispatch_read_tls, &fd);
                                 break;
                         case TLS_TEMP_ERROR:
                                 if (c->tls_conn->errorcount < TLS_MAXERRORCOUNT)
@@ -1102,6 +1101,15 @@ tls_send(struct filed *f, char *line, size_t len)
                 return true;
         }
 
+        /* 
+         * what happens if a peer does not acknowledge a TCP/TS transmission?
+         * --> that will hang our syslogd.
+         * 
+         * should I make outgoing sockets non-blocking?
+         * --> depends on how much we trust the logserver
+         *     (to be non-malicious _and_ bug-free)
+         * --> TODO
+         */
         retry = 0;
 try_SSL_write:
         rc = SSL_write(f->f_un.f_tls.tls_conn->sslptr, tlslineptr, tlslen);
@@ -1122,12 +1130,9 @@ try_SSL_write:
                                 /* else fallthrough */
                         case TLS_PERM_ERROR:
                                 /* Reconnect after x seconds  */
-                                event_once(0, 0,
-                                        dispatch_read_tls, f,
-                                        &((struct timeval){
-                                          TLS_RETRY_KEVENT_MSEC/1000,
-                                          (TLS_RETRY_KEVENT_MSEC%1000)*1000}));
-                                DPRINTF("scheduled reconnect in %d seconds\n", TLS_RECONNECT_SEC);
+                                schedule_event(&f->f_un.f_tls.tls_conn->event,
+                                        &((struct timeval){0, TLS_RECONNECT_SEC}),
+                                        tls_reconnect, f);
                                 break;
                         default:break;
                 }
@@ -1158,6 +1163,8 @@ free_tls_conn(struct tls_conn_settings *tls_conn)
         if (tls_conn->hostname)    free(tls_conn->hostname);
         if (tls_conn->certfile)    free(tls_conn->certfile);
         if (tls_conn->fingerprint) free(tls_conn->fingerprint);
+        if (tls_conn->event)       free(tls_conn->event);
+        if (tls_conn->event2)      free(tls_conn->event2);
         if (tls_conn)              free(tls_conn);
 }
 

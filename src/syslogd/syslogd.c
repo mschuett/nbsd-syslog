@@ -155,7 +155,8 @@ char    LocalHostName[MAXHOSTNAMELEN];  /* our hostname */
 char    oldLocalHostName[MAXHOSTNAMELEN];/* previous hostname */
 char    *LocalDomain;           /* our local domain name */
 size_t  LocalDomainLen;         /* length of LocalDomain */
-int     *finet = NULL;          /* Internet datagram sockets */
+struct socketEvent *finet;      /* Internet datagram sockets and events */
+struct socketEvent *TLS_Listen_Set; /* TLS/TCP sockets and events */
 int     Initialized = 0;        /* set when we have initialized ourselves */
 int     ShuttingDown;           /* set when we die() */
 int     MarkInterval = 20 * 60; /* interval between marks in seconds */
@@ -180,7 +181,7 @@ void    domark(int fd, short event, void *ev);/* timer kevent dispatch routine *
 void    fprintlog(struct filed *, int, char *, struct buf_msg *);
 bool    fprintlog_noqueue(struct filed *, int, char *, struct buf_msg *);
 int     getmsgbufsize(void);
-int*    socksetup(int, const char *);
+struct socketEvent* socksetup(int, const char *);
 void    init(int fd, short event, void *ev);  /* SIGHUP kevent dispatch routine */
 void    logerror(const char *, ...);
 void    logmsg(int, char *, char *, int);
@@ -199,6 +200,7 @@ void    logpath_add(char ***, int *, int *, char *);
 void    logpath_fileadd(char ***, int *, int *, char *);
 
 struct event *allocev(void);
+inline void schedule_event(struct event **, struct timeval *, void (*)(int, short, void *), void *);
 static void dispatch_read_klog(int fd, short event, void *ev);
 static void dispatch_read_finet(int fd, short event, void *ev);
 static void dispatch_read_funix(int fd, short event, void *ev);
@@ -230,7 +232,6 @@ static const char *bindhostname = NULL;
 
 #ifndef DISABLE_TLS
 
-int *TLS_Listen_Set;
 struct TLS_Incoming TLS_Incoming_Head = \
         SLIST_HEAD_INITIALIZER(TLS_Incoming_Head);
 extern char *SSL_ERRCODE[];
@@ -429,11 +430,16 @@ getgroup:
                 DPRINTF("Listening on unix dgram socket `%s'\n", *pp);
         }
 
+#ifndef _NO_NETBSD_USR_SRC_ 
+        /* I am having problems with /dev/klog on FreeBSD.
+         * will look at that later..., currently I just ignore
+         * it since it works on NetBSD  */
         if ((fklog = open(_PATH_KLOG, O_RDONLY, 0)) < 0) {
                 DPRINTF("Can't open `%s' (%d)\n", _PATH_KLOG, errno);
         } else {
                 DPRINTF("Listening on kernel log `%s' with fd %d\n", _PATH_KLOG, fklog);
         }
+#endif /* !_NO_NETBSD_USR_SRC_ */
 
 #ifndef DISABLE_TLS
         /* OpenSSL PRNG needs /dev/urandom, thus initialize before chroot() */
@@ -503,49 +509,65 @@ getgroup:
         
         ev = allocev();
         signal_set(ev, SIGTERM, die, ev);
-        signal_add(ev, NULL);
+        if (signal_add(ev, NULL) == -1) {
+                DPRINTF("Failure in signal_add()\n");
+        }
         
         if (Debug) {
                 ev = allocev();
                 signal_set(ev, SIGINT, die, ev);
-                signal_add(ev, NULL);
-                
+                if (signal_add(ev, NULL) == -1) {
+                        DPRINTF("Failure in signal_add()\n");
+                }
                 ev = allocev();
                 signal_set(ev, SIGQUIT, die, ev);
-                signal_add(ev, NULL);
+                if (signal_add(ev, NULL) == -1) {
+                        DPRINTF("Failure in signal_add()\n");
+                }
         }
 
         ev = allocev();
         signal_set(ev, SIGCHLD, reapchild, ev);
-        signal_add(ev, NULL);
+        if (signal_add(ev, NULL) == -1) {
+                DPRINTF("Failure in signal_add()\n");
+        }
 
         ev = allocev();
-        evtimer_set(ev, domark, ev);
-        event_add(ev, &(struct timeval){TIMERINTVL, 0});  /* {tv_sec, tv_usec} */
-
+        schedule_event(&ev,
+                &((struct timeval){TIMERINTVL, 0}),
+                domark, ev);
+                
         (void)signal(SIGPIPE, SIG_IGN); /* We'll catch EPIPE instead. */
 
         /* Re-read configuration on SIGHUP. */
         (void) signal(SIGHUP, SIG_IGN);
         ev = allocev();
         signal_set(ev, SIGHUP, init, ev);
-        signal_add(ev, NULL);
+        if (signal_add(ev, NULL) == -1) {
+                DPRINTF("Failure in signal_add()\n");
+        }
 
         if (fklog >= 0) {
                 ev = allocev();
                 DPRINTF("register klog for fd %d with ev@%p\n", fklog, ev);
                 event_set(ev, fklog, EV_READ | EV_PERSIST, dispatch_read_klog, ev);
-                event_add(ev, NULL);
+                if (event_add(ev, NULL) == -1) {
+                        DPRINTF("Failure in event_add()\n");
+                }
         }
         for (j = 0, pp = LogPaths; *pp; pp++, j++) {
                 ev = allocev();
                 event_set(ev, funix[j], EV_READ | EV_PERSIST, dispatch_read_funix, ev);
-                event_add(ev, NULL);
+                if (event_add(ev, NULL) == -1) {
+                        DPRINTF("Failure in event_add()\n");
+                }
         }
 
         DPRINTF("Off & running....\n");
         
-        event_dispatch();
+        j = event_dispatch();
+        DPRINTF("event_dispatch() returned %d\n", j);
+        return j;
 }
 
 void
@@ -1262,7 +1284,7 @@ fprintlog_noqueue(struct filed *f, int flags, char *msg, struct buf_msg *buffer)
                         fail = 0;
                         for (r = f->f_un.f_forw.f_addr; r; r = r->ai_next) {
                                 retry = 0;
-                                for (j = 0; j < *finet; j++) {
+                                for (j = 0; j < finet->fd; j++) {
 #if 0 
                                         /*
                                          * should we check AF first, or just
@@ -1272,7 +1294,7 @@ fprintlog_noqueue(struct filed *f, int flags, char *msg, struct buf_msg *buffer)
                                             address_family_of(finet[j+1])) 
 #endif
 sendagain:
-                                        lsent = sendto(finet[j+1], line, l, 0,
+                                        lsent = sendto(finet[j+1].fd, line, l, 0,
                                             r->ai_addr, r->ai_addrlen);
                                         if (lsent == -1) {
                                                 switch (errno) {
@@ -1588,6 +1610,7 @@ trim_localdomain(char *host)
 void
 domark(int fd, short event, void *ev)
 {
+        struct event *ev_pass = (struct event *)ev;
         struct filed *f;
         dq_t q, nextq;
 
@@ -1596,6 +1619,13 @@ domark(int fd, short event, void *ev)
          * has expired (i.e. in case we miss one?).  This information is
          * returned to us in ev->data.
          */
+        DPRINTF("domark()\n");
+
+        /* If I understand libevent correctly a time event
+         * is not persistent but has to be re-scheduled */
+        schedule_event(&ev_pass,
+                &((struct timeval){TIMERINTVL, 0}),
+                domark, ev_pass);
 
         now = time((time_t *)NULL);
         MarkSeq += TIMERINTVL;
@@ -1700,8 +1730,8 @@ die(int fd, short event, void *ev)
          * close all listening and connected TLS sockets
          */
         if (TLS_Listen_Set)
-                for (i = 0; i < *TLS_Listen_Set; i++)
-                        if (close(TLS_Listen_Set[i+1]) < 0)
+                for (i = 0; i < TLS_Listen_Set->fd; i++)
+                        if (close(TLS_Listen_Set[i+1].fd) == -1)
                                 logerror("close() failed");
         /* close/free incoming TLS connections */
         while (!SLIST_EMPTY(&TLS_Incoming_Head)) {
@@ -1806,9 +1836,17 @@ init(int fd, short event, void *ev)
          * close all listening and connected TLS sockets
          */
         if (TLS_Listen_Set)
-                for (i = 0; i < *TLS_Listen_Set; i++)
-                        if (close(TLS_Listen_Set[i+1]) < 0)
+                for (i = 0; i < TLS_Listen_Set->fd; i++) {
+                        if (close(TLS_Listen_Set[i+1].fd) == -1)
                                 logerror("close() failed");
+                                /* what do we do now? */
+                        if (event_del(TLS_Listen_Set[i+1].ev) == -1)
+                                logerror("event_del() failed");
+                                /* what do we do now? */
+                        else
+                                FREEPTR(TLS_Listen_Set[i+1].ev);
+                }
+
         /* close/free incoming TLS connections */
         while (!SLIST_EMPTY(&TLS_Incoming_Head)) {
                 tls_in = SLIST_FIRST(&TLS_Incoming_Head);
@@ -1888,11 +1926,16 @@ init(int fd, short event, void *ev)
          */
 
         if (finet) {
-                for (i = 0; i < *finet; i++) {
-                        if (close(finet[i+1]) < 0) {
+                for (i = 0; i < finet->fd; i++) {
+                        if (close(finet[i+1].fd) < 0) {
                                 logerror("close() failed");
                                 die(0, 0, NULL);
                         }
+                        if (event_del(finet[i+1].ev) == -1)
+                                logerror("event_del() failed");
+                                /* what do we do now? */
+                        else
+                                FREEPTR(finet[i+1].ev);
                 }
         }
 
@@ -2072,8 +2115,8 @@ init(int fd, short event, void *ev)
         finet = socksetup(PF_UNSPEC, bindhostname);
         if (finet) {
                 if (SecureMode) {
-                        for (i = 0; i < *finet; i++) {
-                                if (shutdown(finet[i+1], SHUT_RD) < 0) {
+                        for (i = 0; i < finet->fd; i++) {
+                                if (shutdown(finet[i+1].fd, SHUT_RD) < 0) {
                                         logerror("shutdown() failed");
                                         die(0, 0, NULL);
                                 }
@@ -2109,8 +2152,9 @@ init(int fd, short event, void *ev)
                 if (!tls_connect(tls_opt.global_TLS_CTX, f->f_un.f_tls.tls_conn)) {
                         logerror("Unable to connect to TLS server %s", f->f_un.f_tls.tls_conn->hostname);
                         /* Reconnect after x seconds  */
-                        event_once(0, 0, tls_reconnect, f, &(struct timeval){TLS_RECONNECT_SEC, 0});
-                        DPRINTF("scheduled reconnect in %d seconds\n", TLS_RECONNECT_SEC);
+                        schedule_event(&f->f_un.f_tls.tls_conn->event,
+                                &((struct timeval){TLS_RECONNECT_SEC, 0}),
+                                tls_reconnect, f);
                 }
         }
 #endif /* !DISABLE_TLS */
@@ -2424,13 +2468,13 @@ getmsgbufsize(void)
 #endif /* !_NO_NETBSD_USR_SRC_ */
 }
 
-int *
+struct socketEvent *
 socksetup(int af, const char *hostname)
 {
         struct addrinfo hints, *res, *r;
-        struct event *ev;
-        int error, maxs, *s, *socks;
+        int error, maxs;
         const int on = 1;
+        struct socketEvent *s, *socks;
 
         if(SecureMode && !NumForwards)
                 return(NULL);
@@ -2449,43 +2493,48 @@ socksetup(int af, const char *hostname)
         /* Count max number of sockets we may open */
         for (maxs = 0, r = res; r; r = r->ai_next, maxs++)
                 continue;
-        socks = malloc((maxs+1) * sizeof(int));
+        socks = malloc((maxs+1) * sizeof(*socks));
         if (!socks) {
                 logerror("Couldn't allocate memory for sockets");
                 die(0, 0, NULL);
         }
 
-        *socks = 0;   /* num of sockets counter at start of array */
+        socks->fd = 0;   /* num of sockets counter at start of array */
         s = socks + 1;
         for (r = res; r; r = r->ai_next) {
-                *s = socket(r->ai_family, r->ai_socktype, r->ai_protocol);
-                if (*s < 0) {
+                s->fd = socket(r->ai_family, r->ai_socktype, r->ai_protocol);
+                if (s->fd < 0) {
                         logerror("socket() failed");
                         continue;
                 }
-                if (r->ai_family == AF_INET6 && setsockopt(*s, IPPROTO_IPV6,
+                if (r->ai_family == AF_INET6 && setsockopt(s->fd, IPPROTO_IPV6,
                     IPV6_V6ONLY, &on, sizeof(on)) < 0) {
                         logerror("setsockopt(IPV6_V6ONLY) failed");
-                        close(*s);
+                        close(s->fd);
                         continue;
                 }
 
                 if (!SecureMode) {
-                        if (bind(*s, r->ai_addr, r->ai_addrlen) < 0) {
+                        if (bind(s->fd, r->ai_addr, r->ai_addrlen) < 0) {
                                 logerror("bind() failed");
-                                close(*s);
+                                close(s->fd);
                                 continue;
+                        } else {
+                                s->ev = allocev();
+                                event_set(s->ev, s->fd, EV_READ | EV_PERSIST, dispatch_read_finet, s->ev);
+                                if (event_add(s->ev, NULL) == -1) {
+                                        DPRINTF("Failure in event_add()\n");
+                                } else {
+                                        DPRINTF("Listen on UDP port\n");
+                                }
                         }
-                        ev = allocev();
-                        event_set(ev, *s, EV_READ | EV_PERSIST, dispatch_read_finet, ev);
-                        event_add(ev, NULL);
                 }
 
-                *socks = *socks + 1;
+                socks->fd = socks->fd + 1;  /* num counter */
                 s++;
         }
 
-        if (*socks == 0) {
+        if (socks->fd == 0) {
                 free (socks);
                 if(Debug)
                         return(NULL);
@@ -2645,14 +2694,29 @@ struct event *
 allocev(void)
 {
         struct event *ev;
-        
-        ev = malloc(sizeof(*ev));
-        if (ev) {
-                return ev;
-        } else {
+
+        if (!(ev = malloc(sizeof(*ev))))
                 logerror("Unable to allocate memory.");
-                die(0, 0, NULL);
-                return NULL;
+        return ev;
+}
+
+/* 
+ * seems like event_once uses always the same event object
+ * and cannot be used for different timers (?)
+ * 
+ * *ev is allocated if necessary
+ */
+inline void 
+schedule_event(struct event **ev, struct timeval *tv, void (*cb)(int, short, void *), void *arg)
+{
+        if (!*ev && !(*ev = allocev())) {
+                return;
+        }
+        event_set(*ev, 0, 0, cb, arg);
+        if (event_add(*ev, tv) == -1) {
+                DPRINTF("Failure in event_add()\n");
+        } else {
+                DPRINTF("Re-scheduled event\n");
         }
 }
 

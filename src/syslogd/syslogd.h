@@ -76,6 +76,19 @@ struct buf_queue {
 TAILQ_HEAD(buf_queue_head, buf_queue);
 #endif /* !DISABLE_TLS */
 
+
+struct event_cb_arg {
+        struct event *ev;
+        void *arg;
+};
+
+/* keeps track of UDP sockets and event objects */
+struct socketEvent {
+        int fd;
+        struct event *ev;
+};
+
+
 #include "pathnames.h"
 #include <sys/syslog.h>
 
@@ -160,7 +173,6 @@ struct filed {
         int     f_flags;                        /* file-specific flags */
 #define FFLAG_SYNC      0x01
 };
-
 
 #ifndef DISABLE_TLS
 

@@ -1,0 +1,51 @@
+= on libevent =
+(and a list of events+callbacks used in syslogd)
+
+Events:
+* set up in main(), event objects allocated once and never freed.
+  - mark timer, calls domark(), re-scheduled there
+  - Signals:
+    * SIGTERM, calls die()
+    * SIGINT, calls die()  (in Debug)
+    * SIGQUIT, calls die()  (in Debug)
+    * SIGCHLD, calls reapchild()
+    * SIGHUP, calls init()
+  - FD-read on fklog, calls dispatch_read_klog()
+  - FD-read on funix[] (local sockets), calls dispatch_read_funix()
+
+* UDP-sockets: socksetup() allocates events, returns list of (fd,event*)
+  FD-read on finet[], calls dispatch_read_finet
+* incoming TLS-socket: like UDP-sockets, work done in socksetup_tls()
+  FD-read on TLS_Listen_Set[], calls dispatch_accept_socket
+
+* outgoing TLS-socket/-connection
+  - init(): connect fails --> tls_conn->event to schedule tls_reconnect(), arg f
+  - tls_send() --> tls_conn->event to schedule tls_reconnect(), arg f
+  - tls_reconnect() --> tls_conn->event to re-schedule itself, arg f
+
+* incoming TLS-socket/-connection
+  - dispatch_accept_socket()
+    --> allocates conn_info->event
+    --> calls dispatch_accept_tls() with socket and conn_info
+  - dispatch_accept_tls()
+    --> conn_info->event to schedule itself, arg conn_info
+    --> conn_info->event for FD-read on socket/fd,
+        calls dispatch_read_tls(), arg socket/fd
+  - dispatch_read_tls()
+    --> tls_conn->event2 (!) to schedule itself, arg socket/fd
+
+all callbacks with arguments:
+void    domark(int fd, short event, void *ev = struct event* ev);
+void    die(int fd, short event, void *ev = notused);
+void    init(int fd, short event, void *ev = notused);
+void    reapchild(int fd, short event, void *ev = notused);
+static void dispatch_read_klog(int fd, short event, void *ev = notused);
+static void dispatch_read_finet(int fd, short event, void *ev = notused);
+static void dispatch_read_funix(int fd, short event, void *ev = notused);
+
+void dispatch_accept_socket(int fd, short event, void *ev = notused);
+void dispatch_accept_tls(int fd, short event, void *arg = struct tls_conn_settings *conn_info)
+void dispatch_read_tls(int fd_lib, short event, void *ev = int *fd)
+void tls_reconnect(int fd, short event, void *arg = struct filed *f);
+
+

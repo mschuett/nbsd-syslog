@@ -31,7 +31,7 @@
  */
 #define TLS_NONBLOCKING_USEC  200
 #define TLS_NONBLOCKING_TRIES 2
-#define TLS_RETRY_KEVENT_MSEC 200
+#define TLS_RETRY_KEVENT_USEC 20000
 
 /* reconnect to lost server after n sec */
 #define TLS_RECONNECT_SEC 10
@@ -63,6 +63,8 @@ struct tls_conn_settings {
                                                                  * certificate
                                                                  * validation needed */
         SSL  *sslptr;        /* active SSL object            */
+        struct event *event; /* event for socket activity    */
+        struct event *event2;/* event for scheduling. TODO: find a way to remove this  */
         char *hostname;      /* hostname or IP we connect to */
         char *port;          /* service name or port number  */
         char *subject;       /* configured hostname in cert  */
@@ -91,7 +93,7 @@ bool tls_connect(SSL_CTX *context, struct tls_conn_settings *conn);
 bool get_fingerprint(const X509 *cert, char **returnstring, const char *alg_name);
 bool match_hostnames(X509 *cert, const struct tls_conn_settings *conn);
 bool match_fingerprint(const X509 *cert, const struct tls_conn_settings *conn);
-int *socksetup_tls(const int af, const char *bindhostname, const char *port);
+struct socketEvent *socksetup_tls(const int af, const char *bindhostname, const char *port);
 void free_tls_sslptr(struct tls_conn_settings *tls_conn);
 void free_tls_conn(struct tls_conn_settings *tls_conn);
 void free_msg_queue(struct filed *f);

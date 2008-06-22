@@ -142,8 +142,10 @@ struct TypeInfo {
         {"FORW",    NULL,    "0", 0, 16384}, 
         {"USERS",   NULL,    "0", 0,  1024}, 
         {"WALL",    NULL,    "0", 0,  1024}, 
-        {"PIPE",    NULL, "1024", 0, 16384}, 
+        {"PIPE",    NULL, "1024", 0, 16384},
+#ifndef DISABLE_TLS
         {"TLS",     NULL,   "-1", 0, 16384}
+#endif /* !DISABLE_TLS */
 };
 
 /* hard limit on memory usage */
@@ -162,7 +164,9 @@ char    oldLocalHostName[MAXHOSTNAMELEN];/* previous hostname */
 char    *LocalDomain;           /* our local domain name */
 size_t  LocalDomainLen;         /* length of LocalDomain */
 struct socketEvent *finet;      /* Internet datagram sockets and events */
+#ifndef DISABLE_TLS
 struct socketEvent *TLS_Listen_Set; /* TLS/TCP sockets and events */
+#endif /* !DISABLE_TLS */
 int     Initialized = 0;        /* set when we have initialized ourselves */
 int     ShuttingDown;           /* set when we die() */
 int     MarkInterval = 20 * 60; /* interval between marks in seconds */
@@ -211,7 +215,7 @@ static void dispatch_read_klog(int fd, short event, void *ev);
 static void dispatch_read_finet(int fd, short event, void *ev);
 static void dispatch_read_funix(int fd, short event, void *ev);
 
-unsigned int purge_message_queue(struct filed *, unsigned int, int);
+unsigned int purge_message_queue(struct filed *f, const unsigned int, const int);
 void send_queue(struct filed *);
 
 /*
@@ -237,12 +241,10 @@ static const char *bindhostname = NULL;
 #define A_CNT(x)        (sizeof((x)) / sizeof((x)[0]))
 
 #ifndef DISABLE_TLS
-
 struct TLS_Incoming TLS_Incoming_Head = \
         SLIST_HEAD_INITIALIZER(TLS_Incoming_Head);
 extern char *SSL_ERRCODE[];
 struct tls_global_options_t tls_opt;
-
 #endif /* !DISABLE_TLS */
 
 int
@@ -1704,7 +1706,8 @@ domark(int fd, short event, void *ev)
                         BACKOFF(f);
                 }
                 if (sweep_queues)
-                        purge_message_queue(f, /* arbitrary value */ 20, PURGE_OLDEST);
+                        purge_message_queue(f, /* arbitrary value */ 20,
+                                PURGE_BY_PRIORITY);
         }
 
         /* Walk the dead queue, and see if we should signal somebody. */
@@ -2855,27 +2858,48 @@ send_queue(struct filed *f)
  *      to be deleted, e.g. in call from domark() 
  */
 unsigned int
-purge_message_queue(struct filed *f, unsigned int del_entries, int strategy)
+purge_message_queue(struct filed *f, const unsigned int del_entries, const int strategy)
 {
-        struct buf_queue *qentry;
         int removed = 0;
+        struct buf_queue *qentry = NULL;
+        struct buf_queue *delete[del_entries];
+        int pri, i;
+        bool found_lowest = false;
 
-        /* check global limits */
-        /* question on style:
-         * is there a way to format the boolean condition readable?
-         */
-        /* TODO: delete lower priorities first */
-        while (!TAILQ_EMPTY(&f->f_qhead)
-                && (del_entries > removed
-                   || (TypeInfo[f->f_type].queue_limit != -1
-                      && TypeInfo[f->f_type].queue_limit <= f->f_qelements
-                      ))) {
-                /* TODO
-                if (strategy == PURGE_BY_PRIORITY)
-                        
-                else
-                */
-                        qentry = TAILQ_FIRST(&f->f_qhead);
+        DPRINTF("purge_message_queue(%p, %d, %d)\n", f, del_entries, strategy);
+        
+        /* anything to do? */
+        if (del_entries == 0
+          && (TypeInfo[f->f_type].queue_limit == -1
+              || TypeInfo[f->f_type].queue_limit <= f->f_qelements))
+              return removed;
+        
+        /* find elements to delete */
+        if (strategy == PURGE_BY_PRIORITY) {
+                /* for every syslog priority scan message queue */
+                for (i = 0, pri = LOG_DEBUG; pri && !found_lowest; pri--) { 
+                        TAILQ_FOREACH(qentry, &f->f_qhead, entries) {
+                                if (LOG_PRI(qentry->msg->pri) == pri) {
+                                        delete[i] = qentry;
+                                        if (++i == del_entries)
+                                                /* break if needed number of entries found */
+                                                found_lowest = true;
+                                }
+                        }
+                }
+        } else /* strategy == PURGE_OLDEST or other value */ {
+                for (i = 0, qentry = TAILQ_FIRST(&f->f_qhead);
+                     !found_lowest && !TAILQ_EMPTY(&f->f_qhead);
+                     qentry = TAILQ_NEXT(qentry, entries)) {
+                        delete[i] = qentry;
+                        if (++i == del_entries)
+                                found_lowest = true;
+                }
+        }
+
+        /* now we have delete[] with i elements */
+        for (; i; i--) {
+                qentry = delete[i-1];
                 TAILQ_REMOVE(&f->f_qhead, qentry, entries);
                 removed++;
                 qentry->msg->refcount--;
@@ -2888,5 +2912,6 @@ purge_message_queue(struct filed *f, unsigned int del_entries, int strategy)
                 }
                 FREEPTR(qentry);
         }
+        DPRINTF("removed %d enties\n", removed);
         return removed;
 }

@@ -58,6 +58,12 @@
 
 #include <sys/resource.h>
 
+/* 
+ * question: should the buffer-code be encapsulated by #ifdefs?
+ * --> decided against because the changes are rather extensive,
+ *     especially in fprintlog()
+ */
+
 /* simple message buffer container */
 struct buf_msg {
         char *timestamp;
@@ -70,7 +76,6 @@ struct buf_msg {
 };
 
 /* queue of messages */
-
 struct buf_queue {
         struct buf_msg* msg;
         TAILQ_ENTRY(buf_queue) entries;

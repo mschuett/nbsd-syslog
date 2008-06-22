@@ -125,26 +125,32 @@ int     repeatinterval[] = { 30, 120, 600 };    /* # of secs before flush */
  * it does not result in additionally compiled code  */
 #define F_TLS       8 
 
-const char *TypeNames[] = {
-        "UNUSED",       "FILE",         "TTY",          "CONSOLE",
-        "FORW",         "USERS",        "WALL",         "PIPE",
-        "TLS"
+
+struct TypeInfo {
+        char *name;
+        char *queue_limit_string;
+        char *default_limit_string;
+        int   queue_limit;
+        int   max_msg_length;
+} TypeInfo[] = {
+        /* values are set in init() 
+         * -1 in queue_limit or max_msg_length means infinite */
+        {"UNUSED",   "0",    "0", 0,     0}, 
+        {"FILE",    NULL, "1024", 0, 16384}, 
+        {"TTY",     NULL,    "0", 0,  1024}, 
+        {"CONSOLE", NULL,    "0", 0,  1024}, 
+        {"FORW",    NULL,    "0", 0, 16384}, 
+        {"USERS",   NULL,    "0", 0,  1024}, 
+        {"WALL",    NULL,    "0", 0,  1024}, 
+        {"PIPE",    NULL, "1024", 0, 16384}, 
+        {"TLS",     NULL,   "-1", 0, 16384}
 };
 
-/*
- * maximum number of buffered messages
- * -1 means no limit
- */
-char *f_queue_limit_string[] = {   "0", "1024", "0",   "0",
-                                   "0",    "0", "0", "1024",
-                                  "-1", NULL
-};
-/* filled by init() */
-/* is there a way to make its size depend on the size of TypeNames? */
-int f_queue_limit[] = {   0, 0, 0, 0,
-                          0, 0, 0, 0,
-                          0
-};
+/* hard limit on memory usage */
+struct global_memory_limit {
+        char *configstring;
+        rlim_t numeric;
+} global_memory_limit = {NULL, 0};
 
 struct  filed *Files = NULL;
 struct  filed consfile;
@@ -205,7 +211,7 @@ static void dispatch_read_klog(int fd, short event, void *ev);
 static void dispatch_read_finet(int fd, short event, void *ev);
 static void dispatch_read_funix(int fd, short event, void *ev);
 
-unsigned int purge_message_queue(struct filed *, unsigned int);
+unsigned int purge_message_queue(struct filed *, unsigned int, int);
 void send_queue(struct filed *);
 
 /*
@@ -439,6 +445,8 @@ getgroup:
         } else {
                 DPRINTF("Listening on kernel log `%s' with fd %d\n", _PATH_KLOG, fklog);
         }
+#else
+        fklog = -1;
 #endif /* !_NO_NETBSD_USR_SRC_ */
 
 #ifndef DISABLE_TLS
@@ -1019,12 +1027,13 @@ logmsg(int pri, char *msg, char *from, int flags)
                          * in the future.
                          */
                         if (now > REPEATTIME(f)) {
-                                fprintlog(f, flags, (char *)NULL, NULL);
+                                fprintlog(f, flags, (char *)NULL, msgbuf);
                                 BACKOFF(f);
                         }
                 } else {
                         /* new line, save it */
                         if (f->f_prevcount)
+                                /* sending this old line is not buffered */
                                 fprintlog(f, 0, (char *)NULL, NULL);
                         f->f_repeatcount = 0;
                         f->f_prevpri = pri;
@@ -1032,10 +1041,12 @@ logmsg(int pri, char *msg, char *from, int flags)
                         (void)strncpy(f->f_prevhost, from,
                                         sizeof(f->f_prevhost));
                         if (msglen < MAXSVLINE) {
+                                /* message passed as part of struct filed :-/
+                                 * TODO: remove MAXSVLINE and unify these two branches  */
                                 f->f_prevlen = msglen;
                                 (void)strlcpy(f->f_prevline, msg,
                                     sizeof(f->f_prevline));
-                                fprintlog(f, flags, (char *)NULL, NULL);
+                                fprintlog(f, flags, (char *)NULL, msgbuf);
                         } else {
                                 f->f_prevline[0] = 0;
                                 f->f_prevlen = 0;
@@ -1068,6 +1079,7 @@ logmsg(int pri, char *msg, char *from, int flags)
                 msgbuf_new->refcount = 1;
                 msgbuf->refcount--;
                 msgbuf = msgbuf_new;
+                DPRINTF("queued and copied\n");
         }
         (void)sigsetmask(omask);
 }
@@ -1111,17 +1123,18 @@ fprintlog(struct filed *f, int flags, char *msg, struct buf_msg *buffer)
         /* note on TAILQ: newest message added at TAIL,
          *                oldest to be removed is FIRST
          */
-        if (!rc && buffer && msg) {
-                purge_message_queue(f, 0);
+        if (!rc && buffer) {
+                purge_message_queue(f, 0, PURGE_OLDEST);
                 while (!(qentry = malloc(sizeof(*qentry)))
-                      && purge_message_queue(f, 1))
+                      && purge_message_queue(f, 1, PURGE_OLDEST))
                      /* try allocating memory */;
                 if (!qentry) {
                         logerror("Unable to allocate memory");
-                        DPRINTF("no memory, msg dropped\n");
+                        DPRINTF("queue empty, no memory, msg dropped\n");
                 } else {
                         qentry->msg = buffer;
                         buffer->refcount++;
+                        f->f_qelements++;
                         TAILQ_INSERT_TAIL(&f->f_qhead, qentry, entries);
                         DPRINTF("unconnected, msg queued\n");
                 }
@@ -1159,11 +1172,12 @@ fprintlog_noqueue(struct filed *f, int flags, char *msg, struct buf_msg *buffer)
         struct iovec *v;
         struct addrinfo *r;
         int j, lsent, fail, retry, l = 0;
-        char line[MAXLINE + 1], repbuf[80], greetings[200];
+        size_t msglen, prefixlen;
+        char *line = NULL;
+        char repbuf[80], greetings[200];
 #define ADDEV() assert(++v - iov < A_CNT(iov))
 #ifndef DISABLE_TLS
-        /* TODO: remove size limit */
-        char tlsline[MAXLINE + 1 + PREFIXLENGTH + 1]; /* line + space + decimal length + null */
+        char *tlsline;
 #endif /* !DISABLE_TLS */
 
         DPRINTF("fprintlog(%p, %d, %p, %p)\n", f, flags, msg, buffer);
@@ -1246,7 +1260,7 @@ fprintlog_noqueue(struct filed *f, int flags, char *msg, struct buf_msg *buffer)
         }
         ADDEV();
 
-        DPRINTF("Logging to %s", TypeNames[f->f_type]);
+        DPRINTF("Logging to %s", TypeInfo[f->f_type].name);
         f->f_time = now;
 
         if ((f->f_type == F_FORW)
@@ -1254,24 +1268,49 @@ fprintlog_noqueue(struct filed *f, int flags, char *msg, struct buf_msg *buffer)
          || (f->f_type == F_TLS)
 #endif /* !DISABLE_TLS */
         ) {
-                        /*
-                         * check for local vs remote messages
-                         * (from FreeBSD PR#bin/7055)
-                         */
+                /* keep in sync with format below */
+                msglen = sizeof("<123>  []: ") + 15
+                        + strlen(f->f_prevhost) + iov[5].iov_len; 
+                if (!(line = malloc(msglen))) {
+                        logerror("Unable to allocate memory");
+                        f->f_prevcount = 0;
+                        return false;
+                }
+                /* TODO: we can avoid the copying for TLS by allocating
+                 *       10 bytes more in front of the message and later
+                 *       write the length into these bytes.
+                 */
+                /*
+                 * check for local vs remote messages
+                 * (from FreeBSD PR#bin/7055)
+                 */
                 if (strcasecmp(f->f_prevhost, LocalHostName)) {
-                        l = snprintf(line, sizeof(line) - 1,
+                        l = snprintf(line, msglen,
                                      "<%d>%.15s [%s]: %s",
                                      f->f_prevpri, (char *) iov[0].iov_base,
                                      f->f_prevhost, (char *) iov[5].iov_base);
                 } else {
-                        l = snprintf(line, sizeof(line) - 1, "<%d>%.15s %s",
+                        l = snprintf(line, msglen, "<%d>%.15s %s",
                                      f->f_prevpri, (char *) iov[0].iov_base,
                                      (char *) iov[5].iov_base);
                 }
-                if (l > MAXLINE)
-                        l = MAXLINE;
-        }                
-        
+                /* limith mesage length */
+                if (TypeInfo[f->f_type].max_msg_length != -1
+                 && TypeInfo[f->f_type].max_msg_length < l)
+                        l = TypeInfo[f->f_type].max_msg_length;
+                /* TODO: check syslog-protocol if we may truncate SD Elements */
+        } else {
+                /* limith mesage length for message content in iov[5]
+                 * 
+                 * Note: some destinations add a prefix (TLS) or a
+                 *       suffix (\r\n for console), so this is no
+                 *       hard limit
+                 */
+                msglen = iov[0].iov_len + iov[1].iov_len + iov[2].iov_len
+                        + iov[3].iov_len + iov[4].iov_len;
+                if (msglen + iov[5].iov_len > TypeInfo[f->f_type].max_msg_length)
+                        iov[5].iov_len = MAX (0, TypeInfo[f->f_type].max_msg_length - msglen); 
+        }
         switch (f->f_type) {
         case F_UNUSED:
                 DPRINTF("\n");
@@ -1329,15 +1368,27 @@ sendagain:
 #ifndef DISABLE_TLS
         case F_TLS:
                 DPRINTF("[%s]\n", f->f_un.f_tls.tls_conn->hostname);
-                j = snprintf(tlsline, sizeof(tlsline), "%d %s", l, line);
-                if (j >= sizeof(tlsline))
-                        j = sizeof(tlsline) - 1;
-
-                if ((f->f_un.f_tls.tls_conn->sslptr)
-                 && (tls_send(f, tlsline, j))) {
-                        DPRINTF("sent\n");
-                } else {
+        
+                for (prefixlen = 0, j = l; j; j /= 10)
+                        prefixlen++;
+                msglen = prefixlen + 1 + l + 1;  /* with \0 */
+                if (!(tlsline = malloc(msglen))) {
+                        logerror("Unable to allocate memory");
                         f->f_prevcount = 0;
+                        return false;
+                }
+
+                j = snprintf(tlsline, msglen, "%d %s", l, line);
+                if (j >= msglen)
+                        j = msglen;
+                fail = (f->f_un.f_tls.tls_conn->sslptr)
+                        ? !tls_send(f, tlsline, j)
+                        : 1;
+                free(line);
+                free(tlsline);
+                if (fail) {
+                        f->f_prevcount = 0;
+                        DPRINTF("not sent\n");
                         return false;
                 }
                 break;
@@ -1432,6 +1483,7 @@ sendagain:
                                 f->f_lasterror = e;
                                 if (lasterror != e)
                                         logerror(f->f_un.f_fname);
+                                /* TODO: can we get an event when file is writeable again? */
                                 f->f_prevcount = 0;
                                 return false;
                         }
@@ -1613,35 +1665,46 @@ domark(int fd, short event, void *ev)
         struct event *ev_pass = (struct event *)ev;
         struct filed *f;
         dq_t q, nextq;
-
-        /*
-         * XXX Should we bother to adjust for the # of times the timer
-         * has expired (i.e. in case we miss one?).  This information is
-         * returned to us in ev->data.
-         */
-        DPRINTF("domark()\n");
-
-        /* If I understand libevent correctly a time event
-         * is not persistent but has to be re-scheduled */
+        struct rlimit rlp;
+        struct rusage ru;
+#define MARKLINELENGTH 120
+        char markline[MARKLINELENGTH];
+#define MEMORY_HIGH_PERC 98
+        bool sweep_queues = false;
+        
         schedule_event(&ev_pass,
                 &((struct timeval){TIMERINTVL, 0}),
                 domark, ev_pass);
+        DPRINTF("domark()\n");
 
+        if ((getrusage(RUSAGE_SELF, &ru) == -1)
+         || (getrlimit(RLIMIT_DATA, &rlp) == -1)) {
+                logerror("Unable to get ressource usage/limits");
+                snprintf(markline, MARKLINELENGTH, "-- MARK --");
+        } else {
+                snprintf(markline, MARKLINELENGTH, "-- MARK -- (mem usage: %lld/%lld)",
+                        (long long)ru.ru_idrss+ru.ru_isrss, (long long)rlp.rlim_max);
+                /* TODO: check for overflow */
+                if (ru.ru_idrss+ru.ru_isrss >= (MEMORY_HIGH_PERC * rlp.rlim_max) / 100)
+                        sweep_queues = true;
+        }
         now = time((time_t *)NULL);
         MarkSeq += TIMERINTVL;
         if (MarkSeq >= MarkInterval) {
-                logmsg(LOG_INFO, "-- MARK --", LocalHostName, ADDDATE|MARK);
+                logmsg(LOG_INFO, markline, LocalHostName, ADDDATE|MARK);
                 MarkSeq = 0;
         }
 
         for (f = Files; f; f = f->f_next) {
                 if (f->f_prevcount && now >= REPEATTIME(f)) {
                         DPRINTF("Flush %s: repeated %d times, %d sec.\n",
-                            TypeNames[f->f_type], f->f_prevcount,
+                            TypeInfo[f->f_type].name, f->f_prevcount,
                             repeatinterval[f->f_repeatcount]);
                         fprintlog(f, 0, (char *)NULL, NULL);
                         BACKOFF(f);
                 }
+                if (sweep_queues)
+                        purge_message_queue(f, /* arbitrary value */ 20, PURGE_OLDEST);
         }
 
         /* Walk the dead queue, and see if we should signal somebody. */
@@ -1748,15 +1811,16 @@ die(int fd, short event, void *ev)
                 /* flush any pending output */
                 if (f->f_prevcount)
                         fprintlog(f, 0, (char *)NULL, NULL);
+                send_queue(f);
+                (void)purge_message_queue(f, TypeInfo[f->f_type].queue_limit, PURGE_OLDEST);
+
                 if (f->f_type == F_PIPE && f->f_un.f_pipe.f_pid > 0) {
                         (void) close(f->f_file);
                         f->f_un.f_pipe.f_pid = 0;
                 }
 #ifndef DISABLE_TLS
-                if (f->f_type == F_TLS) {
+                if (f->f_type == F_TLS)
                         free_tls_conn(f->f_un.f_tls.tls_conn);
-                        free_msg_queue(f);
-                }
         }
         
         FREEPTR(tls_opt.CAdir);
@@ -1803,7 +1867,6 @@ init(int fd, short event, void *ev)
         const struct config_keywords {
                 char *keyword;
                 char **variable;
-                bool numeric;
         } config_keywords[] = { 
                 {"tls_ca",          &tls_opt.CAfile},
                 {"tls_cadir",       &tls_opt.CAdir},
@@ -1812,9 +1875,10 @@ init(int fd, short event, void *ev)
                 {"tls_verify",      &tls_opt.x509verify},
                 {"tls_bindport",    &tls_opt.bindport},
                 {"tls_bindhost",    &tls_opt.bindhost},
-                {"tls_queue_size",  &f_queue_limit_string[F_TLS]},
-                {"file_queue_size", &f_queue_limit_string[F_FILE]},
-                {"pipe_queue_size", &f_queue_limit_string[F_PIPE]}
+                {"tls_queue_size",  &TypeInfo[F_TLS].queue_limit_string},
+                {"file_queue_size", &TypeInfo[F_FILE].queue_limit_string},
+                {"pipe_queue_size", &TypeInfo[F_PIPE].queue_limit_string},
+                {"mem_size_limit",  &global_memory_limit.configstring}
         };
 #endif /* !DISABLE_TLS */
 
@@ -1871,11 +1935,6 @@ init(int fd, short event, void *ev)
          * Or we check inside init() if new kevents arrive
          * for the incoming sockets...
          */
-         
-        /* init with new TLS_CTX
-         * as far as I see one cannot change the cert/key of an existing CTX
-         */
-        FREE_SSL_CTX(tls_opt.global_TLS_CTX);
 #endif /* !DISABLE_TLS */
 
         /*
@@ -1885,6 +1944,8 @@ init(int fd, short event, void *ev)
                 /* flush any pending output */
                 if (f->f_prevcount)
                         fprintlog(f, 0, (char *)NULL, NULL);
+                send_queue(f);
+                (void)purge_message_queue(f, TypeInfo[f->f_type].queue_limit, PURGE_OLDEST);
 
                 switch (f->f_type) {
                 case F_FILE:
@@ -1907,7 +1968,6 @@ init(int fd, short event, void *ev)
 #ifndef DISABLE_TLS
                 case F_TLS:
                         free_tls_conn(f->f_un.f_tls.tls_conn);
-                        free_msg_queue(f);
                         break;
 #endif /* !DISABLE_TLS */
                 }
@@ -1956,9 +2016,27 @@ init(int fd, short event, void *ev)
                 return;
         }
         linenum = 0;
+
+        /* init with new TLS_CTX
+         * as far as I see one cannot change the cert/key of an existing CTX
+         */
+        FREE_SSL_CTX(tls_opt.global_TLS_CTX);
+
 #ifndef DISABLE_TLS
+        /* free all previous config options */
+        for (i = 0; i < A_CNT(TypeInfo); i++) {
+                if (TypeInfo[i].queue_limit_string
+                 && TypeInfo[i].queue_limit_string != TypeInfo[i].default_limit_string) {
+                        FREEPTR(TypeInfo[i].queue_limit_string);
+                        TypeInfo[i].queue_limit_string = TypeInfo[i].default_limit_string;
+                 }
+        }
+        for (i = 0; i < A_CNT(config_keywords); i++)
+                if (*config_keywords[i].variable)
+                        FREEPTR(*config_keywords[i].variable);
+
         /* 
-         * global TLS settings
+         * global settings
          * I introduced a second parsing loop, because I do not want
          * errors caused by exotic line ordering.
          */
@@ -1978,8 +2056,19 @@ init(int fd, short event, void *ev)
                         }
                 }
         }
-        for (i = 0; f_queue_limit_string[i]; i++) {
-                f_queue_limit[i] = strtol(f_queue_limit_string[i], NULL, 10);
+        /* convert strings to integer values */
+        if (global_memory_limit.configstring) {
+                global_memory_limit.numeric =
+                        strtoll(global_memory_limit.configstring, NULL, 10);
+                if (setrlimit(RLIMIT_DATA,
+                        &((struct rlimit) {global_memory_limit.numeric, global_memory_limit.numeric})) == -1)
+                        logerror("Unable to setrlimit()");
+        }
+        for (i = 0; i < A_CNT(TypeInfo); i++) {
+                if (TypeInfo[i].queue_limit_string)
+                        TypeInfo[i].queue_limit = strtol(TypeInfo[i].queue_limit_string, NULL, 10);
+                else
+                        TypeInfo[i].queue_limit = strtol(TypeInfo[i].default_limit_string, NULL, 10);
         }
         rewind(cf);
         linenum = 0;
@@ -2080,7 +2169,7 @@ init(int fd, short event, void *ev)
                                         printf("X ");
                                 else
                                         printf("%d ", f->f_pmask[i]);
-                        printf("%s: ", TypeNames[f->f_type]);
+                        printf("%s: ", TypeInfo[f->f_type].name);
                         switch (f->f_type) {
                         case F_FILE:
                         case F_TTY:
@@ -2133,8 +2222,8 @@ init(int fd, short event, void *ev)
                 "bind: %s:%s, queue_limits: %d, %d, %d\n",
                 tls_opt.CAfile, tls_opt.CAdir, tls_opt.certfile,
                 tls_opt.keyfile, tls_opt.x509verify, tls_opt.bindhost,
-                tls_opt.bindport, f_queue_limit[F_TLS],
-                f_queue_limit[F_FILE], f_queue_limit[F_PIPE]);
+                tls_opt.bindport, TypeInfo[F_TLS].queue_limit,
+                TypeInfo[F_FILE].queue_limit, TypeInfo[F_PIPE].queue_limit);
         tls_opt.global_TLS_CTX = init_global_TLS_CTX(tls_opt.keyfile,
                                         tls_opt.certfile, tls_opt.CAfile,
                                         tls_opt.CAdir, tls_opt.x509verify);
@@ -2193,6 +2282,9 @@ cfline(const unsigned int linenum, char *line, struct filed *f, char *prog, char
         memset(f, 0, sizeof(*f));
         for (i = 0; i <= LOG_NFACILITIES; i++)
                 f->f_pmask[i] = INTERNAL_NOPRI;
+        f->f_qhead = ((struct buf_queue_head)
+                        TAILQ_HEAD_INITIALIZER(f->f_qhead));
+        TAILQ_INIT(&f->f_qhead); 
         
         /* 
          * There should not be any space before the log facility.
@@ -2696,7 +2788,7 @@ allocev(void)
         struct event *ev;
 
         if (!(ev = malloc(sizeof(*ev))))
-                logerror("Unable to allocate memory.");
+                logerror("Unable to allocate memory");
         return ev;
 }
 
@@ -2715,12 +2807,12 @@ schedule_event(struct event **ev, struct timeval *tv, void (*cb)(int, short, voi
         event_set(*ev, 0, 0, cb, arg);
         if (event_add(*ev, tv) == -1) {
                 DPRINTF("Failure in event_add()\n");
-        } else {
-                DPRINTF("Re-scheduled event\n");
         }
 }
 
-/* send message queue after reconnect */
+/* 
+ * send message queue after reconnect 
+ */
 void
 send_queue(struct filed *f)
 {
@@ -2740,12 +2832,12 @@ send_queue(struct filed *f)
                 strlcpy(f_tmp.f_lasttime, qptr->msg->timestamp, TIMESTAMPLEN+1);
                 f_tmp.f_host = qptr->msg->host;
                 
-                if (fprintlog_noqueue(&f_tmp, qptr->msg->flags, qptr->msg->line, qptr->msg))
+                if (!fprintlog_noqueue(&f_tmp, qptr->msg->flags, qptr->msg->line, qptr->msg))
                         return;
                 else {
-                        purge_message_queue(f, 1);
+                        purge_message_queue(f, 1, PURGE_OLDEST);
                 }
-        }                
+        }
 }
 
 /*
@@ -2756,9 +2848,14 @@ send_queue(struct filed *f)
  * 
  * returns the number of removed queue elements
  * (which not necessarily means free'd messages)
+ * 
+ * strategy PURGE_OLDEST to delete oldest entry, e.g. after it was resent
+ * strategy PURGE_BY_PRIORITY to delete messages with lowest priority first,
+ *      this is much slower but might be desirable when unsent messages have
+ *      to be deleted, e.g. in call from domark() 
  */
 unsigned int
-purge_message_queue(struct filed *f, unsigned int del_entries)
+purge_message_queue(struct filed *f, unsigned int del_entries, int strategy)
 {
         struct buf_queue *qentry;
         int removed = 0;
@@ -2767,18 +2864,22 @@ purge_message_queue(struct filed *f, unsigned int del_entries)
         /* question on style:
          * is there a way to format the boolean condition readable?
          */
+        /* TODO: delete lower priorities first */
         while (!TAILQ_EMPTY(&f->f_qhead)
                 && (del_entries > removed
-                   || (f_queue_limit[f->f_type] != -1
-                      && f_queue_limit[f->f_type] <= f->f_qelements
+                   || (TypeInfo[f->f_type].queue_limit != -1
+                      && TypeInfo[f->f_type].queue_limit <= f->f_qelements
                       ))) {
-                if (!(qentry = TAILQ_FIRST(&f->f_qhead))) {
-                        /* empty queue */
-                        return (bool) removed;
-                }
+                /* TODO
+                if (strategy == PURGE_BY_PRIORITY)
+                        
+                else
+                */
+                        qentry = TAILQ_FIRST(&f->f_qhead);
                 TAILQ_REMOVE(&f->f_qhead, qentry, entries);
                 removed++;
                 qentry->msg->refcount--;
+                f->f_qelements--;
                 if (!qentry->msg->refcount) {
                         FREEPTR(qentry->msg->timestamp);
                         FREEPTR(qentry->msg->host);

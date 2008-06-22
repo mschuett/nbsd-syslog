@@ -36,22 +36,10 @@
 /* reconnect to lost server after n sec */
 #define TLS_RECONNECT_SEC 10
 
-/* buffersize to process file length prefixes in TLS messages */
-#define PREFIXLENGTH 10
-
 /* options for peer certificate verification */
 #define X509VERIFY_ALWAYS 0
 #define X509VERIFY_IFPRESENT 1
 #define X509VERIFY_NONE 2
-
-/* one special problem:
- * kevent.udata has a different type an NetBSD and FreeBSD :-(
- */
-#ifndef _NO_NETBSD_USR_SRC_
-#define KEVENT_UDATA_CAST (intptr_t)
-#else
-#define KEVENT_UDATA_CAST (void*)
-#endif /* !_NO_NETBSD_USR_SRC_ */
 
 /*
  * holds TLS related settings for one connection to be
@@ -96,7 +84,6 @@ bool match_fingerprint(const X509 *cert, const struct tls_conn_settings *conn);
 struct socketEvent *socksetup_tls(const int af, const char *bindhostname, const char *port);
 void free_tls_sslptr(struct tls_conn_settings *tls_conn);
 void free_tls_conn(struct tls_conn_settings *tls_conn);
-void free_msg_queue(struct filed *f);
 int tls_examine_error(const char *functionname, const SSL *ssl, struct tls_conn_settings *tls_conn, const int rc);
 
 /* forward declarations */

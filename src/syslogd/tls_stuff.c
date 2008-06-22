@@ -42,7 +42,6 @@ extern bool    fprintlog_noqueue(struct filed *, int, char *, struct buf_msg *);
 extern void    printline(char *, char *, int);
 extern void    die(int fd, short event, void *ev);
 extern struct event *allocev(void);
-extern unsigned int purge_message_queue(struct filed *, unsigned int);
 extern void    send_queue(struct filed *);
 extern inline void schedule_event(struct event **, struct timeval *, void (*)(int, short, void *), void *);
 /*
@@ -631,10 +630,6 @@ parse_tls_destination(char *p, struct filed *f)
         }
         /* default values */
         f->f_un.f_tls.tls_conn->x509verify = X509VERIFY_NONE;
-        f->f_qhead = 
-                ((struct buf_queue_head)
-                TAILQ_HEAD_INITIALIZER(f->f_qhead));
-        TAILQ_INIT(&f->f_qhead);
 
         if (!(copy_string(&(f->f_un.f_tls.tls_conn->hostname), p, q)))
                 return false;
@@ -778,7 +773,6 @@ try_SSL_accept:
 /*
  * Dispatch routine for accepting TCP connections and preparing
  * the tls_conn_settings object for a following SSL_accept().
- * TODO: check correct LIBWRAP usage for TCP connections
  * TODO: how do we handle fingerprint auth for incoming?
  *       set up a list of tls_conn_settings and pick one matching the hostname?
  */
@@ -790,7 +784,6 @@ dispatch_accept_socket(int fd, short event, void *ev)
 #endif
         struct sockaddr_storage frominet;
         socklen_t addrlen;
-        int reject = 0;
         int newsock, rc;
         SSL *ssl;
         struct tls_conn_settings *conn_info;
@@ -803,19 +796,7 @@ dispatch_accept_socket(int fd, short event, void *ev)
                 return;
         }
 
-#ifdef LIBWRAP
-        request_init(&req, RQ_DAEMON, "syslogd", RQ_FILE, fd, NULL);
-        fromhost(&req);
-        reject = !hosts_access(&req);
-#endif
         addrlen = sizeof(frominet);
-        if (!(conn_info = calloc(1, sizeof(*conn_info)))
-         || !(conn_info->event = calloc(1, sizeof(*conn_info->event)))) {
-                free(conn_info);
-                logerror("Unable to allocate memory");
-                return;
-        }
-          
         if ((newsock = accept(fd, (struct sockaddr *)&frominet, &addrlen)) == -1) {
                 logerror("Error in accept(): %s", strerror(errno));
                 return;
@@ -827,17 +808,32 @@ dispatch_accept_socket(int fd, short event, void *ev)
         }
         else {
                 if (!(peername = malloc(strlen(hbuf)+1))) {
-                        logerror("Unable to allocate memory\n");
+                        logerror("Unable to allocate memory");
+                        shutdown(newsock, SHUT_RDWR);
+                        close(newsock);
                         return;
                 }
                 (void)strlcpy(peername, hbuf, strlen(hbuf)+1);
         }
+
 #ifdef LIBWRAP
-        if (reject) {
+        request_init(&req, RQ_DAEMON, "syslogd", RQ_FILE, newsock, NULL);
+        fromhost(&req);
+        if (!hosts_access(&req)) {
                 logerror("access from %s denied by hosts_access", peername);
+                shutdown(newsock, SHUT_RDWR);
+                close(newsock);
                 return;
         }
 #endif
+
+        if (!(conn_info = calloc(1, sizeof(*conn_info)))
+         || !(conn_info->event = calloc(1, sizeof(*conn_info->event)))) {
+                free(conn_info);
+                logerror("Unable to allocate memory");
+                return;
+        }
+
         if ((fcntl(newsock, F_SETFL, O_NONBLOCK)) == -1) {
                 DPRINTF("Unable to fcntl(sock, O_NONBLOCK): %s\n", strerror(errno));
         }
@@ -1166,27 +1162,6 @@ free_tls_conn(struct tls_conn_settings *tls_conn)
         if (tls_conn->event)       free(tls_conn->event);
         if (tls_conn->event2)      free(tls_conn->event2);
         if (tls_conn)              free(tls_conn);
-}
-
-void
-free_msg_queue(struct filed *f)
-{
-        struct buf_queue *q;
-        
-        /* try to send first */
-        send_queue(f);
-        
-        while (TAILQ_FIRST(&f->f_qhead) != NULL) {
-                q = TAILQ_FIRST(&f->f_qhead);
-                TAILQ_REMOVE(&f->f_qhead, q, entries);
-                if (q->msg->refcount == 1) {
-                        FREEPTR(q->msg->line);
-                        FREEPTR(q->msg->host);
-                        FREEPTR(q->msg->timestamp);
-                        free(q->msg);
-                }
-                free(q);                
-        }
 }
 
 /*

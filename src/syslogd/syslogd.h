@@ -56,6 +56,8 @@
 #include <sys/stdint.h>
 #include <openssl/ssl.h>
 
+#include <sys/resource.h>
+
 /* simple message buffer container */
 struct buf_msg {
         char *timestamp;
@@ -76,18 +78,11 @@ struct buf_queue {
 TAILQ_HEAD(buf_queue_head, buf_queue);
 #endif /* !DISABLE_TLS */
 
-
-struct event_cb_arg {
-        struct event *ev;
-        void *arg;
-};
-
 /* keeps track of UDP sockets and event objects */
 struct socketEvent {
         int fd;
         struct event *ev;
 };
-
 
 #include "pathnames.h"
 #include <sys/syslog.h>
@@ -122,6 +117,10 @@ struct socketEvent {
 #define ADDDATE         0x004   /* add a date to the message */
 #define MARK            0x008   /* this message is a mark */
 #define ISKERNEL        0x010   /* kernel generated message */
+
+/* strategies for purge_message_queue() */
+#define PURGE_OLDEST            1
+#define PURGE_BY_PRIORITY       2
 
 /*
  * This structure represents the files that will have log

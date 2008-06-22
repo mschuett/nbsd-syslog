@@ -103,8 +103,9 @@ struct socketEvent {
 
 #define FDMASK(fd)      (1 << (fd))
 
+/* remove first printf for short debug messages */
 #define DPRINTF(...)    if (Debug) { \
-                                printf("%s:%d\t", __FILE__, __LINE__); \
+                                printf("%s:%s:%.4d\t", make_timestamp(true), __FILE__, __LINE__); \
                                 printf(__VA_ARGS__); }
 
 #define FREEPTR(x)      if (x)     { free(x);         x = NULL; }

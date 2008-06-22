@@ -44,6 +44,8 @@ extern void    die(int fd, short event, void *ev);
 extern struct event *allocev(void);
 extern void    send_queue(struct filed *);
 extern inline void schedule_event(struct event **, struct timeval *, void (*)(int, short, void *), void *);
+extern inline char *make_timestamp(bool);
+
 /*
  * init OpenSSL lib and one context. returns NULL on error, otherwise SSL_CTX
  * all pointer arguments may be NULL (at least for clients)

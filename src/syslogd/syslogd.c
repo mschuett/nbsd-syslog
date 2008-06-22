@@ -208,6 +208,7 @@ void    wallmsg(struct filed *, struct iovec *, size_t);
 int     main(int, char *[]);
 void    logpath_add(char ***, int *, int *, char *);
 void    logpath_fileadd(char ***, int *, int *, char *);
+inline char *make_timestamp(bool);
 
 struct event *allocev(void);
 inline void schedule_event(struct event **, struct timeval *, void (*)(int, short, void *), void *);
@@ -907,7 +908,7 @@ logmsg(int pri, char *msg, char *from, int flags)
 
         (void)time(&now);
         if (flags & ADDDATE)
-                timestamp = ctime(&now) + 4;
+                timestamp = make_timestamp(false);
         else {
                 timestamp = msg;
                 msg += TIMESTAMPLEN+1;
@@ -1815,7 +1816,7 @@ die(int fd, short event, void *ev)
                 if (f->f_prevcount)
                         fprintlog(f, 0, (char *)NULL, NULL);
                 send_queue(f);
-                (void)purge_message_queue(f, TypeInfo[f->f_type].queue_limit, PURGE_OLDEST);
+                (void)purge_message_queue(f, f->f_qelements, PURGE_OLDEST);
 
                 if (f->f_type == F_PIPE && f->f_un.f_pipe.f_pid > 0) {
                         (void) close(f->f_file);
@@ -2914,4 +2915,42 @@ purge_message_queue(struct filed *f, const unsigned int del_entries, const int s
         }
         DPRINTF("removed %d enties\n", removed);
         return removed;
+}
+
+/*
+ * return a timestamp in a static buffer
+ */
+inline char *
+make_timestamp(bool iso)
+{
+#define TIMESTAMPBUFSIZE 35
+        const int frac_digits = 6;
+        static char timestamp[TIMESTAMPBUFSIZE];
+        struct tm *ltime;
+        struct timeval tv;
+        int len = 0;
+        int tzlen = 0;
+        /* uses global var: time_t now; */
+        
+        (void)time(&now);
+        if (!iso)
+                return ctime(&now) + 4;
+
+        ltime = localtime(&now);
+        gettimeofday(&tv, NULL);
+        
+        len += strftime(timestamp, TIMESTAMPBUFSIZE, "%FT%T.", ltime);
+        snprintf(&(timestamp[len]), frac_digits+1, "%.*ld", frac_digits, tv.tv_usec);
+        len += frac_digits;
+        tzlen = strftime(&(timestamp[len]), TIMESTAMPBUFSIZE, "%z", ltime);
+        len += tzlen;
+        
+        if (tzlen == 5) {
+                /* strftime gives "+0200", but we need "+02:00" */ 
+                timestamp[len+1] = timestamp[len];
+                timestamp[len] = timestamp[len-1];
+                timestamp[len-1] = timestamp[len-2];
+                timestamp[len-2] = ':';
+        }
+        return timestamp;
 }

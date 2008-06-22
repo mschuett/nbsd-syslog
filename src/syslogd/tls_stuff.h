@@ -77,7 +77,6 @@ struct daemon_status {
 
 SSL_CTX *init_global_TLS_CTX(const char *keyfilename, const char *certfilename, const char *CAfile, const char *CApath, const char *strx509verify);
 int check_peer_cert(int preverify_ok, X509_STORE_CTX * store);
-bool tls_connect(SSL_CTX *context, struct tls_conn_settings *conn);
 bool get_fingerprint(const X509 *cert, char **returnstring, const char *alg_name);
 bool match_hostnames(X509 *cert, const struct tls_conn_settings *conn);
 bool match_fingerprint(const X509 *cert, const struct tls_conn_settings *conn);
@@ -96,6 +95,8 @@ void tls_split_messages(struct TLS_Incoming_Conn *c);
 void dispatch_accept_socket(int fd_lib, short event, void *ev);
 void dispatch_accept_tls(int fd, short event, void *ev);
 void dispatch_read_tls(int fd_lib, short event, void *ev);
+void dispatch_eof_tls(int fd, short event, void *arg);
+bool tls_connect(SSL_CTX *, struct filed *);
 void tls_reconnect(int fd, short event, void *ev);
 bool tls_send(struct filed *f, char *line, size_t len);
 

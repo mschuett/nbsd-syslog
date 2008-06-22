@@ -423,13 +423,15 @@ socksetup_tls(const int af, const char *bindhostname, const char *port)
  * establish TLS connection 
  */
 bool
-tls_connect(SSL_CTX *context, struct tls_conn_settings *conn)
+tls_connect(SSL_CTX *context, struct filed *f)
 {
         struct addrinfo hints, *res, *res1;
         int    error, rc, sock;
         const int one = 1;
         char   buf[MAXLINE];
-        SSL    *ssl; 
+        SSL    *ssl;
+        struct tls_conn_settings *conn = f->f_un.f_tls.tls_conn;
+
         
         memset(&hints, 0, sizeof(hints));
         hints.ai_family = AF_UNSPEC;
@@ -489,6 +491,13 @@ tls_connect(SSL_CTX *context, struct tls_conn_settings *conn)
                 /* TODO: change outgoing sockets to non-blocking? */
                 rc = SSL_connect(ssl);
                 if (rc >= 1) {
+                        conn->event = allocev();
+                        event_set(conn->event, sock, EV_READ,
+                                dispatch_eof_tls, f);
+                        if (event_add(conn->event, NULL) == -1) {
+                                DPRINTF("Failure in event_add()\n");
+                        }
+                        
                         DPRINTF("TLS connection established.\n");
                         freeaddrinfo(res);
                         conn->sslptr = ssl;
@@ -701,7 +710,7 @@ tls_reconnect(int fd, short event, void *arg)
         
         DPRINTF("reconnect timer expired\n");
 
-        if (!tls_connect(tls_opt.global_TLS_CTX, f->f_un.f_tls.tls_conn)) {
+        if (!tls_connect(tls_opt.global_TLS_CTX, f)) {
                 logerror("Unable to connect to TLS server %s", f->f_un.f_tls.tls_conn->hostname);
                 schedule_event(&f->f_un.f_tls.tls_conn->event,
                         &((struct timeval){TLS_RECONNECT_SEC, 0}),
@@ -863,6 +872,29 @@ dispatch_accept_socket(int fd, short event, void *ev)
                 "calling SSL_accept()...\n",  peername, newsock);
         
         dispatch_accept_tls(newsock, 0, conn_info);
+}
+
+/*
+ * Dispatch routine to read from outgoing TCP/TLS sockets.
+ * 
+ * I do not know if libevent can tell us the difference
+ * between available data and an EOF. But it does not matter
+ * because there should not be any incoming data.
+ * So we close the connection either because the peer closed its
+ * side or because the peer broke the protocol by sending us stuff  ;-)
+ */
+void
+dispatch_eof_tls(int fd, short event, void *arg)
+{
+        struct filed *f = (struct filed *) arg;
+
+        DPRINTF("dispatch_eof_tls(%d, %d, %p)\n", fd, event, arg);
+
+        free_tls_sslptr(f->f_un.f_tls.tls_conn);
+
+        schedule_event(&f->f_un.f_tls.tls_conn->event,
+                &((struct timeval){0, TLS_RECONNECT_SEC}),
+                tls_reconnect, f);
 }
 
 /*

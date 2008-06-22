@@ -20,6 +20,8 @@ Events:
 
 * outgoing TLS-socket/-connection
   - init(): connect fails --> tls_conn->event to schedule tls_reconnect(), arg f
+            connection --> tls_conn->event for FD-read on socket/fd,
+		            calls dispatch_eof_tls(), arg f
   - tls_send() --> tls_conn->event to schedule tls_reconnect(), arg f
   - tls_reconnect() --> tls_conn->event to re-schedule itself, arg f
 
@@ -44,8 +46,9 @@ static void dispatch_read_finet(int fd, short event, void *ev = notused);
 static void dispatch_read_funix(int fd, short event, void *ev = notused);
 
 void dispatch_accept_socket(int fd, short event, void *ev = notused);
-void dispatch_accept_tls(int fd, short event, void *arg = struct tls_conn_settings *conn_info)
-void dispatch_read_tls(int fd_lib, short event, void *ev = int *fd)
+void dispatch_accept_tls(int fd, short event, void *arg = struct tls_conn_settings *conn_info);
+void dispatch_read_tls(int fd_lib, short event, void *ev = int *fd);
+void dispatch_eof_tls(int fd, short event, void *arg = struct filed *f);
 void tls_reconnect(int fd, short event, void *arg = struct filed *f);
 
 

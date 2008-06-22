@@ -2242,7 +2242,7 @@ init(int fd, short event, void *ev)
                                 tls_opt.keyfile, tls_opt.certfile,
                                 tls_opt.CAfile, tls_opt.CAdir,
                                 tls_opt.x509verify);
-                if (!tls_connect(tls_opt.global_TLS_CTX, f->f_un.f_tls.tls_conn)) {
+                if (!tls_connect(tls_opt.global_TLS_CTX, f)) {
                         logerror("Unable to connect to TLS server %s", f->f_un.f_tls.tls_conn->hostname);
                         /* Reconnect after x seconds  */
                         schedule_event(&f->f_un.f_tls.tls_conn->event,
@@ -2942,7 +2942,7 @@ make_timestamp(bool iso)
         len += strftime(timestamp, TIMESTAMPBUFSIZE, "%FT%T.", ltime);
         snprintf(&(timestamp[len]), frac_digits+1, "%.*ld", frac_digits, tv.tv_usec);
         len += frac_digits;
-        tzlen = strftime(&(timestamp[len]), TIMESTAMPBUFSIZE, "%z", ltime);
+        tzlen = strftime(&(timestamp[len]), TIMESTAMPBUFSIZE-len, "%z", ltime);
         len += tzlen;
         
         if (tzlen == 5) {

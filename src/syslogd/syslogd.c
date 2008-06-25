@@ -1672,7 +1672,9 @@ domark(int fd, short event, void *ev)
         struct rusage ru;
 #define MARKLINELENGTH 120
         char markline[MARKLINELENGTH];
-#define MEMORY_HIGH_PERC 98
+        char maxmem[12];
+        char usemem[12];
+#define MEMORY_HIGH_PERC 95
         bool sweep_queues = false;
         
         schedule_event(&ev_pass,
@@ -1685,8 +1687,11 @@ domark(int fd, short event, void *ev)
                 logerror("Unable to get ressource usage/limits");
                 snprintf(markline, MARKLINELENGTH, "-- MARK --");
         } else {
-                snprintf(markline, MARKLINELENGTH, "-- MARK -- (mem usage: %lld/%lld)",
-                        (long long)ru.ru_idrss+ru.ru_isrss, (long long)rlp.rlim_max);
+                humanize_number(usemem, sizeof(usemem), 1024*(ru.ru_idrss+ru.ru_isrss), "bytes", HN_AUTOSCALE, 0);
+                humanize_number(maxmem, sizeof(maxmem), rlp.rlim_max, "bytes", HN_AUTOSCALE, 0);
+                
+                snprintf(markline, MARKLINELENGTH, "-- MARK -- (mem usage: %s/%s)",
+                        usemem, maxmem);
                 /* TODO: check for overflow */
                 if (ru.ru_idrss+ru.ru_isrss >= (MEMORY_HIGH_PERC * rlp.rlim_max) / 100)
                         sweep_queues = true;
@@ -1787,6 +1792,7 @@ die(int fd, short event, void *ev)
         char **p;
 #ifndef DISABLE_TLS
         struct TLS_Incoming_Conn *tls_in;
+        struct peer_cred *cred;
         int i;
 #endif /* !DISABLE_TLS */
 
@@ -1831,6 +1837,12 @@ die(int fd, short event, void *ev)
         FREEPTR(tls_opt.CAfile);
         FREEPTR(tls_opt.keyfile);
         FREEPTR(tls_opt.certfile);
+        while (!SLIST_EMPTY(&tls_opt.cred_head)) {
+                cred = SLIST_FIRST(&tls_opt.cred_head);
+                SLIST_REMOVE_HEAD(&tls_opt.cred_head, entries);
+                FREEPTR(cred->data);
+                free(cred);
+        }
         FREE_SSL_CTX(tls_opt.global_TLS_CTX);
 #else
         }
@@ -1864,25 +1876,31 @@ init(int fd, short event, void *ev)
         bool found_keyword;
 #ifndef DISABLE_TLS
         struct TLS_Incoming_Conn *tls_in;
-        char *q;
-        
+        struct peer_cred *cred;
+        int credtype = C_UNKNOWN;
+        char *q, *tmp_buf;
+
         /* central list of recognized configuration keywords
          * and an address for their values as strings */
         const struct config_keywords {
                 char *keyword;
                 char **variable;
-        } config_keywords[] = { 
-                {"tls_ca",          &tls_opt.CAfile},
-                {"tls_cadir",       &tls_opt.CAdir},
-                {"tls_cert",        &tls_opt.certfile},
-                {"tls_key",         &tls_opt.keyfile},
-                {"tls_verify",      &tls_opt.x509verify},
-                {"tls_bindport",    &tls_opt.bindport},
-                {"tls_bindhost",    &tls_opt.bindhost},
-                {"tls_queue_size",  &TypeInfo[F_TLS].queue_limit_string},
-                {"file_queue_size", &TypeInfo[F_FILE].queue_limit_string},
-                {"pipe_queue_size", &TypeInfo[F_PIPE].queue_limit_string},
-                {"mem_size_limit",  &global_memory_limit.configstring}
+        } config_keywords[] = {
+                {"tls_ca",                &tls_opt.CAfile},
+                {"tls_cadir",             &tls_opt.CAdir},
+                {"tls_cert",              &tls_opt.certfile},
+                {"tls_key",               &tls_opt.keyfile},
+                {"tls_verify",            &tls_opt.x509verify},
+                {"tls_bindport",          &tls_opt.bindport},
+                {"tls_bindhost",          &tls_opt.bindhost},
+                /* special cases in parsing */
+                {"tls_allow_fingerprints",&tmp_buf},
+                {"tls_allow_subjects",    &tmp_buf},
+                {"tls_allow_peercerts",   &tmp_buf},
+                {"tls_queue_size",        &TypeInfo[F_TLS].queue_limit_string},
+                {"file_queue_size",       &TypeInfo[F_FILE].queue_limit_string},
+                {"pipe_queue_size",       &TypeInfo[F_PIPE].queue_limit_string},
+                {"mem_size_limit",        &global_memory_limit.configstring}
         };
 #endif /* !DISABLE_TLS */
 
@@ -2038,6 +2056,13 @@ init(int fd, short event, void *ev)
         for (i = 0; i < A_CNT(config_keywords); i++)
                 if (*config_keywords[i].variable)
                         FREEPTR(*config_keywords[i].variable);
+        
+        while (!SLIST_EMPTY(&tls_opt.cred_head)) {
+                cred = SLIST_FIRST(&tls_opt.cred_head);
+                SLIST_REMOVE_HEAD(&tls_opt.cred_head, entries);
+                FREEPTR(cred->data);
+                free(cred);
+        }
 
         /* 
          * global settings
@@ -2056,22 +2081,39 @@ init(int fd, short event, void *ev)
                                                 config_keywords[i].variable,
                                                 &p, &q, ConfFile, linenum)) {
                                 DPRINTF("found option %s\n", config_keywords[i].keyword);
+
+                                /* special cases */
+                                if (!strcmp("tls_allow_fingerprints", config_keywords[i].keyword))
+                                        credtype = C_FPRINT;
+                                else if (!strcmp("tls_allow_subjects", config_keywords[i].keyword))
+                                        credtype = C_SUBJECT;
+                                else if (!strcmp("tls_allow_peercerts", config_keywords[i].keyword))
+                                        credtype = C_CERTFILE;
+
+                                if (credtype != C_UNKNOWN) do {
+                                        if(!(cred = malloc(sizeof(*cred)))) {
+                                                logerror("Unable to allocate memory");
+                                                break;
+                                        }
+                                        cred->type = credtype;
+                                        cred->data = tmp_buf;
+                                        tmp_buf = NULL;
+                                        SLIST_INSERT_HEAD(&tls_opt.cred_head, cred, entries);
+                                } while /* additional values? */ (copy_config_value_cont(&tmp_buf, &p));
                                 break;
                         }
                 }
         }
         /* convert strings to integer values */
-        if (global_memory_limit.configstring) {
-                global_memory_limit.numeric =
-                        strtoll(global_memory_limit.configstring, NULL, 10);
+        if (global_memory_limit.configstring
+         && !expand_number(global_memory_limit.configstring, &global_memory_limit.numeric)) {
                 if (setrlimit(RLIMIT_DATA,
                         &((struct rlimit) {global_memory_limit.numeric, global_memory_limit.numeric})) == -1)
                         logerror("Unable to setrlimit()");
         }
         for (i = 0; i < A_CNT(TypeInfo); i++) {
-                if (TypeInfo[i].queue_limit_string)
-                        TypeInfo[i].queue_limit = strtol(TypeInfo[i].queue_limit_string, NULL, 10);
-                else
+                if (!TypeInfo[i].queue_limit_string
+                 || expand_number(TypeInfo[i].queue_limit_string, (int64_t*) &TypeInfo[i].queue_limit) == -1)
                         TypeInfo[i].queue_limit = strtol(TypeInfo[i].default_limit_string, NULL, 10);
         }
         rewind(cf);
@@ -2228,9 +2270,17 @@ init(int fd, short event, void *ev)
                 tls_opt.keyfile, tls_opt.x509verify, tls_opt.bindhost,
                 tls_opt.bindport, TypeInfo[F_TLS].queue_limit,
                 TypeInfo[F_FILE].queue_limit, TypeInfo[F_PIPE].queue_limit);
+        SLIST_FOREACH(cred, &tls_opt.cred_head, entries) {
+                DPRINTF("Accepting peer credential type %d: \"%s\"\n", cred->type, cred->data);
+        }
+
+        if (!strcasecmp(tls_opt.x509verify, "off")
+         || !strcasecmp(tls_opt.x509verify, "opt"))
+                logerror("insecure configuration, peer authentication disabled");
         tls_opt.global_TLS_CTX = init_global_TLS_CTX(tls_opt.keyfile,
                                         tls_opt.certfile, tls_opt.CAfile,
                                         tls_opt.CAdir, tls_opt.x509verify);
+
         DPRINTF("Preparing sockets for TLS\n");
         TLS_Listen_Set = socksetup_tls(PF_UNSPEC, tls_opt.bindhost, tls_opt.bindport);
 

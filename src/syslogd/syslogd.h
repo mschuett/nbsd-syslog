@@ -181,9 +181,27 @@ struct filed {
 
 #ifndef DISABLE_TLS
 
+/* linked list for allowed peer credentials
+ * (either subject or fingerprint or cert-file)
+ * 
+ * Note: these are all checks for the peer's x.509 cert 
+ * we do not filter by IP, because we have libwrap for that
+ */
+#define C_UNKNOWN  0
+#define C_SUBJECT  1
+#define C_FPRINT   2
+#define C_CERTFILE 3
+SLIST_HEAD(peer_cred_head, peer_cred);
+struct peer_cred {
+        SLIST_ENTRY(peer_cred) entries;
+        int   type;
+        char *data;
+};
+
 /* config options for TLS server-side */
 struct tls_global_options_t {
         SSL_CTX *global_TLS_CTX;
+        struct peer_cred_head cred_head;  /* trusted peer credentials */
         char *keyfile;      /* file with private key */
         char *certfile;     /* file with own certificate */
         char *CAfile;       /* file with CA certificate */

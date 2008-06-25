@@ -98,6 +98,14 @@ init_global_TLS_CTX(const char *keyfilename, const char *certfilename,
         /* 
          * TODO: is it possible to have one destination with and one
          * without verification?
+         * --> no. there is only SSL_CTX_set_verify() but no SSL_set_verify()
+         *     so the settings are global for all connections.
+         * 
+         * --> the latest draft mandates the use of certificates for client and server.
+         *     so the option X509VERIFY_NONE should give a warning and the
+         *     practically useless X509VERIFY_IFPRESENT can be eliminated
+         * (http://tools.ietf.org/html/draft-ietf-syslog-transport-tls-13#section-4.2.1)
+         * 
          */
         if ((x509verify == X509VERIFY_NONE) || (x509verify == X509VERIFY_IFPRESENT))
                 /* ask for cert, but a client does not have to send one */
@@ -348,6 +356,7 @@ socksetup_tls(const int af, const char *bindhostname, const char *port)
         const int on = 1;
         struct socketEvent *s, *socks;
 
+        /* TODO: config option for TLS client-only mode */
         if(tls_opt.client_only)
                 return(NULL);
 
@@ -431,7 +440,6 @@ tls_connect(SSL_CTX *context, struct filed *f)
         char   buf[MAXLINE];
         SSL    *ssl;
         struct tls_conn_settings *conn = f->f_un.f_tls.tls_conn;
-
         
         memset(&hints, 0, sizeof(hints));
         hints.ai_family = AF_UNSPEC;
@@ -443,7 +451,6 @@ tls_connect(SSL_CTX *context, struct filed *f)
                 logerror(gai_strerror(error));
                 return false;
         }
-        
         if (!context) {
                 logerror("No TLS context in tls_connect()");
                 return false;
@@ -488,7 +495,13 @@ tls_connect(SSL_CTX *context, struct filed *f)
                 /* connect */
                 DPRINTF("Calling SSL_connect()...\n");
                 errno = 0;  /* reset to be sure we get the right one later on */
-                /* TODO: change outgoing sockets to non-blocking? */
+                /* 
+                 * TODO: change outgoing sockets to non-blocking?
+                 * 
+                 * Problem: SSL_connect() itself cannot be non-blocking,
+                 * because the for-loop needs a definite yes/no whether
+                 * we found the right res from getaddrinfo()
+                 */
                 rc = SSL_connect(ssl);
                 if (rc >= 1) {
                         conn->event = allocev();
@@ -614,6 +627,29 @@ copy_config_value(const char *keyword, char **mem, char **p, char **q, const cha
           || (*q = strchr(*p, '\n')) || (*q = strchr(*p, '\0')));
 
         if (!(copy_string(mem, *p, *q)))
+                return false;
+
+        *p = ++(*q);
+        return true;
+}
+
+/* copy next parameter from a config line */
+bool
+copy_config_value_cont(char **mem, char **p)
+{
+        char *qq;
+        char **q = &qq;
+        while (isspace((unsigned char)**p))
+                *p += 1;
+        if (**p == '"')
+                return copy_config_value_quoted("\"", mem, p, q);
+
+        /* without quotes: find next whitespace or end of line */
+        (void) ((*q = strchr(*p, ' ')) || (*q = strchr(*p, '\t'))
+          || (*q = strchr(*p, '\n')) || (*q = strchr(*p, '\0')));
+
+        if (*q-*p == 0
+         || !(copy_string(mem, *p, *q)))
                 return false;
 
         *p = ++(*q);
@@ -865,6 +901,7 @@ dispatch_accept_socket(int fd, short event, void *ev)
         conn_info->hostname = peername;
         conn_info->x509verify = X509VERIFY_NONE;
         conn_info->sslptr = ssl;
+        conn_info->tls_opt = &tls_opt;
         SSL_set_app_data(ssl, conn_info);
         SSL_set_accept_state(ssl);
 
@@ -1132,13 +1169,11 @@ tls_send(struct filed *f, char *line, size_t len)
         }
 
         /* 
-         * what happens if a peer does not acknowledge a TCP/TS transmission?
-         * --> that will hang our syslogd.
+         * Note: SSL_write() is non-blocking, but tls_send() is.
          * 
-         * should I make outgoing sockets non-blocking?
-         * --> depends on how much we trust the logserver
-         *     (to be non-malicious _and_ bug-free)
-         * --> TODO
+         * We only use the TLS_RETRY->goto loop to enforce a
+         * timeout for SSL_write() after which we declare the
+         * connection to be broken.
          */
         retry = 0;
 try_SSL_write:
@@ -1154,10 +1189,6 @@ try_SSL_write:
                                         goto try_SSL_write;
                                 }
                                 break;
-                        case TLS_TEMP_ERROR:
-                                if ((f->f_un.f_tls.tls_conn->errorcount)++ < TLS_MAXERRORCOUNT)
-                                        break;
-                                /* else fallthrough */
                         case TLS_PERM_ERROR:
                                 /* Reconnect after x seconds  */
                                 schedule_event(&f->f_un.f_tls.tls_conn->event,

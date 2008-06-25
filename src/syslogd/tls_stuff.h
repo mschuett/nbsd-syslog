@@ -29,7 +29,7 @@
  * I also have no idea which values are optimal or whether setting up
  * the timer-kevent is more expensive than sleeping for some time.
  */
-#define TLS_NONBLOCKING_USEC  200
+#define TLS_NONBLOCKING_USEC  750
 #define TLS_NONBLOCKING_TRIES 2
 #define TLS_RETRY_KEVENT_USEC 20000
 
@@ -59,6 +59,9 @@ struct tls_conn_settings {
         char *fingerprint;   /* fingerprint of peer cert     */
         char *certfile;      /* copy of peer cert -- not implemented */
         char errorcount;     /* to be able to close a connection after sveral errors */
+        struct tls_global_options_t *tls_opt;   /* global tls options. 
+                                only set for incoming connections
+                                to be used for certificate authentication */
 };
 /*
  * may be a TODO:
@@ -80,16 +83,14 @@ int check_peer_cert(int preverify_ok, X509_STORE_CTX * store);
 bool get_fingerprint(const X509 *cert, char **returnstring, const char *alg_name);
 bool match_hostnames(X509 *cert, const struct tls_conn_settings *conn);
 bool match_fingerprint(const X509 *cert, const struct tls_conn_settings *conn);
-struct socketEvent *socksetup_tls(const int af, const char *bindhostname, const char *port);
-void free_tls_sslptr(struct tls_conn_settings *tls_conn);
-void free_tls_conn(struct tls_conn_settings *tls_conn);
-int tls_examine_error(const char *functionname, const SSL *ssl, struct tls_conn_settings *tls_conn, const int rc);
 
-/* forward declarations */
 bool copy_string(char **mem, const char *p, const char *q);
 bool copy_config_value_quoted(const char *keyword, char **mem, char **p, char **q);
 bool copy_config_value(const char *, char **, char **, char **, const char *, const int);
+bool copy_config_value_cont(char **, char **);
 bool parse_tls_destination(char *p, struct filed *f);
+struct socketEvent *socksetup_tls(const int af, const char *bindhostname, const char *port);
+
 void tls_split_messages(struct TLS_Incoming_Conn *c);
 
 void dispatch_accept_socket(int fd_lib, short event, void *ev);
@@ -99,5 +100,9 @@ void dispatch_eof_tls(int fd, short event, void *arg);
 bool tls_connect(SSL_CTX *, struct filed *);
 void tls_reconnect(int fd, short event, void *ev);
 bool tls_send(struct filed *f, char *line, size_t len);
+
+void free_tls_sslptr(struct tls_conn_settings *tls_conn);
+void free_tls_conn(struct tls_conn_settings *tls_conn);
+int tls_examine_error(const char *functionname, const SSL *ssl, struct tls_conn_settings *tls_conn, const int rc);
 
 #endif /* !_TLS_STUFF_H */

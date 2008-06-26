@@ -13,6 +13,16 @@
 #define TLSBACKLOG 4
 #define TLS_MAXERRORCOUNT 4
 
+/* copied from FreeBSD -- makes some loops shorter */
+#ifndef SLIST_FOREACH_SAFE
+
+#define SLIST_FOREACH_SAFE(var, head, field, tvar)          \
+    for ((var) = SLIST_FIRST((head));               \
+        (var) && ((tvar) = SLIST_NEXT((var), field), 1);        \
+        (var) = (tvar))
+        
+#endif /* !SLIST_FOREACH_SAFE */
+
 /* 
  * incoming sockets and TLS functions on them are non-blocking,
  * so the immediate retry inside the dispatch routines may take
@@ -44,12 +54,20 @@
 /*
  * holds TLS related settings for one connection to be
  * included in the SSL object and available in callbacks
+ * 
+ * It serves two different purposes:
+ * - for outgoing connections it contains the values from syslog.conf and
+ *   the server's cert is checked against these values by check_peer_cert()
+ * - for incoming connections it is not used for checking, instead
+ *   dispatch_accept_tls() fills in the connected hostname/port and
+ *   check_peer_cert() fills in the actual values as read from the peer cert
+ * 
  */
 struct tls_conn_settings {
         /* short int verify_depth;      currently not checked. necessary? */
-        unsigned int x509verify:6, force_fingerprint_check:1;   /* the kind of
-                                                                 * certificate
-                                                                 * validation needed */
+        unsigned int x509verify:2,              /* kind of validation needed */
+                     incoming:1;                /* set if we are server */
+           
         SSL  *sslptr;        /* active SSL object            */
         struct event *event; /* event for socket activity    */
         struct event *event2;/* event for scheduling. TODO: find a way to remove this  */
@@ -57,7 +75,7 @@ struct tls_conn_settings {
         char *port;          /* service name or port number  */
         char *subject;       /* configured hostname in cert  */
         char *fingerprint;   /* fingerprint of peer cert     */
-        char *certfile;      /* copy of peer cert -- not implemented */
+        char *certfile;      /* copy of peer cert */
         char errorcount;     /* to be able to close a connection after sveral errors */
         struct tls_global_options_t *tls_opt;   /* global tls options. 
                                 only set for incoming connections

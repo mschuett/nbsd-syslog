@@ -218,6 +218,7 @@ static void dispatch_read_funix(int fd, short event, void *ev);
 
 unsigned int purge_message_queue(struct filed *f, const unsigned int, const int);
 void send_queue(struct filed *);
+inline void free_cred_SLIST(struct peer_cred_head *);
 
 /*
  * Global line buffer.  Since we only process one event at a time,
@@ -1792,7 +1793,6 @@ die(int fd, short event, void *ev)
         char **p;
 #ifndef DISABLE_TLS
         struct TLS_Incoming_Conn *tls_in;
-        struct peer_cred *cred;
         int i;
 #endif /* !DISABLE_TLS */
 
@@ -1832,17 +1832,13 @@ die(int fd, short event, void *ev)
                 if (f->f_type == F_TLS)
                         free_tls_conn(f->f_un.f_tls.tls_conn);
         }
-        
+
         FREEPTR(tls_opt.CAdir);
         FREEPTR(tls_opt.CAfile);
         FREEPTR(tls_opt.keyfile);
         FREEPTR(tls_opt.certfile);
-        while (!SLIST_EMPTY(&tls_opt.cred_head)) {
-                cred = SLIST_FIRST(&tls_opt.cred_head);
-                SLIST_REMOVE_HEAD(&tls_opt.cred_head, entries);
-                FREEPTR(cred->data);
-                free(cred);
-        }
+        free_cred_SLIST(&tls_opt.cert_head);
+        free_cred_SLIST(&tls_opt.fprint_head);
         FREE_SSL_CTX(tls_opt.global_TLS_CTX);
 #else
         }
@@ -1876,8 +1872,8 @@ init(int fd, short event, void *ev)
         bool found_keyword;
 #ifndef DISABLE_TLS
         struct TLS_Incoming_Conn *tls_in;
-        struct peer_cred *cred;
-        int credtype = C_UNKNOWN;
+        struct peer_cred *cred = NULL;
+        struct peer_cred_head *credhead = NULL;
         char *q, *tmp_buf;
 
         /* central list of recognized configuration keywords
@@ -1895,8 +1891,7 @@ init(int fd, short event, void *ev)
                 {"tls_bindhost",          &tls_opt.bindhost},
                 /* special cases in parsing */
                 {"tls_allow_fingerprints",&tmp_buf},
-                {"tls_allow_subjects",    &tmp_buf},
-                {"tls_allow_peercerts",   &tmp_buf},
+                {"tls_allow_clientcerts", &tmp_buf},
                 {"tls_queue_size",        &TypeInfo[F_TLS].queue_limit_string},
                 {"file_queue_size",       &TypeInfo[F_FILE].queue_limit_string},
                 {"pipe_queue_size",       &TypeInfo[F_PIPE].queue_limit_string},
@@ -2056,13 +2051,8 @@ init(int fd, short event, void *ev)
         for (i = 0; i < A_CNT(config_keywords); i++)
                 if (*config_keywords[i].variable)
                         FREEPTR(*config_keywords[i].variable);
-        
-        while (!SLIST_EMPTY(&tls_opt.cred_head)) {
-                cred = SLIST_FIRST(&tls_opt.cred_head);
-                SLIST_REMOVE_HEAD(&tls_opt.cred_head, entries);
-                FREEPTR(cred->data);
-                free(cred);
-        }
+        free_cred_SLIST(&tls_opt.cert_head);
+        free_cred_SLIST(&tls_opt.fprint_head);
 
         /* 
          * global settings
@@ -2084,22 +2074,20 @@ init(int fd, short event, void *ev)
 
                                 /* special cases */
                                 if (!strcmp("tls_allow_fingerprints", config_keywords[i].keyword))
-                                        credtype = C_FPRINT;
-                                else if (!strcmp("tls_allow_subjects", config_keywords[i].keyword))
-                                        credtype = C_SUBJECT;
-                                else if (!strcmp("tls_allow_peercerts", config_keywords[i].keyword))
-                                        credtype = C_CERTFILE;
+                                        credhead = &tls_opt.fprint_head;
+                                else if (!strcmp("tls_allow_clientcerts", config_keywords[i].keyword))
+                                        credhead = &tls_opt.cert_head;
 
-                                if (credtype != C_UNKNOWN) do {
+                                if (credhead) do {
                                         if(!(cred = malloc(sizeof(*cred)))) {
                                                 logerror("Unable to allocate memory");
                                                 break;
                                         }
-                                        cred->type = credtype;
                                         cred->data = tmp_buf;
                                         tmp_buf = NULL;
-                                        SLIST_INSERT_HEAD(&tls_opt.cred_head, cred, entries);
+                                        SLIST_INSERT_HEAD(credhead, cred, entries);
                                 } while /* additional values? */ (copy_config_value_cont(&tmp_buf, &p));
+                                credhead = NULL;
                                 break;
                         }
                 }
@@ -2270,12 +2258,16 @@ init(int fd, short event, void *ev)
                 tls_opt.keyfile, tls_opt.x509verify, tls_opt.bindhost,
                 tls_opt.bindport, TypeInfo[F_TLS].queue_limit,
                 TypeInfo[F_FILE].queue_limit, TypeInfo[F_PIPE].queue_limit);
-        SLIST_FOREACH(cred, &tls_opt.cred_head, entries) {
-                DPRINTF("Accepting peer credential type %d: \"%s\"\n", cred->type, cred->data);
+        SLIST_FOREACH(cred, &tls_opt.cert_head, entries) {
+                DPRINTF("Accepting peer certificate frem file: \"%s\"\n", cred->data);
+        }
+        SLIST_FOREACH(cred, &tls_opt.fprint_head, entries) {
+                DPRINTF("Accepting peer certificate with fingerprint: \"%s\"\n", cred->data);
         }
 
-        if (!strcasecmp(tls_opt.x509verify, "off")
-         || !strcasecmp(tls_opt.x509verify, "opt"))
+        if (tls_opt.x509verify
+         && (   !strcasecmp(tls_opt.x509verify, "off")
+             || !strcasecmp(tls_opt.x509verify, "opt")))
                 logerror("insecure configuration, peer authentication disabled");
         tls_opt.global_TLS_CTX = init_global_TLS_CTX(tls_opt.keyfile,
                                         tls_opt.certfile, tls_opt.CAfile,
@@ -2861,6 +2853,20 @@ schedule_event(struct event **ev, struct timeval *tv, void (*cb)(int, short, voi
         event_set(*ev, 0, 0, cb, arg);
         if (event_add(*ev, tv) == -1) {
                 DPRINTF("Failure in event_add()\n");
+        }
+}
+
+/* abbreviation for freeing credential lists */
+inline void
+free_cred_SLIST(struct peer_cred_head *head)
+{
+        struct peer_cred *cred;
+        
+        while (!SLIST_EMPTY(head)) {
+                cred = SLIST_FIRST(head);
+                SLIST_REMOVE_HEAD(head, entries);
+                FREEPTR(cred->data);
+                free(cred);
         }
 }
 

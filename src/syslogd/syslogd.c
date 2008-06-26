@@ -2069,7 +2069,7 @@ init(int fd, short event, void *ev)
                 for (i = 0; i < A_CNT(config_keywords); i++) {
                         if (copy_config_value(config_keywords[i].keyword,
                                                 config_keywords[i].variable,
-                                                &p, &q, ConfFile, linenum)) {
+                                                &p, ConfFile, linenum)) {
                                 DPRINTF("found option %s\n", config_keywords[i].keyword);
 
                                 /* special cases */
@@ -2086,7 +2086,7 @@ init(int fd, short event, void *ev)
                                         cred->data = tmp_buf;
                                         tmp_buf = NULL;
                                         SLIST_INSERT_HEAD(credhead, cred, entries);
-                                } while /* additional values? */ (copy_config_value_cont(&tmp_buf, &p));
+                                } while /* additional values? */ (copy_config_value_word(&tmp_buf, &p));
                                 credhead = NULL;
                                 break;
                         }

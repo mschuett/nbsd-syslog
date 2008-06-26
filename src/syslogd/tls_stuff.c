@@ -7,7 +7,6 @@
  *
  * TODO: trans-port-tls12+ (Mail from jsalowey on 080523) requires
  *       server and client to be able to generate self-signed certificates
- * TODO: define fingerprints for incoming connections.
  *
  * Martin Schütte
  */
@@ -136,7 +135,8 @@ get_fingerprint(const X509 *cert, char **returnstring, const char *alg_name)
         DPRINTF("get_fingerprint(cert, %p, \"%s\")\n", returnstring, alg_name);
         *returnstring = NULL;
         if ((alg_name && !(digest = (EVP_MD *) EVP_get_digestbyname(alg_name)))
-            || (!alg_name && !(digest = (EVP_MD *) EVP_get_digestbyname("SHA1")))) {
+            || (!alg_name && !(digest = (EVP_MD *) 
+                             EVP_get_digestbyname(DEFAULT_FINGERPRINT_ALG)))) {
                 DPRINTF("unknown digest algorithm %s\n", alg_name);
                 
                 return false;
@@ -176,7 +176,7 @@ get_fingerprint(const X509 *cert, char **returnstring, const char *alg_name)
  *       but there might be demand for, so it's a todo item.
  */
 bool
-match_hostnames(X509 *cert, const struct tls_conn_settings *conn)
+match_hostnames(X509 *cert, const char *hostname, const char *subject)
 {
         int i, len, num;
         char *buf;
@@ -187,12 +187,12 @@ match_hostnames(X509 *cert, const struct tls_conn_settings *conn)
         X509_NAME_ENTRY *entry;
         ASN1_OCTET_STRING *asn1_ip, *asn1_cn_ip;
         int crit, idx;
-        DPRINTF("match_hostnames(%p, %p) to check cert against %s and %s\n",
-            cert, conn, conn->subject, conn->hostname);
+        DPRINTF("match_hostnames(%p, \"%s\", \"%s\")\n",
+            cert, hostname, subject);
 
         /* see if hostname is an IP */
-        if ((conn->subject  && (asn1_ip = a2i_IPADDRESS(conn->subject )))
-         || (conn->hostname && (asn1_ip = a2i_IPADDRESS(conn->hostname))))
+        if ((subject  && (asn1_ip = a2i_IPADDRESS(subject )))
+         || (hostname && (asn1_ip = a2i_IPADDRESS(hostname))))
                 /* nothing */;
         else
                 asn1_ip = NULL;
@@ -216,8 +216,8 @@ match_hostnames(X509 *cert, const struct tls_conn_settings *conn)
                         if (gn->type == GEN_DNS) {
                                 buf = (char *)ASN1_STRING_data(gn->d.ia5);
                                 len = ASN1_STRING_length(gn->d.ia5);
-                                if (!strncasecmp(conn->subject, buf, len)
-                                    || !strncasecmp(conn->hostname, buf, len))
+                                if (!strncasecmp(subject, buf, len)
+                                    || !strncasecmp(hostname, buf, len))
                                         return true;
                         }
                 }
@@ -233,8 +233,8 @@ match_hostnames(X509 *cert, const struct tls_conn_settings *conn)
                 if (len > 0) {
                         DPRINTF("found CN: %.*s\n", len, ubuf);
                         /* hostname */
-                        if ((conn->subject && !strncasecmp(conn->subject, (const char*)ubuf, len))
-                            || (conn->hostname && !strncasecmp(conn->hostname, (const char*)ubuf, len))) {
+                        if ((subject && !strncasecmp(subject, (const char*)ubuf, len))
+                            || (hostname && !strncasecmp(hostname, (const char*)ubuf, len))) {
                                 OPENSSL_free(ubuf);
                                 return true;
                         }
@@ -242,8 +242,8 @@ match_hostnames(X509 *cert, const struct tls_conn_settings *conn)
                         /* IP -- convert to ASN1_OCTET_STRING and compare then
                          * so that "10.1.2.3" and "10.01.02.03" are equal */
                         if ((asn1_ip)
-                            && conn->subject
-                            && (asn1_cn_ip = a2i_IPADDRESS(conn->subject))
+                            && subject
+                            && (asn1_cn_ip = a2i_IPADDRESS(subject))
                             && !ASN1_OCTET_STRING_cmp(asn1_ip, asn1_cn_ip)) {
                                 return true;
                         }
@@ -257,20 +257,21 @@ match_hostnames(X509 *cert, const struct tls_conn_settings *conn)
  * check if certificate matches given fingerprint
  */
 bool
-match_fingerprint(const X509 *cert, const struct tls_conn_settings *conn)
+match_fingerprint(const X509 *cert, const char *fingerprint)
 {
 #define MAX_ALG_NAME_LENGTH 8
         char alg[MAX_ALG_NAME_LENGTH];
         char *certfingerprint;
-        char *p, *q;
+        char *p;
+        const char *q;
 
-        DPRINTF("match_fingerprint(%p, \"%s\")\n", cert, conn->fingerprint);
-        if (!conn->fingerprint)
+        DPRINTF("match_fingerprint(%p, \"%s\")\n", cert, fingerprint);
+        if (!fingerprint)
                 return false;
 
         /* get algorithm */
         p = alg;
-        q = conn->fingerprint;
+        q = fingerprint;
         while (*q != ':' && *q != '\0' && p < alg + MAX_ALG_NAME_LENGTH)
                 *p++ = *q++;
         *p = '\0';
@@ -279,7 +280,7 @@ match_fingerprint(const X509 *cert, const struct tls_conn_settings *conn)
                 DPRINTF("cannot get %s digest\n", alg);
                 return false;
         }
-        if (strncmp(certfingerprint, conn->fingerprint, strlen(certfingerprint))) {
+        if (strncmp(certfingerprint, fingerprint, strlen(certfingerprint))) {
                 DPRINTF("fail: fingerprints do not match\n");
                 free(certfingerprint);
                 return false;
@@ -322,7 +323,7 @@ match_certfile(const X509 *cert, const char *certfilename)
 
 /* used for incoming connections in check_peer_cert() */
 inline void
-accept_and_copy_info(struct tls_conn_settings *conn_info, char *fingerprint, char *cur_subjectline)
+accept_and_copy_info(struct tls_conn_settings *conn_info, char *fingerprint, const char *cur_subjectline)
 {
         if (fingerprint)
                 conn_info->fingerprint = fingerprint;
@@ -445,7 +446,7 @@ check_peer_cert(int preverify_ok, X509_STORE_CTX *ctx)
                 /* now check allowed client fingerprints/certs */
                 SLIST_FOREACH(cred, &conn_info->tls_opt->fprint_head, entries) {
                         conn_info->fingerprint = cred->data;
-                        if (match_fingerprint(cur_cert, conn_info)) {
+                        if (match_fingerprint(cur_cert, conn_info->fingerprint)) {
                                 DPRINTF("ACCEPT after OK from match_fingerprint()\n");
                                 accept_and_copy_info(conn_info, cur_fingerprint, cur_subjectline);
                                 return 1;
@@ -468,13 +469,13 @@ check_peer_cert(int preverify_ok, X509_STORE_CTX *ctx)
         FREEPTR(cur_fingerprint);  /* will not need it anymore */
         if (!conn_info->incoming && preverify_ok) {
                 /* certificate chain OK. check subject/hostname */
-                rc = match_hostnames(cur_cert, conn_info);
+                rc = match_hostnames(cur_cert, conn_info->hostname, conn_info->subject);
                 DPRINTF("%s after match_hostnames()\n", rc ? "ACCEPT" : "DENY");
                 return rc;              
         } else if (!conn_info->incoming && !preverify_ok) {
                 /* certificate chain not OK. check fingerprint/subject/hostname */
-                rc = match_fingerprint(cur_cert, conn_info);
-                rc2 = match_hostnames(cur_cert, conn_info);
+                rc = match_fingerprint(cur_cert, conn_info->fingerprint);
+                rc2 = match_hostnames(cur_cert, conn_info->hostname, conn_info->subject);
                 rc3 = match_certfile(cur_cert, conn_info->certfile);
                 DPRINTF("%s, depth 0 arrived, match_fingerprint() returned %d, "
                         "match_hostnames() returned %d, match_certfile "
@@ -728,18 +729,19 @@ copy_string(char **mem, const char *p, const char *q)
 
 /* keyword has to end with ",  everything until next " is copied */
 bool
-copy_config_value_quoted(const char *keyword, char **mem, char **p, char **q)
+copy_config_value_quoted(const char *keyword, char **mem, char **p)
 {
+        char *q;
         if (strncasecmp(*p, keyword, strlen(keyword)))
                 return false;
-        *q = *p += strlen(keyword);
-        if (!(*q = strchr(*p, '"'))) {
+        q = *p += strlen(keyword);
+        if (!(q = strchr(*p, '"'))) {
                 logerror("unterminated \"\n");
                 return false;
         }
-        if (!(copy_string(mem, *p, *q)))
+        if (!(copy_string(mem, *p, q)))
                 return false;
-        *p = ++(*q);
+        *p = ++q;
         return true;
 }
 
@@ -748,8 +750,9 @@ copy_config_value_quoted(const char *keyword, char **mem, char **p, char **q)
  * if numeric, then conversion to integer and no memory allocation 
  */
 bool
-copy_config_value(const char *keyword, char **mem, char **p, char **q, const char *file, const int line)
+copy_config_value(const char *keyword, char **mem, char **p, const char *file, const int line)
 {
+        char *q;
         if (strncasecmp(*p, keyword, strlen(keyword)))
                 return false;
         *p += strlen(keyword);
@@ -761,43 +764,29 @@ copy_config_value(const char *keyword, char **mem, char **p, char **q, const cha
                 return false;
         }
         *p += 1;
-        while (isspace((unsigned char)**p))
-                *p += 1;
-
-        if (**p == '"')
-                return copy_config_value_quoted("\"", mem, p, q);
-
-        /* without quotes: find next whitespace or end of line */
-        (void) ((*q = strchr(*p, ' ')) || (*q = strchr(*p, '\t'))
-          || (*q = strchr(*p, '\n')) || (*q = strchr(*p, '\0')));
-
-        if (!(copy_string(mem, *p, *q)))
-                return false;
-
-        *p = ++(*q);
-        return true;
+        
+        return copy_config_value_word(mem, p);
 }
 
 /* copy next parameter from a config line */
 bool
-copy_config_value_cont(char **mem, char **p)
+copy_config_value_word(char **mem, char **p)
 {
-        char *qq;
-        char **q = &qq;
+        char *q;
         while (isspace((unsigned char)**p))
                 *p += 1;
         if (**p == '"')
-                return copy_config_value_quoted("\"", mem, p, q);
+                return copy_config_value_quoted("\"", mem, p);
 
         /* without quotes: find next whitespace or end of line */
-        (void) ((*q = strchr(*p, ' ')) || (*q = strchr(*p, '\t'))
-          || (*q = strchr(*p, '\n')) || (*q = strchr(*p, '\0')));
+        (void) ((q = strchr(*p, ' ')) || (q = strchr(*p, '\t'))
+          || (q = strchr(*p, '\n')) || (q = strchr(*p, '\0')));
 
-        if (*q-*p == 0
-         || !(copy_string(mem, *p, *q)))
+        if (q-*p == 0
+         || !(copy_string(mem, *p, q)))
                 return false;
 
-        *p = ++(*q);
+        *p = ++q;
         return true;
 }
 
@@ -841,9 +830,9 @@ parse_tls_destination(char *p, struct filed *f)
         if (*p == '(') {
                 p++;
                 while (*p != ')') {
-                        if (copy_config_value_quoted("subject=\"", &(f->f_un.f_tls.tls_conn->subject), &p, &q)
-                            || copy_config_value_quoted("fingerprint=\"", &(f->f_un.f_tls.tls_conn->fingerprint), &p, &q)
-                            || copy_config_value_quoted("cert=\"", &(f->f_un.f_tls.tls_conn->certfile), &p, &q)) {
+                        if (copy_config_value_quoted("subject=\"", &(f->f_un.f_tls.tls_conn->subject), &p)
+                            || copy_config_value_quoted("fingerprint=\"", &(f->f_un.f_tls.tls_conn->fingerprint), &p)
+                            || copy_config_value_quoted("cert=\"", &(f->f_un.f_tls.tls_conn->certfile), &p)) {
                         /* nothing */
                         }
                         else if (!strcmp(p, "verify=")) {

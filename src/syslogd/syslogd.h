@@ -167,6 +167,7 @@ struct filed {
         } f_un;
         struct buf_queue_head f_qhead;          /* undelivered msgs queue */
         unsigned int f_qelements;               /* elements in queue */
+        size_t  f_qsize;                        /* size of queue in bytes */
         char    f_prevline[MAXSVLINE];          /* last message logged */
         char    f_lasttime[16];                 /* time of last occurrence */
         char    f_prevhost[MAXHOSTNAMELEN];     /* host from which recd. */

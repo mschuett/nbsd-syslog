@@ -128,23 +128,26 @@ int     repeatinterval[] = { 30, 120, 600 };    /* # of secs before flush */
 
 struct TypeInfo {
         char *name;
-        char *queue_limit_string;
-        char *default_limit_string;
-        int   queue_limit;
+        char *queue_length_string;
+        char *default_length_string;
+        char *queue_size_string;
+        char *default_size_string;
+        int   queue_length;
+        int   queue_size;
         int   max_msg_length;
 } TypeInfo[] = {
         /* values are set in init() 
-         * -1 in queue_limit or max_msg_length means infinite */
-        {"UNUSED",   "0",    "0", 0,     0}, 
-        {"FILE",    NULL, "1024", 0, 16384}, 
-        {"TTY",     NULL,    "0", 0,  1024}, 
-        {"CONSOLE", NULL,    "0", 0,  1024}, 
-        {"FORW",    NULL,    "0", 0, 16384}, 
-        {"USERS",   NULL,    "0", 0,  1024}, 
-        {"WALL",    NULL,    "0", 0,  1024}, 
-        {"PIPE",    NULL, "1024", 0, 16384},
+         * -1 in length/size or max_msg_length means infinite */
+        {"UNUSED",   "0",    "0", "0",    "0", 0, 0,     0}, 
+        {"FILE",    NULL, "1024", NULL,  "1M", 0, 0, 16384}, 
+        {"TTY",     NULL,    "0", NULL,   "0", 0, 0,  1024}, 
+        {"CONSOLE", NULL,    "0", NULL,   "0", 0, 0,  1024}, 
+        {"FORW",    NULL,    "0", NULL,  "1M", 0, 0, 16384}, 
+        {"USERS",   NULL,    "0", NULL,   "0", 0, 0,  1024}, 
+        {"WALL",    NULL,    "0", NULL,   "0", 0, 0,  1024}, 
+        {"PIPE",    NULL, "1024", NULL,  "1M", 0, 0, 16384},
 #ifndef DISABLE_TLS
-        {"TLS",     NULL,   "-1", 0, 16384}
+        {"TLS",     NULL,   "-1", NULL, "16M", 0, 0, 16384}
 #endif /* !DISABLE_TLS */
 };
 
@@ -219,7 +222,7 @@ static void dispatch_read_funix(int fd, short event, void *ev);
 unsigned int purge_message_queue(struct filed *f, const unsigned int, const int);
 void send_queue(struct filed *);
 inline void free_cred_SLIST(struct peer_cred_head *);
-
+inline struct buf_queue *find_qentry_to_delete(const struct buf_queue_head *, const int, const bool);
 /*
  * Global line buffer.  Since we only process one event at a time,
  * a global one will do.
@@ -1134,6 +1137,14 @@ fprintlog(struct filed *f, int flags, char *msg, struct buf_msg *buffer)
                         qentry->msg = buffer;
                         buffer->refcount++;
                         f->f_qelements++;
+                        /* strlen(NULL) does not work? */
+                        f->f_qsize += sizeof(*qentry) + sizeof(*qentry->msg)
+                                        + qentry->msg->linelen;
+                        if (qentry->msg->host)
+                                f->f_qsize += strlen(qentry->msg->host);
+                        if (qentry->msg->timestamp)
+                                f->f_qsize += strlen(qentry->msg->timestamp);
+                        
                         TAILQ_INSERT_TAIL(&f->f_qhead, qentry, entries);
                         DPRINTF("unconnected, msg queued\n");
                 }
@@ -1888,9 +1899,12 @@ init(int fd, short event, void *ev)
                 /* special cases in parsing */
                 {"tls_allow_fingerprints",&tmp_buf},
                 {"tls_allow_clientcerts", &tmp_buf},
-                {"tls_queue_size",        &TypeInfo[F_TLS].queue_limit_string},
-                {"file_queue_size",       &TypeInfo[F_FILE].queue_limit_string},
-                {"pipe_queue_size",       &TypeInfo[F_PIPE].queue_limit_string},
+                {"tls_queue_length",      &TypeInfo[F_TLS].queue_length_string},
+                {"file_queue_length",     &TypeInfo[F_FILE].queue_length_string},
+                {"pipe_queue_length",     &TypeInfo[F_PIPE].queue_length_string},
+                {"tls_queue_size",        &TypeInfo[F_TLS].queue_size_string},
+                {"file_queue_size",       &TypeInfo[F_FILE].queue_size_string},
+                {"pipe_queue_size",       &TypeInfo[F_PIPE].queue_size_string},
                 {"mem_size_limit",        &global_memory_limit.configstring}
         };
 #endif /* !DISABLE_TLS */
@@ -1958,7 +1972,7 @@ init(int fd, short event, void *ev)
                 if (f->f_prevcount)
                         fprintlog(f, 0, (char *)NULL, NULL);
                 send_queue(f);
-                (void)purge_message_queue(f, TypeInfo[f->f_type].queue_limit, PURGE_OLDEST);
+                (void)purge_message_queue(f, TypeInfo[f->f_type].queue_length, PURGE_OLDEST);
 
                 switch (f->f_type) {
                 case F_FILE:
@@ -2038,10 +2052,15 @@ init(int fd, short event, void *ev)
 #ifndef DISABLE_TLS
         /* free all previous config options */
         for (i = 0; i < A_CNT(TypeInfo); i++) {
-                if (TypeInfo[i].queue_limit_string
-                 && TypeInfo[i].queue_limit_string != TypeInfo[i].default_limit_string) {
-                        FREEPTR(TypeInfo[i].queue_limit_string);
-                        TypeInfo[i].queue_limit_string = TypeInfo[i].default_limit_string;
+                if (TypeInfo[i].queue_length_string
+                 && TypeInfo[i].queue_length_string != TypeInfo[i].default_length_string) {
+                        FREEPTR(TypeInfo[i].queue_length_string);
+                        TypeInfo[i].queue_length_string = TypeInfo[i].default_length_string;
+                 }
+                if (TypeInfo[i].queue_size_string
+                 && TypeInfo[i].queue_size_string != TypeInfo[i].default_size_string) {
+                        FREEPTR(TypeInfo[i].queue_size_string);
+                        TypeInfo[i].queue_size_string = TypeInfo[i].default_size_string;
                  }
         }
         for (i = 0; i < A_CNT(config_keywords); i++)
@@ -2068,7 +2087,7 @@ init(int fd, short event, void *ev)
                                                 &p, ConfFile, linenum)) {
                                 DPRINTF("found option %s\n", config_keywords[i].keyword);
 
-                                /* special cases */
+                                /* special cases with multiple parameters */
                                 if (!strcmp("tls_allow_fingerprints", config_keywords[i].keyword))
                                         credhead = &tls_opt.fprint_head;
                                 else if (!strcmp("tls_allow_clientcerts", config_keywords[i].keyword))
@@ -2096,9 +2115,12 @@ init(int fd, short event, void *ev)
                         logerror("Unable to setrlimit()");
         }
         for (i = 0; i < A_CNT(TypeInfo); i++) {
-                if (!TypeInfo[i].queue_limit_string
-                 || expand_number(TypeInfo[i].queue_limit_string, (int64_t*) &TypeInfo[i].queue_limit) == -1)
-                        TypeInfo[i].queue_limit = strtol(TypeInfo[i].default_limit_string, NULL, 10);
+                if (!TypeInfo[i].queue_length_string
+                 || expand_number(TypeInfo[i].queue_length_string, (int64_t*) &TypeInfo[i].queue_length) == -1)
+                        TypeInfo[i].queue_length = strtol(TypeInfo[i].default_length_string, NULL, 10);
+                if (!TypeInfo[i].queue_size_string
+                 || expand_number(TypeInfo[i].queue_size_string, (int64_t*) &TypeInfo[i].queue_size) == -1)
+                        TypeInfo[i].queue_size = strtol(TypeInfo[i].default_size_string, NULL, 10);
         }
         rewind(cf);
         linenum = 0;
@@ -2249,11 +2271,14 @@ init(int fd, short event, void *ev)
         /* TLS setup -- after all local destinations opened  */
         DPRINTF("Parsed options: tls_ca: %s, tls_cadir: %s, "
                 "tls_cert: %s, tls_key: %s, tls_verify: %s, "
-                "bind: %s:%s, queue_limits: %d, %d, %d\n",
+                "bind: %s:%s, max. queue_lengths: %d, %d, %d, "
+                "max. queue_sizes: %d, %d, %d\n",
                 tls_opt.CAfile, tls_opt.CAdir, tls_opt.certfile,
                 tls_opt.keyfile, tls_opt.x509verify, tls_opt.bindhost,
-                tls_opt.bindport, TypeInfo[F_TLS].queue_limit,
-                TypeInfo[F_FILE].queue_limit, TypeInfo[F_PIPE].queue_limit);
+                tls_opt.bindport, TypeInfo[F_TLS].queue_length,
+                TypeInfo[F_FILE].queue_length, TypeInfo[F_PIPE].queue_length,
+                TypeInfo[F_TLS].queue_size, TypeInfo[F_FILE].queue_size,
+                TypeInfo[F_PIPE].queue_size);
         SLIST_FOREACH(cred, &tls_opt.cert_head, entries) {
                 DPRINTF("Accepting peer certificate frem file: \"%s\"\n", cred->data);
         }
@@ -2896,6 +2921,50 @@ send_queue(struct filed *f)
         }
 }
 
+/* 
+ * finds the next queue element to delete
+ * 
+ * has stateful behaviour, before using it call once with reset = true
+ * after that every call will return one next queue elemen to delete,
+ * depending on strategy either the oldest or the one with the lowest priority
+ */
+inline struct buf_queue *
+find_qentry_to_delete(const struct buf_queue_head *head, const int strategy, const bool reset)
+{
+        static int pri;
+        static struct buf_queue *qentry_static;
+ 
+        struct buf_queue *qentry_tmp;
+ 
+        if (reset || TAILQ_EMPTY(head)) {
+                pri = LOG_DEBUG;
+                qentry_static = TAILQ_FIRST(head);
+                return NULL;
+        }
+
+        /* find elements to delete */
+        if (strategy == PURGE_BY_PRIORITY) {
+                qentry_tmp = qentry_static;
+                while ((qentry_tmp = TAILQ_NEXT(qentry_tmp, entries))) {
+                        if (LOG_PRI(qentry_tmp->msg->pri) == pri) {
+                                /* save the successor, because qentry_tmp
+                                 * is probably deleted by the caller */
+                                qentry_static = TAILQ_NEXT(qentry_tmp, entries);
+                                return qentry_tmp;
+                        }
+                }
+                /* nothing found in while loop --> next pri */
+                if (--pri)
+                        return find_qentry_to_delete(head, strategy, 0);
+                else
+                        return NULL;
+        } else /* strategy == PURGE_OLDEST or other value */ {
+                qentry_tmp = qentry_static;
+                qentry_static = TAILQ_NEXT(qentry_tmp, entries);
+                return qentry_tmp;  /* is NULL on empty queue */
+        }
+}
+
 /*
  * checks length of a destination's message queue
  * if del_entries == 0 then assert queue length is
@@ -2915,57 +2984,42 @@ purge_message_queue(struct filed *f, const unsigned int del_entries, const int s
 {
         int removed = 0;
         struct buf_queue *qentry = NULL;
-        struct buf_queue *delete[del_entries];
-        int pri, i;
-        bool found_lowest = false;
 
-        DPRINTF("purge_message_queue(%p, %d, %d)\n", f, del_entries, strategy);
+        DPRINTF("purge_message_queue(%p, %d, %d) with "
+                "f_qelements=%d and f_qsize=%d\n",
+                f, del_entries, strategy,
+                f->f_qelements, f->f_qsize);
         
-        /* anything to do? */
-        if (del_entries == 0
-          && (TypeInfo[f->f_type].queue_limit == -1
-              || TypeInfo[f->f_type].queue_limit <= f->f_qelements))
-              return removed;
+        (void)find_qentry_to_delete(&f->f_qhead, strategy, 1);
         
-        /* find elements to delete */
-        if (strategy == PURGE_BY_PRIORITY) {
-                /* for every syslog priority scan message queue */
-                for (i = 0, pri = LOG_DEBUG; pri && !found_lowest; pri--) { 
-                        TAILQ_FOREACH(qentry, &f->f_qhead, entries) {
-                                if (LOG_PRI(qentry->msg->pri) == pri) {
-                                        delete[i] = qentry;
-                                        if (++i == del_entries)
-                                                /* break if needed number of entries found */
-                                                found_lowest = true;
-                                }
-                        }
-                }
-        } else /* strategy == PURGE_OLDEST or other value */ {
-                for (i = 0, qentry = TAILQ_FIRST(&f->f_qhead);
-                     !found_lowest && !TAILQ_EMPTY(&f->f_qhead);
-                     qentry = TAILQ_NEXT(qentry, entries)) {
-                        delete[i] = qentry;
-                        if (++i == del_entries)
-                                found_lowest = true;
-                }
-        }
+        while (removed < del_entries
+          || (TypeInfo[f->f_type].queue_length != -1
+              && TypeInfo[f->f_type].queue_length > f->f_qelements)
+          || (TypeInfo[f->f_type].queue_size != -1
+              && TypeInfo[f->f_type].queue_size > f->f_qsize)) {
+                qentry = find_qentry_to_delete(&f->f_qhead, strategy, 0);
+                if (!qentry)  /* queue empty */
+                        break;
 
-        /* now we have delete[] with i elements */
-        for (; i; i--) {
-                qentry = delete[i-1];
                 TAILQ_REMOVE(&f->f_qhead, qentry, entries);
                 removed++;
                 qentry->msg->refcount--;
                 f->f_qelements--;
+                f->f_qsize -= sizeof(*qentry)
+                              + sizeof(*qentry->msg)
+                              + qentry->msg->linelen
+                              + strlen(qentry->msg->host)
+                              + strlen(qentry->msg->timestamp);
                 if (!qentry->msg->refcount) {
                         FREEPTR(qentry->msg->timestamp);
                         FREEPTR(qentry->msg->host);
                         FREEPTR(qentry->msg->line);
                         FREEPTR(qentry->msg);
                 }
-                FREEPTR(qentry);
+                FREEPTR(qentry);                
         }
-        DPRINTF("removed %d enties\n", removed);
+
+        DPRINTF("removed %d entries\n", removed);
         return removed;
 }
 

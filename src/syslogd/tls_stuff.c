@@ -37,7 +37,6 @@ extern size_t linebufsize;
 extern int     RemoteAddDate; 
 
 extern void    logerror(const char *, ...);
-extern bool    fprintlog_noqueue(struct filed *, int, char *, struct buf_msg *);
 extern void    printline(char *, char *, int);
 extern void    die(int fd, short event, void *ev);
 extern struct event *allocev(void);

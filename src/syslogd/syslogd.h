@@ -136,7 +136,7 @@ struct socketEvent {
 #define MARK            0x008   /* this message is a mark */
 #define ISKERNEL        0x010   /* kernel generated message */
 
-/* strategies for purge_message_queue() */
+/* strategies for message_queue_purge() */
 #define PURGE_OLDEST            1
 #define PURGE_BY_PRIORITY       2
 

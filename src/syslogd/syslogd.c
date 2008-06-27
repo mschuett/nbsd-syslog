@@ -191,8 +191,7 @@ int     deadq_remove(pid_t);
 int     decode(const char *, CODE *);
 void    die(int fd, short event, void *ev);   /* SIGTERM kevent dispatch routine */
 void    domark(int fd, short event, void *ev);/* timer kevent dispatch routine */
-void    fprintlog(struct filed *, int, char *, struct buf_msg *);
-bool    fprintlog_noqueue(struct filed *, int, char *, struct buf_msg *);
+void    fprintlog(struct filed *, int, char *, struct buf_msg *, struct buf_queue *);
 int     getmsgbufsize(void);
 struct socketEvent* socksetup(int, const char *);
 void    init(int fd, short event, void *ev);  /* SIGHUP kevent dispatch routine */
@@ -219,10 +218,16 @@ static void dispatch_read_klog(int fd, short event, void *ev);
 static void dispatch_read_finet(int fd, short event, void *ev);
 static void dispatch_read_funix(int fd, short event, void *ev);
 
-unsigned int purge_message_queue(struct filed *f, const unsigned int, const int);
+unsigned int message_queue_purge(struct filed *f, const unsigned int, const int);
 void send_queue(struct filed *);
 inline void free_cred_SLIST(struct peer_cred_head *);
 inline struct buf_queue *find_qentry_to_delete(const struct buf_queue_head *, const int, const bool);
+
+
+inline bool message_queue_remove(struct filed *, struct buf_queue *);
+inline bool message_queue_add(struct filed *, struct buf_msg *);
+inline void message_queue_freeall(struct filed *);
+
 /*
  * Global line buffer.  Since we only process one event at a time,
  * a global one will do.
@@ -952,7 +957,7 @@ logmsg(int pri, char *msg, char *from, int flags)
 
                 if (f->f_file >= 0) {
                         (void)strncpy(f->f_lasttime, timestamp, 15);
-                        fprintlog(f, flags, msg, NULL);
+                        fprintlog(f, flags, msg, NULL, false);
                         (void)close(f->f_file);
                 }
                 (void)sigsetmask(omask);
@@ -1030,14 +1035,14 @@ logmsg(int pri, char *msg, char *from, int flags)
                          * in the future.
                          */
                         if (now > REPEATTIME(f)) {
-                                fprintlog(f, flags, (char *)NULL, msgbuf);
+                                fprintlog(f, flags, (char *)NULL, msgbuf, false);
                                 BACKOFF(f);
                         }
                 } else {
                         /* new line, save it */
                         if (f->f_prevcount)
                                 /* sending this old line is not buffered */
-                                fprintlog(f, 0, (char *)NULL, NULL);
+                                fprintlog(f, 0, (char *)NULL, NULL, false);
                         f->f_repeatcount = 0;
                         f->f_prevpri = pri;
                         (void)strncpy(f->f_lasttime, timestamp, 15);
@@ -1049,11 +1054,11 @@ logmsg(int pri, char *msg, char *from, int flags)
                                 f->f_prevlen = msglen;
                                 (void)strlcpy(f->f_prevline, msg,
                                     sizeof(f->f_prevline));
-                                fprintlog(f, flags, (char *)NULL, msgbuf);
+                                fprintlog(f, flags, (char *)NULL, msgbuf, false);
                         } else {
                                 f->f_prevline[0] = 0;
                                 f->f_prevlen = 0;
-                                fprintlog(f, flags, msg, msgbuf);
+                                fprintlog(f, flags, msg, msgbuf, false);
                         }
                 }
         }
@@ -1088,17 +1093,8 @@ logmsg(int pri, char *msg, char *from, int flags)
 }
 
 /*
- * wrapper arround fprintlog() to queue undeliverable messages.
- * this allows send_queue() to call fprintlog() directly without
- * having the messages re-queued all over again.
+ * wrapper arround fprintlog() removed again.
  */
-void
-fprintlog(struct filed *f, int flags, char *msg, struct buf_msg *buffer)
-{
-        struct buf_queue *qentry;
-        bool rc;
-        
-        rc = fprintlog_noqueue(f, flags, msg, buffer);
 
         /* problem: how much control over memory usage do we need?
          * currently the message buffer is shared among all destinations,
@@ -1126,31 +1122,6 @@ fprintlog(struct filed *f, int flags, char *msg, struct buf_msg *buffer)
         /* note on TAILQ: newest message added at TAIL,
          *                oldest to be removed is FIRST
          */
-        if (!rc && buffer) {
-                purge_message_queue(f, 0, PURGE_OLDEST);
-                while (!(qentry = malloc(sizeof(*qentry)))
-                      && purge_message_queue(f, 1, PURGE_OLDEST))
-                     /* try allocating memory */;
-                if (!qentry) {
-                        logerror("Unable to allocate memory");
-                        DPRINTF(D_BUFFER, "queue empty, no memory, msg dropped\n");
-                } else {
-                        qentry->msg = buffer;
-                        buffer->refcount++;
-                        f->f_qelements++;
-                        /* strlen(NULL) does not work? */
-                        f->f_qsize += sizeof(*qentry) + sizeof(*qentry->msg)
-                                        + qentry->msg->linelen;
-                        if (qentry->msg->host)
-                                f->f_qsize += strlen(qentry->msg->host);
-                        if (qentry->msg->timestamp)
-                                f->f_qsize += strlen(qentry->msg->timestamp);
-                        
-                        TAILQ_INSERT_TAIL(&f->f_qhead, qentry, entries);
-                        DPRINTF(D_BUFFER, "unconnected, msg queued\n");
-                }
-        }
-}
 
 /* 
  * Added parameter struct buf_msg *buffer
@@ -1172,12 +1143,12 @@ fprintlog(struct filed *f, int flags, char *msg, struct buf_msg *buffer)
  * but several parts that will have to be joined and formatted again.
  */
 /*
- * Used return codes:
- * false - temporary failure, message not written/sent but should be queued
- * true - einter success or permanent failure, message should not be queued
+ * if qentry == NULL: new message, if temporarily undeliverable it will be enqueued
+ * if qentry != NULL: a temporarily undeliverable message will not be enqueued,
+ *                  but after delivery be removed from the queue
  */
-bool
-fprintlog_noqueue(struct filed *f, int flags, char *msg, struct buf_msg *buffer)
+void
+fprintlog(struct filed *f, int flags, char *msg, struct buf_msg *buffer, struct buf_queue *qentry)
 {
         struct iovec iov[10];
         struct iovec *v;
@@ -1282,9 +1253,10 @@ fprintlog_noqueue(struct filed *f, int flags, char *msg, struct buf_msg *buffer)
                 msglen = sizeof("<123>  []: ") + 15
                         + strlen(f->f_prevhost) + iov[5].iov_len; 
                 if (!(line = malloc(msglen))) {
-                        logerror("Unable to allocate memory");
+                        logerror("Unable to allocate memory, drop message");
                         f->f_prevcount = 0;
-                        return false;
+                        /* skip the queue_add() without memory */
+                        return;
                 }
                 /* TODO: we can avoid the copying for TLS by allocating
                  *       10 bytes more in front of the message and later
@@ -1324,6 +1296,10 @@ fprintlog_noqueue(struct filed *f, int flags, char *msg, struct buf_msg *buffer)
                 if (msglen + iov[5].iov_len > TypeInfo[f->f_type].max_msg_length)
                         iov[5].iov_len = MAX (0, TypeInfo[f->f_type].max_msg_length - msglen); 
         }
+        /* rule for success/failure:
+         * errors are handled inside the cases with a message_queue_add and return immediately
+         * completing the switch means successful delivery (or at least no queuing)
+         */ 
         switch (f->f_type) {
         case F_UNUSED:
                 DPRINTF(D_MISC, "Logging to %s\n", TypeInfo[f->f_type].name);
@@ -1374,6 +1350,8 @@ sendagain:
                         if (lsent != l && fail) {
                                 f->f_type = F_UNUSED;
                                 logerror("sendto() failed");
+                                if (buffer && !qentry)
+                                        message_queue_add(f, buffer);
                         }
                 }
                 break;
@@ -1386,9 +1364,10 @@ sendagain:
                         prefixlen++;
                 msglen = prefixlen + 1 + l + 1;  /* with \0 */
                 if (!(tlsline = malloc(msglen))) {
-                        logerror("Unable to allocate memory");
+                        logerror("Unable to allocate memory, drop message");
                         f->f_prevcount = 0;
-                        return false;
+                        /* skip the queue_add() without memory */
+                        return;
                 }
                 DPRINTF(D_DATA, "calculated  prefixlen=%d, msglen=%d\n", prefixlen, msglen);
 
@@ -1404,7 +1383,9 @@ sendagain:
                 if (fail) {
                         f->f_prevcount = 0;
                         DPRINTF(D_DATA, "not sent\n");
-                        return false;
+                        if (buffer && !qentry)
+                                message_queue_add(f, buffer);
+                        return;
                 }
                 break;
 #endif /* !DISABLE_TLS */
@@ -1420,6 +1401,8 @@ sendagain:
                                                 &f->f_un.f_pipe.f_pid)) < 0) {
                                 f->f_type = F_UNUSED;
                                 logerror(f->f_un.f_pipe.f_pname);
+                                if (buffer && !qentry)
+                                        message_queue_add(f, buffer);
                                 break;
                         }
                         else
@@ -1450,6 +1433,7 @@ sendagain:
                                      &f->f_un.f_pipe.f_pid)) < 0) {
                                         f->f_type = F_UNUSED;
                                         logerror(f->f_un.f_pipe.f_pname);
+                                        message_queue_freeall(f);
                                         break;
                                 }
                                 if (writev(f->f_file, iov, v - iov) < 0) {
@@ -1461,7 +1445,9 @@ sendagain:
                                         }
                                         f->f_un.f_pipe.f_pid = 0;
                                         f->f_prevcount = 0;
-                                        return false;
+                                        if (buffer && !qentry)
+                                                message_queue_add(f, buffer);
+                                        return;
                                 } else
                                         e = 0;
                         }
@@ -1500,7 +1486,9 @@ sendagain:
                                         logerror(f->f_un.f_fname);
                                 /* TODO: can we get an event when file is writeable again? */
                                 f->f_prevcount = 0;
-                                return false;
+                                if (buffer && !qentry)
+                                        message_queue_add(f, buffer);
+                                return;
                         }
                         (void)close(f->f_file);
                         /*
@@ -1512,6 +1500,7 @@ sendagain:
                                 if (f->f_file < 0) {
                                         f->f_type = F_UNUSED;
                                         logerror(f->f_un.f_fname);
+                                        message_queue_freeall(f);
                                 } else
                                         goto again;
                         } else {
@@ -1519,6 +1508,7 @@ sendagain:
                                 errno = e;
                                 f->f_lasterror = e;
                                 logerror(f->f_un.f_fname);
+                                message_queue_freeall(f);
                         }
                 } else {
                         f->f_lasterror = 0;
@@ -1537,7 +1527,8 @@ sendagain:
                 break;
         }
         f->f_prevcount = 0;
-        return true;
+        if (buffer && qentry)
+                message_queue_remove(f, qentry);
 }
 
 /*
@@ -1720,11 +1711,11 @@ domark(int fd, short event, void *ev)
                         DPRINTF(D_DATA, "Flush %s: repeated %d times, %d sec.\n",
                             TypeInfo[f->f_type].name, f->f_prevcount,
                             repeatinterval[f->f_repeatcount]);
-                        fprintlog(f, 0, (char *)NULL, NULL);
+                        fprintlog(f, 0, (char *)NULL, NULL, NULL);
                         BACKOFF(f);
                 }
                 if (sweep_queues)
-                        purge_message_queue(f, /* arbitrary value */ 20,
+                        message_queue_purge(f, /* arbitrary value */ 20,
                                 PURGE_BY_PRIORITY);
         }
 
@@ -1831,9 +1822,9 @@ die(int fd, short event, void *ev)
         for (f = Files; f != NULL; f = f->f_next) {
                 /* flush any pending output */
                 if (f->f_prevcount)
-                        fprintlog(f, 0, (char *)NULL, NULL);
+                        fprintlog(f, 0, (char *)NULL, NULL, NULL);
                 send_queue(f);
-                (void)purge_message_queue(f, f->f_qelements, PURGE_OLDEST);
+                message_queue_freeall(f);
 
                 if (f->f_type == F_PIPE && f->f_un.f_pipe.f_pid > 0) {
                         (void) close(f->f_file);
@@ -1975,9 +1966,9 @@ init(int fd, short event, void *ev)
         for (f = Files; f != NULL; f = next) {
                 /* flush any pending output */
                 if (f->f_prevcount)
-                        fprintlog(f, 0, (char *)NULL, NULL);
+                        fprintlog(f, 0, (char *)NULL, NULL, NULL);
                 send_queue(f);
-                (void)purge_message_queue(f, TypeInfo[f->f_type].queue_length, PURGE_OLDEST);
+                message_queue_freeall(f);
 
                 switch (f->f_type) {
                 case F_FILE:
@@ -2902,27 +2893,21 @@ free_cred_SLIST(struct peer_cred_head *head)
 void
 send_queue(struct filed *f)
 {
-        struct buf_queue *qptr;
+        struct buf_queue *qentry;
         struct filed f_tmp;
         
         /* 1st: we need a new struct filed to feed the message
-         * parts into fprintlog_noqueue() correctly.
-         * We use fprintlog_noqueue() so that another failure will not
-         * have the same message queued again.
+         * parts into fprintlog() correctly.
          */
         memcpy(&f_tmp, f, sizeof(*f));
 
         while (!TAILQ_EMPTY(&f->f_qhead)) {
-                qptr = TAILQ_FIRST(&f->f_qhead);
+                qentry = TAILQ_FIRST(&f->f_qhead);
                 
-                strlcpy(f_tmp.f_lasttime, qptr->msg->timestamp, TIMESTAMPLEN+1);
-                f_tmp.f_host = qptr->msg->host;
-                
-                if (!fprintlog_noqueue(&f_tmp, qptr->msg->flags, qptr->msg->line, qptr->msg))
-                        return;
-                else {
-                        purge_message_queue(f, 1, PURGE_OLDEST);
-                }
+                strlcpy(f_tmp.f_lasttime, qentry->msg->timestamp, TIMESTAMPLEN+1);
+                f_tmp.f_host = qentry->msg->host;
+
+                fprintlog(&f_tmp, qentry->msg->flags, qentry->msg->line, qentry->msg, qentry);
         }
 }
 
@@ -2985,7 +2970,7 @@ find_qentry_to_delete(const struct buf_queue_head *head, const int strategy, con
  *      to be deleted, e.g. in call from domark() 
  */
 unsigned int
-purge_message_queue(struct filed *f, const unsigned int del_entries, const int strategy)
+message_queue_purge(struct filed *f, const unsigned int del_entries, const int strategy)
 {
         int removed = 0;
         struct buf_queue *qentry = NULL;
@@ -2994,27 +2979,89 @@ purge_message_queue(struct filed *f, const unsigned int del_entries, const int s
                 "f_qelements=%d and f_qsize=%d\n",
                 f, del_entries, strategy,
                 f->f_qelements, f->f_qsize);
-        
+
         (void)find_qentry_to_delete(&f->f_qhead, strategy, 1);
-        
+
         while (removed < del_entries
           || (TypeInfo[f->f_type].queue_length != -1
               && TypeInfo[f->f_type].queue_length > f->f_qelements)
           || (TypeInfo[f->f_type].queue_size != -1
               && TypeInfo[f->f_type].queue_size > f->f_qsize)) {
                 qentry = find_qentry_to_delete(&f->f_qhead, strategy, 0);
-                if (!qentry)  /* queue empty */
+                if (message_queue_remove(f, qentry))
+                        removed++;
+                else
                         break;
+        }
 
+        DPRINTF(D_BUFFER, "removed %d entries\n", removed);
+        return removed;
+}
+
+inline bool
+message_queue_remove(struct filed *f, struct buf_queue *qentry)
+{
+        if (!f || !qentry)
+                return false;
+
+        TAILQ_REMOVE(&f->f_qhead, qentry, entries);
+        qentry->msg->refcount--;
+        f->f_qelements--;
+        f->f_qsize -= sizeof(*qentry)
+                      + sizeof(*qentry->msg)
+                      + qentry->msg->linelen
+                      + strlen(qentry->msg->host)
+                      + strlen(qentry->msg->timestamp);
+        if (!qentry->msg->refcount) {
+                FREEPTR(qentry->msg->timestamp);
+                FREEPTR(qentry->msg->host);
+                FREEPTR(qentry->msg->line);
+                FREEPTR(qentry->msg);
+        }
+        FREEPTR(qentry);                
+        return true;
+}
+
+inline bool
+message_queue_add(struct filed *f, struct buf_msg *buffer)
+{
+        struct buf_queue *qentry;
+        
+        while (!(qentry = malloc(sizeof(*qentry)))
+              && message_queue_purge(f, 1, PURGE_OLDEST))
+             /* try allocating memory */;
+        if (!qentry) {
+                logerror("Unable to allocate memory");
+                DPRINTF(D_BUFFER, "queue empty, no memory, msg dropped\n");
+                return false;
+        } else {
+                qentry->msg = buffer;
+                buffer->refcount++;
+                f->f_qelements++;
+                /* strlen(NULL) does not work? */
+                f->f_qsize += sizeof(*qentry) + sizeof(*qentry->msg)
+                                + qentry->msg->linelen;
+                if (qentry->msg->host)
+                        f->f_qsize += strlen(qentry->msg->host);
+                if (qentry->msg->timestamp)
+                        f->f_qsize += strlen(qentry->msg->timestamp);
+                
+                TAILQ_INSERT_TAIL(&f->f_qhead, qentry, entries);
+                DPRINTF(D_BUFFER, "msg queued\n");
+                return true;
+        }
+}
+
+inline void
+message_queue_freeall(struct filed *f)
+{
+        struct buf_queue *qentry;
+
+        if (!f) return;
+        while (!TAILQ_EMPTY(&f->f_qhead)) {
+                qentry = TAILQ_FIRST(&f->f_qhead);
                 TAILQ_REMOVE(&f->f_qhead, qentry, entries);
-                removed++;
                 qentry->msg->refcount--;
-                f->f_qelements--;
-                f->f_qsize -= sizeof(*qentry)
-                              + sizeof(*qentry->msg)
-                              + qentry->msg->linelen
-                              + strlen(qentry->msg->host)
-                              + strlen(qentry->msg->timestamp);
                 if (!qentry->msg->refcount) {
                         FREEPTR(qentry->msg->timestamp);
                         FREEPTR(qentry->msg->host);
@@ -3024,10 +3071,9 @@ purge_message_queue(struct filed *f, const unsigned int del_entries, const int s
                 FREEPTR(qentry);                
         }
 
-        DPRINTF(D_BUFFER, "removed %d entries\n", removed);
-        return removed;
+        f->f_qelements = 0;
+        f->f_qsize = 0;
 }
-
 /*
  * return a timestamp in a static buffer
  */

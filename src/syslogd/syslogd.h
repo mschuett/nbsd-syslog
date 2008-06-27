@@ -103,8 +103,20 @@ struct socketEvent {
 
 #define FDMASK(fd)      (1 << (fd))
 
+/* debug messages with categories */
+#define D_NONE     0
+#define D_CALL     1    /* function calls */
+#define D_DATA     2    /* syslog message reading/formatting */
+#define D_NET      4    /* sockets/network */
+#define D_FILE     8    /* local files */
+#define D_TLS     16    /* TLS */
+#define D_PARSE   32    /* configuration/parsing */
+#define D_EVENT   64    /* libevent */
+#define D_BUFFER 128    /* message queues */
+#define D_MISC   256    /* everything else */
+#define D_ALL    511
 /* remove first printf for short debug messages */
-#define DPRINTF(...)    if (Debug) { \
+#define DPRINTF(x, ...)    if (Debug & x) { \
                                 printf("%s:%s:%.4d\t", make_timestamp(true), __FILE__, __LINE__); \
                                 printf(__VA_ARGS__); }
 

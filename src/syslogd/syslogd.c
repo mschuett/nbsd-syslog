@@ -160,7 +160,7 @@ struct global_memory_limit {
 struct  filed *Files = NULL;
 struct  filed consfile;
 
-int     Debug = 0;              /* debug flag */
+int     Debug = D_NONE;         /* debug flag */
 int     daemonized = 0;         /* we are not daemonized yet */
 char    LocalHostName[MAXHOSTNAMELEN];  /* our hostname */
 char    oldLocalHostName[MAXHOSTNAMELEN];/* previous hostname */
@@ -279,7 +279,7 @@ main(int argc, char *argv[])
                         bindhostname = optarg;
                         break;
                 case 'd':               /* debug */
-                        Debug++;
+                        Debug = D_ALL;  /* TODO: read bitmap as integer */
                         break;
                 case 'f':               /* configuration file */
                         ConfFile = optarg;
@@ -423,7 +423,7 @@ getgroup:
                 die(0, 0, NULL);
         }
         for (j = 0, pp = LogPaths; *pp; pp++, j++) {
-                DPRINTF("Making unix dgram socket `%s'\n", *pp);
+                DPRINTF(D_NET, "Making unix dgram socket `%s'\n", *pp);
                 unlink(*pp);
                 memset(&sunx, 0, sizeof(sunx));
                 sunx.sun_family = AF_LOCAL;
@@ -435,7 +435,7 @@ getgroup:
                         logerror("Cannot create `%s'", *pp);
                         die(0, 0, NULL);
                 }
-                DPRINTF("Listening on unix dgram socket `%s'\n", *pp);
+                DPRINTF(D_NET, "Listening on unix dgram socket `%s'\n", *pp);
         }
 
 #ifndef _NO_NETBSD_USR_SRC_ 
@@ -443,9 +443,9 @@ getgroup:
          * will look at that later..., currently I just ignore
          * it since it works on NetBSD  */
         if ((fklog = open(_PATH_KLOG, O_RDONLY, 0)) < 0) {
-                DPRINTF("Can't open `%s' (%d)\n", _PATH_KLOG, errno);
+                DPRINTF(D_FILE, "Can't open `%s' (%d)\n", _PATH_KLOG, errno);
         } else {
-                DPRINTF("Listening on kernel log `%s' with fd %d\n", _PATH_KLOG, fklog);
+                DPRINTF(D_FILE, "Listening on kernel log `%s' with fd %d\n", _PATH_KLOG, fklog);
         }
 #else
         fklog = -1;
@@ -456,24 +456,24 @@ getgroup:
         if (!RAND_status())
                 logerror("Unable to initialize OpenSSL PRNG");
         else {
-                DPRINTF("Initializing PRNG\n");
+                DPRINTF(D_TLS, "Initializing PRNG\n");
         }
         SLIST_INIT(&TLS_Incoming_Head);
 #endif /* !DISABLE_TLS */
         /* 
          * All files are open, we can drop privileges and chroot
          */
-        DPRINTF("Attempt to chroot to `%s'\n", root);  
+        DPRINTF(D_MISC, "Attempt to chroot to `%s'\n", root);  
         if (chroot(root)) {
                 logerror("Failed to chroot to `%s'", root);
                 die(0, 0, NULL);
         }
-        DPRINTF("Attempt to set GID/EGID to `%d'\n", gid);  
+        DPRINTF(D_MISC, "Attempt to set GID/EGID to `%d'\n", gid);  
         if (setgid(gid) || setegid(gid)) {
                 logerror("Failed to set gid to `%d'", gid);
                 die(0, 0, NULL);
         }
-        DPRINTF("Attempt to set UID/EUID to `%d'\n", uid);  
+        DPRINTF(D_MISC, "Attempt to set UID/EUID to `%d'\n", uid);  
         if (setuid(uid) || seteuid(uid)) {
                 logerror("Failed to set uid to `%d'", uid);
                 die(0, 0, NULL);
@@ -520,26 +520,26 @@ getgroup:
         ev = allocev();
         signal_set(ev, SIGTERM, die, ev);
         if (signal_add(ev, NULL) == -1) {
-                DPRINTF("Failure in signal_add()\n");
+                DPRINTF(D_EVENT, "Failure in signal_add()\n");
         }
         
         if (Debug) {
                 ev = allocev();
                 signal_set(ev, SIGINT, die, ev);
                 if (signal_add(ev, NULL) == -1) {
-                        DPRINTF("Failure in signal_add()\n");
+                        DPRINTF(D_EVENT, "Failure in signal_add()\n");
                 }
                 ev = allocev();
                 signal_set(ev, SIGQUIT, die, ev);
                 if (signal_add(ev, NULL) == -1) {
-                        DPRINTF("Failure in signal_add()\n");
+                        DPRINTF(D_EVENT, "Failure in signal_add()\n");
                 }
         }
 
         ev = allocev();
         signal_set(ev, SIGCHLD, reapchild, ev);
         if (signal_add(ev, NULL) == -1) {
-                DPRINTF("Failure in signal_add()\n");
+                DPRINTF(D_EVENT, "Failure in signal_add()\n");
         }
 
         ev = allocev();
@@ -554,29 +554,30 @@ getgroup:
         ev = allocev();
         signal_set(ev, SIGHUP, init, ev);
         if (signal_add(ev, NULL) == -1) {
-                DPRINTF("Failure in signal_add()\n");
+                DPRINTF(D_EVENT, "Failure in signal_add()\n");
         }
 
         if (fklog >= 0) {
                 ev = allocev();
-                DPRINTF("register klog for fd %d with ev@%p\n", fklog, ev);
+                DPRINTF(D_EVENT, "register klog for fd %d with ev@%p\n", fklog, ev);
                 event_set(ev, fklog, EV_READ | EV_PERSIST, dispatch_read_klog, ev);
                 if (event_add(ev, NULL) == -1) {
-                        DPRINTF("Failure in event_add()\n");
+                        DPRINTF(D_EVENT, "Failure in event_add()\n");
                 }
         }
         for (j = 0, pp = LogPaths; *pp; pp++, j++) {
                 ev = allocev();
                 event_set(ev, funix[j], EV_READ | EV_PERSIST, dispatch_read_funix, ev);
                 if (event_add(ev, NULL) == -1) {
-                        DPRINTF("Failure in event_add()\n");
+                        DPRINTF(D_EVENT, "Failure in event_add()\n");
                 }
         }
 
-        DPRINTF("Off & running....\n");
+        DPRINTF(D_MISC, "Off & running....\n");
         
         j = event_dispatch();
-        DPRINTF("event_dispatch() returned %d\n", j);
+        /* normal termination via die(), reaching this is an error */
+        DPRINTF(D_MISC, "event_dispatch() returned %d\n", j);
         return j;
 }
 
@@ -600,7 +601,7 @@ dispatch_read_klog(int fd, short event, void *ev)
 {
         ssize_t rv;
 
-        DPRINTF("Kernel log active (ev@%p, fd %d, linebuf@%p, size %d)\n", ev, fd, linebuf, linebufsize-1);
+        DPRINTF((D_CALL|D_EVENT), "Kernel log active (ev@%p, fd %d, linebuf@%p, size %d)\n", ev, fd, linebuf, linebufsize-1);
 
         rv = read(fd, linebuf, linebufsize - 1);
         if (rv > 0) {
@@ -637,7 +638,7 @@ dispatch_read_funix(int fd, short event, void *ev)
                 return;
         }
 
-        DPRINTF("Unix socket (%.*s) active (ev@%p, fd %d, linebuf@%p, size %d)\n", (myname.sun_len-sizeof(myname.sun_len)-sizeof(myname.sun_family)), myname.sun_path, ev, fd, linebuf, linebufsize-1);
+        DPRINTF((D_CALL|D_EVENT|D_NET), "Unix socket (%.*s) active (ev@%p, fd %d, linebuf@%p, size %d)\n", (myname.sun_len-sizeof(myname.sun_len)-sizeof(myname.sun_family)), myname.sun_path, ev, fd, linebuf, linebufsize-1);
 
         sunlen = sizeof(fromunix);
         rv = recvfrom(fd, linebuf, MAXLINE, 0,
@@ -664,14 +665,14 @@ dispatch_read_finet(int fd, short event, void *ev)
         socklen_t len;
         int reject = 0;
 
-        DPRINTF("inet socket active (ev@%p, fd %d, linebuf@%p, size %d)\n", ev, fd, linebuf, linebufsize-1);
+        DPRINTF((D_CALL|D_EVENT|D_NET), "inet socket active (ev@%p, fd %d, linebuf@%p, size %d)\n", ev, fd, linebuf, linebufsize-1);
 
 #ifdef LIBWRAP
         request_init(&req, RQ_DAEMON, "syslogd", RQ_FILE, fd, NULL);
         fromhost(&req);
         reject = !hosts_access(&req);
         if (reject)
-                DPRINTF("access denied\n");
+                DPRINTF(D_NET, "access denied\n");
 #endif
 
         len = sizeof(frominet);
@@ -701,7 +702,7 @@ logpath_add(char ***lp, int *szp, int *maxszp, char *new)
         char **nlp;
         int newmaxsz;
 
-        DPRINTF("Adding `%s' to the %p logpath list\n", new, *lp);
+        DPRINTF(D_FILE, "Adding `%s' to the %p logpath list\n", new, *lp);
         if (*szp == *maxszp) {
                 if (*maxszp == 0) {
                         newmaxsz = 4;   /* start of with enough for now */
@@ -887,14 +888,14 @@ logmsg(int pri, char *msg, char *from, int flags)
         char buf[MAXLINE + 1];
         struct buf_msg *msgbuf_new;
 
-        DPRINTF("logmsg: pri 0%o, flags 0x%x, from %s, msg %s\n",
+        DPRINTF(D_CALL, "logmsg: pri 0%o, flags 0x%x, from %s, msg %s\n",
             pri, flags, from, msg);
 
         omask = sigblock(sigmask(SIGHUP)|sigmask(SIGALRM));
 
         /* prepare msgbuf */
         if (msgbuf->refcount != 1) {
-                DPRINTF("msgbuf->refcount != 1\n");
+                DPRINTF(D_BUFFER, "msgbuf->refcount != 1\n");
         }
         
         /*
@@ -1019,7 +1020,7 @@ logmsg(int pri, char *msg, char *from, int flags)
                     !strcasecmp(from, f->f_prevhost)) {
                         (void)strncpy(f->f_lasttime, timestamp, 15);
                         f->f_prevcount++;
-                        DPRINTF("Msg repeated %d times, %ld sec of %d\n",
+                        DPRINTF(D_DATA, "Msg repeated %d times, %ld sec of %d\n",
                             f->f_prevcount, (long)(now - f->f_time),
                             repeatinterval[f->f_repeatcount]);
                         /*
@@ -1057,7 +1058,7 @@ logmsg(int pri, char *msg, char *from, int flags)
                 }
         }
         if (msgbuf->refcount > 1) {
-                DPRINTF("copying message: %p, %.*s %s\n", msgbuf,
+                DPRINTF(D_BUFFER, "copying message: %p, %.*s %s\n", msgbuf,
                         TIMESTAMPLEN, timestamp, from);
                 /* someone wants to queue this msg --> copy */
                 msgbuf->linelen = strlen(msg);
@@ -1081,7 +1082,7 @@ logmsg(int pri, char *msg, char *from, int flags)
                 msgbuf_new->refcount = 1;
                 msgbuf->refcount--;
                 msgbuf = msgbuf_new;
-                DPRINTF("queued and copied\n");
+                DPRINTF(D_BUFFER, "queued and copied\n");
         }
         (void)sigsetmask(omask);
 }
@@ -1132,7 +1133,7 @@ fprintlog(struct filed *f, int flags, char *msg, struct buf_msg *buffer)
                      /* try allocating memory */;
                 if (!qentry) {
                         logerror("Unable to allocate memory");
-                        DPRINTF("queue empty, no memory, msg dropped\n");
+                        DPRINTF(D_BUFFER, "queue empty, no memory, msg dropped\n");
                 } else {
                         qentry->msg = buffer;
                         buffer->refcount++;
@@ -1146,7 +1147,7 @@ fprintlog(struct filed *f, int flags, char *msg, struct buf_msg *buffer)
                                 f->f_qsize += strlen(qentry->msg->timestamp);
                         
                         TAILQ_INSERT_TAIL(&f->f_qhead, qentry, entries);
-                        DPRINTF("unconnected, msg queued\n");
+                        DPRINTF(D_BUFFER, "unconnected, msg queued\n");
                 }
         }
 }
@@ -1190,7 +1191,7 @@ fprintlog_noqueue(struct filed *f, int flags, char *msg, struct buf_msg *buffer)
         char *tlsline;
 #endif /* !DISABLE_TLS */
 
-        DPRINTF("fprintlog(%p, %d, \"%s\", %p)\n", f, flags, msg, buffer);
+        DPRINTF(D_CALL, "fprintlog(%p, %d, \"%s\", %p)\n", f, flags, msg, buffer);
         v = iov;
         if (f->f_type == F_WALL) {
                 v->iov_base = greetings;
@@ -1303,12 +1304,12 @@ fprintlog_noqueue(struct filed *f, int flags, char *msg, struct buf_msg *buffer)
                                      f->f_prevpri, (char *) iov[0].iov_base,
                                      (char *) iov[5].iov_base);
                 }
-                DPRINTF("formatted %d (of %d allowed) octets to: %.*s\n", l, TypeInfo[f->f_type].max_msg_length, l, line);
+                DPRINTF(D_DATA, "formatted %d (of %d allowed) octets to: %.*s\n", l, TypeInfo[f->f_type].max_msg_length, l, line);
                 /* limith mesage length */
                 if (TypeInfo[f->f_type].max_msg_length != -1
                  && TypeInfo[f->f_type].max_msg_length < l) {
                         l = TypeInfo[f->f_type].max_msg_length;
-                        DPRINTF("truncating oversized message to %d octets\n", l);
+                        DPRINTF(D_DATA, "truncating oversized message to %d octets\n", l);
                  }
                 /* TODO: check syslog-protocol if we may truncate SD Elements */
         } else {
@@ -1325,11 +1326,11 @@ fprintlog_noqueue(struct filed *f, int flags, char *msg, struct buf_msg *buffer)
         }
         switch (f->f_type) {
         case F_UNUSED:
-                DPRINTF("Logging to %s\n", TypeInfo[f->f_type].name);
+                DPRINTF(D_MISC, "Logging to %s\n", TypeInfo[f->f_type].name);
                 break;
 
         case F_FORW:
-                DPRINTF("Logging to %s %s\n", TypeInfo[f->f_type].name, f->f_un.f_forw.f_hname);
+                DPRINTF(D_MISC, "Logging to %s %s\n", TypeInfo[f->f_type].name, f->f_un.f_forw.f_hname);
                 if (finet) {
                         lsent = -1;
                         fail = 0;
@@ -1379,7 +1380,7 @@ sendagain:
 
 #ifndef DISABLE_TLS
         case F_TLS:
-                DPRINTF("Logging to %s %s\n", TypeInfo[f->f_type].name, f->f_un.f_tls.tls_conn->hostname);
+                DPRINTF(D_MISC, "Logging to %s %s\n", TypeInfo[f->f_type].name, f->f_un.f_tls.tls_conn->hostname);
         
                 for (prefixlen = 0, j = l+1; j; j /= 10)
                         prefixlen++;
@@ -1389,10 +1390,10 @@ sendagain:
                         f->f_prevcount = 0;
                         return false;
                 }
-                DPRINTF("calculated  prefixlen=%d, msglen=%d\n", prefixlen, msglen);
+                DPRINTF(D_DATA, "calculated  prefixlen=%d, msglen=%d\n", prefixlen, msglen);
 
                 j = snprintf(tlsline, msglen, "%d %s", l, line);
-                DPRINTF("now sending line: %.*s\n", j, tlsline);
+                DPRINTF(D_DATA, "now sending line: %.*s\n", j, tlsline);
                 if (j >= msglen)
                         j = msglen;
                 fail = (f->f_un.f_tls.tls_conn->sslptr)
@@ -1402,14 +1403,14 @@ sendagain:
                 free(tlsline);
                 if (fail) {
                         f->f_prevcount = 0;
-                        DPRINTF("not sent\n");
+                        DPRINTF(D_DATA, "not sent\n");
                         return false;
                 }
                 break;
 #endif /* !DISABLE_TLS */
 
         case F_PIPE:
-                DPRINTF("Logging to %s %s\n", TypeInfo[f->f_type].name, f->f_un.f_pipe.f_pname);
+                DPRINTF(D_MISC, "Logging to %s %s\n", TypeInfo[f->f_type].name, f->f_un.f_pipe.f_pname);
                 v->iov_base = "\n";
                 v->iov_len = 1;
                 ADDEV();
@@ -1473,14 +1474,14 @@ sendagain:
 
         case F_CONSOLE:
                 if (flags & IGN_CONS) {
-                        DPRINTF("Logging to %s (ignored)\n", TypeInfo[f->f_type].name);
+                        DPRINTF(D_MISC, "Logging to %s (ignored)\n", TypeInfo[f->f_type].name);
                         break;
                 }
                 /* FALLTHROUGH */
 
         case F_TTY:
         case F_FILE:
-                DPRINTF("Logging to %s %s\n", TypeInfo[f->f_type].name, f->f_un.f_fname);
+                DPRINTF(D_MISC, "Logging to %s %s\n", TypeInfo[f->f_type].name, f->f_un.f_fname);
                 if (f->f_type != F_FILE) {
                         v->iov_base = "\r\n";
                         v->iov_len = 2;
@@ -1528,7 +1529,7 @@ sendagain:
 
         case F_USERS:
         case F_WALL:
-                DPRINTF("Logging to %s\n", TypeInfo[f->f_type].name);
+                DPRINTF(D_MISC, "Logging to %s\n", TypeInfo[f->f_type].name);
                 v->iov_base = "\r\n";
                 v->iov_len = 2;
                 ADDEV();
@@ -1637,10 +1638,10 @@ cvthname(struct sockaddr_storage *f)
         error = getnameinfo((struct sockaddr*)f, ((struct sockaddr*)f)->sa_len,
                         ip, sizeof ip, NULL, 0, NI_NUMERICHOST|niflag);
 
-        DPRINTF("cvthname(%s)\n", ip);
+        DPRINTF(D_CALL, "cvthname(%s)\n", ip);
 
         if (error) {
-                DPRINTF("Malformed from address %s\n", gai_strerror(error));
+                DPRINTF(D_NET, "Malformed from address %s\n", gai_strerror(error));
                 return ("???");
         }
 
@@ -1650,7 +1651,7 @@ cvthname(struct sockaddr_storage *f)
         error = getnameinfo((struct sockaddr*)f, ((struct sockaddr*)f)->sa_len,
                         host, sizeof host, NULL, 0, niflag);
         if (error) {
-                DPRINTF("Host name for your address (%s) unknown\n", ip);
+                DPRINTF(D_NET, "Host name for your address (%s) unknown\n", ip);
                 return (ip);
         }
 
@@ -1691,7 +1692,7 @@ domark(int fd, short event, void *ev)
         schedule_event(&ev_pass,
                 &((struct timeval){TIMERINTVL, 0}),
                 domark, ev_pass);
-        DPRINTF("domark()\n");
+        DPRINTF((D_CALL|D_EVENT), "domark()\n");
 
         if ((getrusage(RUSAGE_SELF, &ru) == -1)
          || (getrlimit(RLIMIT_DATA, &rlp) == -1)) {
@@ -1716,7 +1717,7 @@ domark(int fd, short event, void *ev)
 
         for (f = Files; f; f = f->f_next) {
                 if (f->f_prevcount && now >= REPEATTIME(f)) {
-                        DPRINTF("Flush %s: repeated %d times, %d sec.\n",
+                        DPRINTF(D_DATA, "Flush %s: repeated %d times, %d sec.\n",
                             TypeInfo[f->f_type].name, f->f_prevcount,
                             repeatinterval[f->f_repeatcount]);
                         fprintlog(f, 0, (char *)NULL, NULL);
@@ -1789,7 +1790,7 @@ logerror(const char *fmt, ...)
         if (daemonized) 
                 logmsg(LOG_SYSLOG|LOG_ERR, buf, LocalHostName, ADDDATE);
         if (!daemonized && Debug)
-                DPRINTF("%s\n", buf);
+                DPRINTF(D_MISC, "%s\n", buf);
         if (!daemonized && !Debug)
                 printf("%s\n", buf);
 
@@ -1913,7 +1914,7 @@ init(int fd, short event, void *ev)
         };
 #endif /* !DISABLE_TLS */
 
-        DPRINTF("init\n");
+        DPRINTF((D_EVENT|D_CALL), "init\n");
 
         (void)strlcpy(oldLocalHostName, LocalHostName,
                       sizeof(oldLocalHostName));
@@ -2038,7 +2039,7 @@ init(int fd, short event, void *ev)
 
         /* open the configuration file */
         if ((cf = fopen(ConfFile, "r")) == NULL) {
-                DPRINTF("Cannot open `%s'\n", ConfFile);
+                DPRINTF(D_FILE, "Cannot open `%s'\n", ConfFile);
                 *nextp = (struct filed *)calloc(1, sizeof(*f));
                 cfline(0, "*.ERR\t/dev/console", *nextp, "*", "*");
                 (*nextp)->f_next = (struct filed *)calloc(1, sizeof(*f));
@@ -2089,7 +2090,7 @@ init(int fd, short event, void *ev)
                         if (copy_config_value(config_keywords[i].keyword,
                                                 config_keywords[i].variable,
                                                 &p, ConfFile, linenum)) {
-                                DPRINTF("found option %s\n", config_keywords[i].keyword);
+                                DPRINTF(D_PARSE, "found option %s\n", config_keywords[i].keyword);
 
                                 /* special cases with multiple parameters */
                                 if (!strcmp("tls_allow_fingerprints", config_keywords[i].keyword))
@@ -2156,7 +2157,7 @@ init(int fd, short event, void *ev)
 
                 for (i = 0; i < A_CNT(config_keywords); i++) {
                         if (!strncasecmp(p, config_keywords[i].keyword, strlen(config_keywords[i].keyword))) {
-                                DPRINTF("skip cline %d with keyword %s\n", linenum, config_keywords[i].keyword);
+                                DPRINTF(D_PARSE, "skip cline %d with keyword %s\n", linenum, config_keywords[i].keyword);
                                 found_keyword = true;
                         }
                 }
@@ -2267,13 +2268,13 @@ init(int fd, short event, void *ev)
                                 }
                         }
                 } else
-                        DPRINTF("Listening on inet and/or inet6 socket\n");
-                DPRINTF("Sending on inet and/or inet6 socket\n");
+                        DPRINTF(D_NET, "Listening on inet and/or inet6 socket\n");
+                DPRINTF(D_NET, "Sending on inet and/or inet6 socket\n");
         }
 
 #ifndef DISABLE_TLS
         /* TLS setup -- after all local destinations opened  */
-        DPRINTF("Parsed options: tls_ca: %s, tls_cadir: %s, "
+        DPRINTF(D_PARSE, "Parsed options: tls_ca: %s, tls_cadir: %s, "
                 "tls_cert: %s, tls_key: %s, tls_verify: %s, "
                 "bind: %s:%s, max. queue_lengths: %lld, %lld, %lld, "
                 "max. queue_sizes: %lld, %lld, %lld\n",
@@ -2284,10 +2285,10 @@ init(int fd, short event, void *ev)
                 TypeInfo[F_TLS].queue_size, TypeInfo[F_FILE].queue_size,
                 TypeInfo[F_PIPE].queue_size);
         SLIST_FOREACH(cred, &tls_opt.cert_head, entries) {
-                DPRINTF("Accepting peer certificate frem file: \"%s\"\n", cred->data);
+                DPRINTF(D_PARSE, "Accepting peer certificate from file: \"%s\"\n", cred->data);
         }
         SLIST_FOREACH(cred, &tls_opt.fprint_head, entries) {
-                DPRINTF("Accepting peer certificate with fingerprint: \"%s\"\n", cred->data);
+                DPRINTF(D_PARSE, "Accepting peer certificate with fingerprint: \"%s\"\n", cred->data);
         }
 
         if (tls_opt.x509verify
@@ -2298,7 +2299,7 @@ init(int fd, short event, void *ev)
                                         tls_opt.certfile, tls_opt.CAfile,
                                         tls_opt.CAdir, tls_opt.x509verify);
 
-        DPRINTF("Preparing sockets for TLS\n");
+        DPRINTF((D_NET|D_TLS), "Preparing sockets for TLS\n");
         TLS_Listen_Set = socksetup_tls(PF_UNSPEC, tls_opt.bindhost, tls_opt.bindport);
 
         for (f = Files; f; f = f->f_next) {
@@ -2320,7 +2321,7 @@ init(int fd, short event, void *ev)
 #endif /* !DISABLE_TLS */
 
         logmsg(LOG_SYSLOG|LOG_INFO, "syslogd: restart", LocalHostName, ADDDATE);
-        DPRINTF("syslogd: restarted\n");
+        DPRINTF(D_MISC, "syslogd: restarted\n");
         /*
          * Log a change in hostname, but only on a restart (we detect this
          * by checking to see if we're passed a kevent).
@@ -2330,7 +2331,7 @@ init(int fd, short event, void *ev)
                     "syslogd: host name changed, \"%s\" to \"%s\"",
                     oldLocalHostName, LocalHostName);
                 logmsg(LOG_SYSLOG|LOG_INFO, hostMsg, LocalHostName, ADDDATE);
-                DPRINTF("%s\n", hostMsg);
+                DPRINTF(D_MISC, "%s\n", hostMsg);
         }
 }
 
@@ -2345,7 +2346,7 @@ cfline(const unsigned int linenum, char *line, struct filed *f, char *prog, char
         char   *bp, *p, *q;
         char   buf[MAXLINE];
 
-        DPRINTF("cfline(%d, \"%s\", f, \"%s\", \"%s\")\n", linenum, line, prog, host);
+        DPRINTF((D_CALL|D_PARSE), "cfline(%d, \"%s\", f, \"%s\", \"%s\")\n", linenum, line, prog, host);
 
         errno = 0;      /* keep strerror() stuff out of logerror messages */
 
@@ -2622,7 +2623,7 @@ getmsgbufsize(void)
         mib[1] = KERN_MSGBUFSIZE;
         size = sizeof msgbufsize;
         if (sysctl(mib, 2, &msgbufsize, &size, NULL, 0) == -1) {
-                DPRINTF("Couldn't get kern.msgbufsize\n");
+                DPRINTF(D_MISC, "Couldn't get kern.msgbufsize\n");
                 return (0);
         }
         return (msgbufsize);
@@ -2686,9 +2687,9 @@ socksetup(int af, const char *hostname)
                                 s->ev = allocev();
                                 event_set(s->ev, s->fd, EV_READ | EV_PERSIST, dispatch_read_finet, s->ev);
                                 if (event_add(s->ev, NULL) == -1) {
-                                        DPRINTF("Failure in event_add()\n");
+                                        DPRINTF((D_EVENT|D_NET), "Failure in event_add()\n");
                                 } else {
-                                        DPRINTF("Listen on UDP port\n");
+                                        DPRINTF((D_EVENT|D_NET), "Listen on UDP port\n");
                                 }
                         }
                 }
@@ -2877,7 +2878,7 @@ schedule_event(struct event **ev, struct timeval *tv, void (*cb)(int, short, voi
         }
         event_set(*ev, 0, 0, cb, arg);
         if (event_add(*ev, tv) == -1) {
-                DPRINTF("Failure in event_add()\n");
+                DPRINTF(D_EVENT, "Failure in event_add()\n");
         }
 }
 
@@ -2989,7 +2990,7 @@ purge_message_queue(struct filed *f, const unsigned int del_entries, const int s
         int removed = 0;
         struct buf_queue *qentry = NULL;
 
-        DPRINTF("purge_message_queue(%p, %d, %d) with "
+        DPRINTF((D_CALL|D_BUFFER), "purge_message_queue(%p, %d, %d) with "
                 "f_qelements=%d and f_qsize=%d\n",
                 f, del_entries, strategy,
                 f->f_qelements, f->f_qsize);
@@ -3023,7 +3024,7 @@ purge_message_queue(struct filed *f, const unsigned int del_entries, const int s
                 FREEPTR(qentry);                
         }
 
-        DPRINTF("removed %d entries\n", removed);
+        DPRINTF(D_BUFFER, "removed %d entries\n", removed);
         return removed;
 }
 

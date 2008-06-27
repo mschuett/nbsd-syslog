@@ -132,13 +132,13 @@ struct TypeInfo {
         char *default_length_string;
         char *queue_size_string;
         char *default_size_string;
-        int   queue_length;
-        int   queue_size;
+        int64_t queue_length;
+        int64_t queue_size;
         int   max_msg_length;
 } TypeInfo[] = {
         /* values are set in init() 
          * -1 in length/size or max_msg_length means infinite */
-        {"UNUSED",   "0",    "0", "0",    "0", 0, 0,     0}, 
+        {"UNUSED",   "0",    "0",  "0",   "0", 0, 0,     0}, 
         {"FILE",    NULL, "1024", NULL,  "1M", 0, 0, 16384}, 
         {"TTY",     NULL,    "0", NULL,   "0", 0, 0,  1024}, 
         {"CONSOLE", NULL,    "0", NULL,   "0", 0, 0,  1024}, 
@@ -1190,7 +1190,7 @@ fprintlog_noqueue(struct filed *f, int flags, char *msg, struct buf_msg *buffer)
         char *tlsline;
 #endif /* !DISABLE_TLS */
 
-        DPRINTF("fprintlog(%p, %d, %p, %p)\n", f, flags, msg, buffer);
+        DPRINTF("fprintlog(%p, %d, \"%s\", %p)\n", f, flags, msg, buffer);
         v = iov;
         if (f->f_type == F_WALL) {
                 v->iov_base = greetings;
@@ -1270,7 +1270,6 @@ fprintlog_noqueue(struct filed *f, int flags, char *msg, struct buf_msg *buffer)
         }
         ADDEV();
 
-        DPRINTF("Logging to %s", TypeInfo[f->f_type].name);
         f->f_time = now;
 
         if ((f->f_type == F_FORW)
@@ -1304,10 +1303,13 @@ fprintlog_noqueue(struct filed *f, int flags, char *msg, struct buf_msg *buffer)
                                      f->f_prevpri, (char *) iov[0].iov_base,
                                      (char *) iov[5].iov_base);
                 }
+                DPRINTF("formatted %d (of %d allowed) octets to: %.*s\n", l, TypeInfo[f->f_type].max_msg_length, l, line);
                 /* limith mesage length */
                 if (TypeInfo[f->f_type].max_msg_length != -1
-                 && TypeInfo[f->f_type].max_msg_length < l)
+                 && TypeInfo[f->f_type].max_msg_length < l) {
                         l = TypeInfo[f->f_type].max_msg_length;
+                        DPRINTF("truncating oversized message to %d octets\n", l);
+                 }
                 /* TODO: check syslog-protocol if we may truncate SD Elements */
         } else {
                 /* limith mesage length for message content in iov[5]
@@ -1323,11 +1325,11 @@ fprintlog_noqueue(struct filed *f, int flags, char *msg, struct buf_msg *buffer)
         }
         switch (f->f_type) {
         case F_UNUSED:
-                DPRINTF("\n");
+                DPRINTF("Logging to %s\n", TypeInfo[f->f_type].name);
                 break;
 
         case F_FORW:
-                DPRINTF(" %s\n", f->f_un.f_forw.f_hname);
+                DPRINTF("Logging to %s %s\n", TypeInfo[f->f_type].name, f->f_un.f_forw.f_hname);
                 if (finet) {
                         lsent = -1;
                         fail = 0;
@@ -1377,9 +1379,9 @@ sendagain:
 
 #ifndef DISABLE_TLS
         case F_TLS:
-                DPRINTF("[%s]\n", f->f_un.f_tls.tls_conn->hostname);
+                DPRINTF("Logging to %s %s\n", TypeInfo[f->f_type].name, f->f_un.f_tls.tls_conn->hostname);
         
-                for (prefixlen = 0, j = l; j; j /= 10)
+                for (prefixlen = 0, j = l+1; j; j /= 10)
                         prefixlen++;
                 msglen = prefixlen + 1 + l + 1;  /* with \0 */
                 if (!(tlsline = malloc(msglen))) {
@@ -1387,8 +1389,10 @@ sendagain:
                         f->f_prevcount = 0;
                         return false;
                 }
+                DPRINTF("calculated  prefixlen=%d, msglen=%d\n", prefixlen, msglen);
 
                 j = snprintf(tlsline, msglen, "%d %s", l, line);
+                DPRINTF("now sending line: %.*s\n", j, tlsline);
                 if (j >= msglen)
                         j = msglen;
                 fail = (f->f_un.f_tls.tls_conn->sslptr)
@@ -1405,7 +1409,7 @@ sendagain:
 #endif /* !DISABLE_TLS */
 
         case F_PIPE:
-                DPRINTF(" %s\n", f->f_un.f_pipe.f_pname);
+                DPRINTF("Logging to %s %s\n", TypeInfo[f->f_type].name, f->f_un.f_pipe.f_pname);
                 v->iov_base = "\n";
                 v->iov_len = 1;
                 ADDEV();
@@ -1469,14 +1473,14 @@ sendagain:
 
         case F_CONSOLE:
                 if (flags & IGN_CONS) {
-                        DPRINTF(" (ignored)\n");
+                        DPRINTF("Logging to %s (ignored)\n", TypeInfo[f->f_type].name);
                         break;
                 }
                 /* FALLTHROUGH */
 
         case F_TTY:
         case F_FILE:
-                DPRINTF(" %s\n", f->f_un.f_fname);
+                DPRINTF("Logging to %s %s\n", TypeInfo[f->f_type].name, f->f_un.f_fname);
                 if (f->f_type != F_FILE) {
                         v->iov_base = "\r\n";
                         v->iov_len = 2;
@@ -1524,7 +1528,7 @@ sendagain:
 
         case F_USERS:
         case F_WALL:
-                DPRINTF("\n");
+                DPRINTF("Logging to %s\n", TypeInfo[f->f_type].name);
                 v->iov_base = "\r\n";
                 v->iov_len = 2;
                 ADDEV();
@@ -2116,10 +2120,10 @@ init(int fd, short event, void *ev)
         }
         for (i = 0; i < A_CNT(TypeInfo); i++) {
                 if (!TypeInfo[i].queue_length_string
-                 || expand_number(TypeInfo[i].queue_length_string, (int64_t*) &TypeInfo[i].queue_length) == -1)
+                 || expand_number(TypeInfo[i].queue_length_string, &TypeInfo[i].queue_length) == -1)
                         TypeInfo[i].queue_length = strtol(TypeInfo[i].default_length_string, NULL, 10);
                 if (!TypeInfo[i].queue_size_string
-                 || expand_number(TypeInfo[i].queue_size_string, (int64_t*) &TypeInfo[i].queue_size) == -1)
+                 || expand_number(TypeInfo[i].queue_size_string, &TypeInfo[i].queue_size) == -1)
                         TypeInfo[i].queue_size = strtol(TypeInfo[i].default_size_string, NULL, 10);
         }
         rewind(cf);
@@ -2271,8 +2275,8 @@ init(int fd, short event, void *ev)
         /* TLS setup -- after all local destinations opened  */
         DPRINTF("Parsed options: tls_ca: %s, tls_cadir: %s, "
                 "tls_cert: %s, tls_key: %s, tls_verify: %s, "
-                "bind: %s:%s, max. queue_lengths: %d, %d, %d, "
-                "max. queue_sizes: %d, %d, %d\n",
+                "bind: %s:%s, max. queue_lengths: %lld, %lld, %lld, "
+                "max. queue_sizes: %lld, %lld, %lld\n",
                 tls_opt.CAfile, tls_opt.CAdir, tls_opt.certfile,
                 tls_opt.keyfile, tls_opt.x509verify, tls_opt.bindhost,
                 tls_opt.bindport, TypeInfo[F_TLS].queue_length,

@@ -1295,9 +1295,9 @@ tls_send(struct filed *f, char *line, size_t len)
         char *tlslineptr = line;
         size_t tlslen = len;
         
-        DPRINTF("tls_send(f=%p, line=\"%.*s...\", len=%d) to %sconnected dest.\n",
-                f, (len>24 ? 24 : len), line, len,
-                f->f_un.f_tls.tls_conn->sslptr ? "" : "un");
+        DPRINTF("tls_send(f=%p, line=\"%.*s%s\", len=%d) to %sconnected dest.\n",
+                f, (len>24 ? 24 : len), (len>24 ? "..." : ""),
+                line, len, f->f_un.f_tls.tls_conn->sslptr ? "" : "un");
 
         if (!f->f_un.f_tls.tls_conn->sslptr) {
                 return false;
@@ -1307,7 +1307,7 @@ tls_send(struct filed *f, char *line, size_t len)
         for (i = 0; isdigit((int)line[i]); i++)
                 /* skip digits */;
         if (line[i] != ' ') {
-                DPRINTF("malformed TLS line: %.*s", (len>24 ? 24 : len), line);
+                DPRINTF("malformed TLS line: %.*s\n", (len>24 ? 24 : len), line);
                 /* silently discard malformed line, re-queuing it would only cause a loop */
                 return true;
         }

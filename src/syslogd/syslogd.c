@@ -305,11 +305,6 @@ main(int argc, char *argv[])
                         break;
                 case 's':               /* no network listen mode */
                         SecureMode++;
-#ifndef DISABLE_TLS
-                        /* there will be a seperate option to enable/disable
-                         * TLS network listen mode independently later */
-                        tls_opt.client_only = true;
-#endif /* !DISABLE_TLS */
                         break;
                 case 'S':
                         SyncKernel = 1;
@@ -1889,6 +1884,7 @@ init(int fd, short event, void *ev)
                 {"tls_verify",            &tls_opt.x509verify},
                 {"tls_bindport",          &tls_opt.bindport},
                 {"tls_bindhost",          &tls_opt.bindhost},
+                {"tls_client_only",       &tls_opt.client_only},
                 /* special cases in parsing */
                 {"tls_allow_fingerprints",&tmp_buf},
                 {"tls_allow_clientcerts", &tmp_buf},

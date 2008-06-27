@@ -99,34 +99,34 @@ struct daemon_status {
 #define TLS_TEMP_ERROR 2        /* recoverable error condition, but try again */
 #define TLS_PERM_ERROR 3        /* non-recoverable error condition, closed TLS and socket */
 
-SSL_CTX *init_global_TLS_CTX(const char *keyfilename, const char *certfilename, const char *CAfile, const char *CApath, const char *strx509verify);
-int check_peer_cert(int preverify_ok, X509_STORE_CTX * store);
-bool get_fingerprint(const X509 *cert, char **returnstring, const char *alg_name);
+SSL_CTX *init_global_TLS_CTX(const char *, const char *, const char *, const char *, const char *);
+int check_peer_cert(int, X509_STORE_CTX *);
+bool get_fingerprint(const X509 *, char **, const char *);
 bool get_commonname(X509 *, char **);
 bool match_hostnames(X509 *, const char *, const char *);
 bool match_fingerprint(const X509 *, const char *);
 bool match_certfile(const X509 *, const char *);
 
-bool copy_string(char **mem, const char *p, const char *q);
-bool copy_config_value_quoted(const char *keyword, char **mem, char **p);
+bool copy_string(char **, const char *, const char *);
+bool copy_config_value_quoted(const char *, char **, char **);
 bool copy_config_value(const char *, char **, char **, const char *, const int);
 bool copy_config_value_word(char **, char **);
-bool parse_tls_destination(char *p, struct filed *f);
-struct socketEvent *socksetup_tls(const int af, const char *bindhostname, const char *port);
+bool parse_tls_destination(char *, struct filed *);
+struct socketEvent *socksetup_tls(const int, const char *, const char *);
 
-void tls_split_messages(struct TLS_Incoming_Conn *c);
+void tls_split_messages(struct TLS_Incoming_Conn *);
 
-void dispatch_accept_socket(int fd_lib, short event, void *ev);
-void dispatch_accept_tls(int fd, short event, void *ev);
-void dispatch_read_tls(int fd_lib, short event, void *ev);
-void dispatch_eof_tls(int fd, short event, void *arg);
+void dispatch_accept_socket(int, short, void *);
+void dispatch_accept_tls(int, short, void *);
+void dispatch_read_tls(int, short, void *);
+void dispatch_eof_tls(int, short, void *);
 bool tls_connect(SSL_CTX *, struct filed *);
-void tls_reconnect(int fd, short event, void *ev);
-bool tls_send(struct filed *f, char *line, size_t len);
+void tls_reconnect(int, short, void *);
+bool tls_send(struct filed *, char *, size_t);
 
-void free_tls_sslptr(struct tls_conn_settings *tls_conn);
-void free_tls_conn(struct tls_conn_settings *tls_conn);
-int tls_examine_error(const char *functionname, const SSL *ssl, struct tls_conn_settings *tls_conn, const int rc);
+void free_tls_sslptr(struct tls_conn_settings *);
+void free_tls_conn(struct tls_conn_settings *);
+int tls_examine_error(const char *, const SSL *, struct tls_conn_settings *, const int);
 
 inline int accept_cert(const char* , struct tls_conn_settings *, char *, char *);
 inline int deny_cert(struct tls_conn_settings *, char *, char *);

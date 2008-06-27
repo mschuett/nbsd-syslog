@@ -203,9 +203,9 @@ struct tls_global_options_t {
         char *CAfile;       /* file with CA certificate */
         char *CAdir;        /* alternative: path to directory with CA certs */
         char *x509verify;   /* level of peer verification */
-        char *bindhost; /* hostname/IP to bind to */ 
-        char *bindport; /* port/service to bind to */
-        bool client_only;   /* do not listen te incoming TLS */
+        char *bindhost;     /* hostname/IP to bind to */ 
+        char *bindport;     /* port/service to bind to */
+        char *client_only;  /* if !NULL: do not listen to incoming TLS */
 };
 
 /* TLS needs three sets of sockets:

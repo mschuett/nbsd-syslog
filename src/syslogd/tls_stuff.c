@@ -515,7 +515,6 @@ socksetup_tls(const int af, const char *bindhostname, const char *port)
         const int on = 1;
         struct socketEvent *s, *socks;
 
-        /* TODO: config option for TLS client-only mode */
         if(tls_opt.client_only)
                 return(NULL);
 
@@ -966,8 +965,6 @@ try_SSL_accept:
 /*
  * Dispatch routine for accepting TCP connections and preparing
  * the tls_conn_settings object for a following SSL_accept().
- * TODO: how do we handle fingerprint auth for incoming?
- *       set up a list of tls_conn_settings and pick one matching the hostname?
  */
 void
 dispatch_accept_socket(int fd, short event, void *ev)

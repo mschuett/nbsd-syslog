@@ -102,8 +102,10 @@ struct daemon_status {
 SSL_CTX *init_global_TLS_CTX(const char *keyfilename, const char *certfilename, const char *CAfile, const char *CApath, const char *strx509verify);
 int check_peer_cert(int preverify_ok, X509_STORE_CTX * store);
 bool get_fingerprint(const X509 *cert, char **returnstring, const char *alg_name);
+bool get_commonname(X509 *, char **);
 bool match_hostnames(X509 *, const char *, const char *);
 bool match_fingerprint(const X509 *, const char *);
+bool match_certfile(const X509 *, const char *);
 
 bool copy_string(char **mem, const char *p, const char *q);
 bool copy_config_value_quoted(const char *keyword, char **mem, char **p);
@@ -126,6 +128,7 @@ void free_tls_sslptr(struct tls_conn_settings *tls_conn);
 void free_tls_conn(struct tls_conn_settings *tls_conn);
 int tls_examine_error(const char *functionname, const SSL *ssl, struct tls_conn_settings *tls_conn, const int rc);
 
-inline void accept_and_copy_info(struct tls_conn_settings *, char *, const char *);
+inline int accept_cert(const char* , struct tls_conn_settings *, char *, char *);
+inline int deny_cert(struct tls_conn_settings *, char *, char *);
 
 #endif /* !_TLS_STUFF_H */

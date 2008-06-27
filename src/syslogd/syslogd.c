@@ -1874,7 +1874,7 @@ init(int fd, short event, void *ev)
         struct TLS_Incoming_Conn *tls_in;
         struct peer_cred *cred = NULL;
         struct peer_cred_head *credhead = NULL;
-        char *q, *tmp_buf;
+        char *tmp_buf;
 
         /* central list of recognized configuration keywords
          * and an address for their values as strings */

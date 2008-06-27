@@ -166,6 +166,35 @@ get_fingerprint(const X509 *cert, char **returnstring, const char *alg_name)
                     (*returnstring)[memsize - 2], (*returnstring)[memsize - 1]);
         return true;
 }
+
+/* 
+ * gets first CN from cert in returnstring (has to be freed by caller)
+ * on failure it returns false and *returnstring is NULL
+ */
+bool
+get_commonname(X509 *cert, char **returnstring)
+{
+        X509_NAME *x509name;
+        X509_NAME_ENTRY *entry;
+        unsigned char *ubuf;
+        int len, i;
+        
+        x509name = X509_get_subject_name(cert);
+        i = X509_NAME_get_index_by_NID(x509name, NID_commonName, -1);
+        if (i != -1) {
+                entry = X509_NAME_get_entry(x509name, i);
+                len = ASN1_STRING_to_UTF8(&ubuf, X509_NAME_ENTRY_get_data(entry));
+                if (len > 0
+                 && (*returnstring = malloc(len+1))) {
+                        strlcpy(*returnstring, ubuf, len+1);
+                        OPENSSL_free(ubuf);
+                        return true;
+                }
+                OPENSSL_free(ubuf);
+        }
+        *returnstring = NULL;
+        return false;
+}
 /*
  * test if cert matches as configured hostname or IP
  * checks a 'really used' hostname and optionally a second expected subject
@@ -187,6 +216,7 @@ match_hostnames(X509 *cert, const char *hostname, const char *subject)
         X509_NAME_ENTRY *entry;
         ASN1_OCTET_STRING *asn1_ip, *asn1_cn_ip;
         int crit, idx;
+
         DPRINTF("match_hostnames(%p, \"%s\", \"%s\")\n",
             cert, hostname, subject);
 
@@ -322,17 +352,32 @@ match_certfile(const X509 *cert, const char *certfilename)
 }
 
 /* used for incoming connections in check_peer_cert() */
-inline void
-accept_and_copy_info(struct tls_conn_settings *conn_info, char *fingerprint, const char *cur_subjectline)
+inline int
+accept_cert(const char* reason, struct tls_conn_settings *conn_info, char *cur_fingerprint, char *cur_subjectline)
 {
-        if (fingerprint)
-                conn_info->fingerprint = fingerprint;
-        if (cur_subjectline) {
-                if (!(conn_info->subject = malloc(strlen(cur_subjectline))))
-                        logerror("Unable to allocate memory");
-                else
-                        strlcpy(conn_info->subject, cur_subjectline, strlen(cur_subjectline));
-        }
+        if (cur_fingerprint)
+                conn_info->fingerprint = cur_fingerprint;
+        if (cur_subjectline)
+                conn_info->subject = cur_subjectline;
+
+        logerror("Accept %s certificate from %s due to %s. "
+                "Subject is \"%s\", fingerprint is \"%s\"",
+                conn_info->incoming ? "server" : "client", 
+                conn_info->hostname, reason,
+                cur_subjectline, cur_fingerprint);
+        return 1;        
+}
+inline int
+deny_cert(struct tls_conn_settings *conn_info, char *cur_fingerprint, char *cur_subjectline)
+{
+        logerror("Deny %s certificate from %s. "
+                "Subject is \"%s\", fingerprint is \"%s\"",
+                conn_info->incoming ? "server" : "client", 
+                conn_info->hostname,
+                cur_subjectline, cur_fingerprint);
+        FREEPTR(cur_fingerprint);
+        FREEPTR(cur_subjectline);
+        return 0;        
 }
 
 /*
@@ -344,16 +389,14 @@ accept_and_copy_info(struct tls_conn_settings *conn_info, char *fingerprint, con
 int
 check_peer_cert(int preverify_ok, X509_STORE_CTX *ctx)
 {
-        char cur_subjectline[256];
-        char cur_issuerline[256];
+        char *cur_subjectline = NULL;
         char *cur_fingerprint = NULL;
+        char cur_issuerline[256];
         SSL *ssl;
         X509 *cur_cert;
         int cur_err, cur_depth;
-        bool rc, rc2, rc3;
         struct tls_conn_settings *conn_info;
         struct peer_cred *cred, *tmp_cred;
-        FILE *certfile;
         
         /* read context info */
         cur_cert = X509_STORE_CTX_get_current_cert(ctx);
@@ -363,8 +406,7 @@ check_peer_cert(int preverify_ok, X509_STORE_CTX *ctx)
         conn_info = SSL_get_app_data(ssl);
 
         /* some info */
-        (void)X509_NAME_oneline(X509_get_subject_name(cur_cert),
-                cur_subjectline, sizeof(cur_subjectline));
+        (void)get_commonname(cur_cert, &cur_subjectline);
         (void)get_fingerprint(cur_cert, &cur_fingerprint, NULL);
         DPRINTF("check cert for connection with %s. depth is %d, "
                 "preverify is %d, subject is %s, fingerprint is %s\n",
@@ -407,39 +449,15 @@ check_peer_cert(int preverify_ok, X509_STORE_CTX *ctx)
          * 
          */
         /* shortcut */
-        if (conn_info->x509verify == X509VERIFY_NONE) {
-                if (cur_depth == 0) {
-                        logerror("Configured not to verify peer certificate "
-                                "with subject %s, fingerprint %s\n",
-                                cur_subjectline, cur_fingerprint);
-                        DPRINTF("ACCEPT\n");
-                        accept_and_copy_info(conn_info, cur_fingerprint, cur_subjectline);
-                } else {
-                        FREEPTR(cur_fingerprint);
-                }
+        if (cur_depth != 0)
+                FREEPTR(cur_fingerprint);
+                FREEPTR(cur_subjectline);
                 return 1;
-        }
 
-        if (cur_depth != 0) {
-                if (conn_info->incoming) {
-                        return 1;
-                }
-                if (preverify_ok) {
-                        return 1;
-                } else {
-                        if (conn_info->fingerprint)
-                                return 1;
-                        else {
-                                /* no sense in further checking */
-                                return 0;
-                        }
-                }
-        }
+        if (conn_info->x509verify == X509VERIFY_NONE)
+                return accept_cert("disabled verification", conn_info,
+                        cur_fingerprint, cur_subjectline);
 
-        logerror("Checking cert. Peer is %s with certificate subject %s "
-                "and fingerprint %s\n", conn_info->hostname, cur_subjectline,
-                cur_fingerprint);
-                
         /* implicit: (cur_depth == 0) && (conn_info->x509verify != X509VERIFY_NONE) */
         if (conn_info->incoming) {
                 /* is preverify_ok important here? */
@@ -447,46 +465,41 @@ check_peer_cert(int preverify_ok, X509_STORE_CTX *ctx)
                 SLIST_FOREACH(cred, &conn_info->tls_opt->fprint_head, entries) {
                         conn_info->fingerprint = cred->data;
                         if (match_fingerprint(cur_cert, conn_info->fingerprint)) {
-                                DPRINTF("ACCEPT after OK from match_fingerprint()\n");
-                                accept_and_copy_info(conn_info, cur_fingerprint, cur_subjectline);
-                                return 1;
+                                return accept_cert("matching fingerprint",
+                                        conn_info, cur_fingerprint, cur_subjectline);
                         }
                         conn_info->fingerprint = NULL;
                 }
                 SLIST_FOREACH_SAFE(cred, &conn_info->tls_opt->cert_head, entries, tmp_cred) {
-                        if (match_certfile(cur_cert, cred->data)) {
-                                DPRINTF("ACCEPT after OK from match_certfile()\n");
-                                accept_and_copy_info(conn_info, cur_fingerprint, cur_subjectline);
-                                return 1;
-                        }
+                        if (match_certfile(cur_cert, cred->data))
+                                return accept_cert("matching certfile", conn_info,
+                                        cur_fingerprint, cur_subjectline);
                 }
-                DPRINTF("DENY, client certificate not in allowed fingerprints or clientcerts\n");
-                FREEPTR(cur_fingerprint);
-                return 0;
+                return deny_cert(conn_info, cur_fingerprint, cur_subjectline);
         }
 
         /* implicit: (cur_depth == 0) && (conn_info->x509verify != X509VERIFY_NONE) && !conn_info->incoming */
-        FREEPTR(cur_fingerprint);  /* will not need it anymore */
         if (!conn_info->incoming && preverify_ok) {
                 /* certificate chain OK. check subject/hostname */
-                rc = match_hostnames(cur_cert, conn_info->hostname, conn_info->subject);
-                DPRINTF("%s after match_hostnames()\n", rc ? "ACCEPT" : "DENY");
-                return rc;              
+                if (match_hostnames(cur_cert, conn_info->hostname, conn_info->subject))
+                        return accept_cert("matching hostname/subject", conn_info,
+                                        cur_fingerprint, cur_subjectline);
+                else
+                        return deny_cert(conn_info, cur_fingerprint, cur_subjectline);
         } else if (!conn_info->incoming && !preverify_ok) {
                 /* certificate chain not OK. check fingerprint/subject/hostname */
-                rc = match_fingerprint(cur_cert, conn_info->fingerprint);
-                rc2 = match_hostnames(cur_cert, conn_info->hostname, conn_info->subject);
-                rc3 = match_certfile(cur_cert, conn_info->certfile);
-                DPRINTF("%s, depth 0 arrived, match_fingerprint() returned %d, "
-                        "match_hostnames() returned %d, match_certfile "
-                        "returned %d\n",
-                        (rc || rc2 || rc3) ? "ACCEPT" : "DENY",
-                        rc, rc2, rc3);
-                return rc || rc2 || rc3;
+                if (match_fingerprint(cur_cert, conn_info->fingerprint))
+                        return accept_cert("matching fingerprint", conn_info,
+                                        cur_fingerprint, cur_subjectline);
+                else if (match_certfile(cur_cert, conn_info->certfile))
+                        return accept_cert("matching certfile", conn_info,
+                                        cur_fingerprint, cur_subjectline);
+                else if (match_hostnames(cur_cert, conn_info->hostname, conn_info->subject))
+                        return accept_cert("matching hostname/subject", conn_info,
+                                        cur_fingerprint, cur_subjectline);
+                else
+                        return deny_cert(conn_info, cur_fingerprint, cur_subjectline);
         }
-
-        DPRINTF("error; reached end of check_peer_cert()\n");
-        return 0;
 }
 
 /*
@@ -752,7 +765,6 @@ copy_config_value_quoted(const char *keyword, char **mem, char **p)
 bool
 copy_config_value(const char *keyword, char **mem, char **p, const char *file, const int line)
 {
-        char *q;
         if (strncasecmp(*p, keyword, strlen(keyword)))
                 return false;
         *p += strlen(keyword);
@@ -968,7 +980,6 @@ dispatch_accept_socket(int fd, short event, void *ev)
         int newsock, rc;
         SSL *ssl;
         struct tls_conn_settings *conn_info;
-        struct peer_cred *cred = NULL;
         char hbuf[NI_MAXHOST];
         char *peername;
 

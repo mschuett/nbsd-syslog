@@ -71,9 +71,10 @@ struct tls_conn_settings {
         unsigned int x509verify:2,              /* kind of validation needed */
                      incoming:1;                /* set if we are server */
            
-        SSL  *sslptr;        /* active SSL object            */
-        struct event *event; /* event for socket activity    */
-        struct event *event2;/* event for scheduling. TODO: find a way to remove this  */
+        SSL  *sslptr;        /* active SSL object             */
+        struct event *event; /* event for read/write activity */
+        struct event *retryevent;  /* event for retries       */
+        bool  retrying;      /* keeps state which event is active */
         char *hostname;      /* hostname or IP we connect to */
         char *port;          /* service name or port number  */
         char *subject;       /* configured hostname in cert  */
@@ -94,10 +95,11 @@ struct daemon_status {
  */
 
 /* return values for TLS_examine_error() */
-#define TLS_OK 0                /* no real problem, just ignore */
-#define TLS_RETRY 1             /* just retry, non-blocking operation not finished yet */
-#define TLS_TEMP_ERROR 2        /* recoverable error condition, but try again */
-#define TLS_PERM_ERROR 3        /* non-recoverable error condition, closed TLS and socket */
+#define TLS_OK          0        /* no real problem, just ignore */
+#define TLS_RETRY_READ  1        /* just retry, non-blocking operation not finished yet */
+#define TLS_RETRY_WRITE 2        /* just retry, non-blocking operation not finished yet */
+#define TLS_TEMP_ERROR  4        /* recoverable error condition, but try again */
+#define TLS_PERM_ERROR  8        /* non-recoverable error condition, closed TLS and socket */
 
 SSL_CTX *init_global_TLS_CTX(const char *, const char *, const char *, const char *, const char *);
 int check_peer_cert(int, X509_STORE_CTX *);
@@ -120,9 +122,11 @@ void dispatch_accept_socket(int, short, void *);
 void dispatch_accept_tls(int, short, void *);
 void dispatch_read_tls(int, short, void *);
 void dispatch_eof_tls(int, short, void *);
-bool tls_connect(SSL_CTX *, struct filed *);
+bool tls_connect(SSL_CTX *, struct tls_conn_settings *);
+void dispatch_SSL_connect(int, short, void *);
 void tls_reconnect(int, short, void *);
-bool tls_send(struct filed *, char *, size_t);
+bool tls_send(struct filed *, struct buf_msg *, char *, size_t);
+void dispatch_tls_send(int, short, void *);
 
 void free_tls_sslptr(struct tls_conn_settings *);
 void free_tls_conn(struct tls_conn_settings *);

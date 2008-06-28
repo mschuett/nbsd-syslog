@@ -222,7 +222,8 @@ unsigned int message_queue_purge(struct filed *f, const unsigned int, const int)
 void send_queue(struct filed *);
 inline void free_cred_SLIST(struct peer_cred_head *);
 inline struct buf_queue *find_qentry_to_delete(const struct buf_queue_head *, const int, const bool);
-
+inline void tls_send_msg_free(struct tls_send_msg *msg);
+inline void buf_msg_free(struct buf_msg *msg);
 
 inline bool message_queue_remove(struct filed *, struct buf_queue *);
 inline bool message_queue_add(struct filed *, struct buf_msg *);
@@ -255,7 +256,11 @@ struct TLS_Incoming TLS_Incoming_Head = \
         SLIST_HEAD_INITIALIZER(TLS_Incoming_Head);
 extern char *SSL_ERRCODE[];
 struct tls_global_options_t tls_opt;
+
+inline struct filed *get_f_by_conninfo(struct tls_conn_settings *conn_info);
 #endif /* !DISABLE_TLS */
+
+extern int expand_number(char *, int64_t *);
 
 int
 main(int argc, char *argv[])
@@ -524,28 +529,20 @@ getgroup:
         
         ev = allocev();
         signal_set(ev, SIGTERM, die, ev);
-        if (signal_add(ev, NULL) == -1) {
-                DPRINTF(D_EVENT, "Failure in signal_add()\n");
-        }
+        EVENT_ADD(ev);
         
         if (Debug) {
                 ev = allocev();
                 signal_set(ev, SIGINT, die, ev);
-                if (signal_add(ev, NULL) == -1) {
-                        DPRINTF(D_EVENT, "Failure in signal_add()\n");
-                }
+                EVENT_ADD(ev);
                 ev = allocev();
                 signal_set(ev, SIGQUIT, die, ev);
-                if (signal_add(ev, NULL) == -1) {
-                        DPRINTF(D_EVENT, "Failure in signal_add()\n");
-                }
+                EVENT_ADD(ev);
         }
 
         ev = allocev();
         signal_set(ev, SIGCHLD, reapchild, ev);
-        if (signal_add(ev, NULL) == -1) {
-                DPRINTF(D_EVENT, "Failure in signal_add()\n");
-        }
+        EVENT_ADD(ev);
 
         ev = allocev();
         schedule_event(&ev,
@@ -558,24 +555,18 @@ getgroup:
         (void) signal(SIGHUP, SIG_IGN);
         ev = allocev();
         signal_set(ev, SIGHUP, init, ev);
-        if (signal_add(ev, NULL) == -1) {
-                DPRINTF(D_EVENT, "Failure in signal_add()\n");
-        }
+        EVENT_ADD(ev);
 
         if (fklog >= 0) {
                 ev = allocev();
                 DPRINTF(D_EVENT, "register klog for fd %d with ev@%p\n", fklog, ev);
                 event_set(ev, fklog, EV_READ | EV_PERSIST, dispatch_read_klog, ev);
-                if (event_add(ev, NULL) == -1) {
-                        DPRINTF(D_EVENT, "Failure in event_add()\n");
-                }
+                EVENT_ADD(ev);
         }
         for (j = 0, pp = LogPaths; *pp; pp++, j++) {
                 ev = allocev();
                 event_set(ev, funix[j], EV_READ | EV_PERSIST, dispatch_read_funix, ev);
-                if (event_add(ev, NULL) == -1) {
-                        DPRINTF(D_EVENT, "Failure in event_add()\n");
-                }
+                EVENT_ADD(ev);
         }
 
         DPRINTF(D_MISC, "Off & running....\n");
@@ -963,6 +954,28 @@ logmsg(int pri, char *msg, char *from, int flags)
                 (void)sigsetmask(omask);
                 return;
         }
+        
+        /* copy message for buffering */
+        if (!(msgbuf_new = calloc(1, sizeof(*msgbuf_new)))
+         || !(msgbuf->line = malloc(msgbuf->linelen + 1))
+         || !(msgbuf->timestamp = malloc(TIMESTAMPLEN+1))
+         || !(msgbuf->host = malloc(strlen(from)+1))) {
+                free(msgbuf_new);
+                free(msgbuf->line);
+                free(msgbuf->timestamp);
+                logerror("Unable to allocate memory");
+        } else {
+                DPRINTF(D_BUFFER, "copying message: %p, %.*s %s\n", msgbuf,
+                        TIMESTAMPLEN, timestamp, from);
+                msgbuf->linelen = strlen(msg);
+                memcpy(msgbuf->line, msg, msgbuf->linelen);
+                msgbuf->line[msgbuf->linelen] = '\0';
+        
+                strlcpy(msgbuf->timestamp, timestamp, TIMESTAMPLEN+1);
+                strcpy(msgbuf->host, from);
+                msgbuf->flags = flags;
+        }
+         
         for (f = Files; f; f = f->f_next) {
                 /* skip messages that are incorrect priority */
                 if (!(((f->f_pcmp[fac] & PRI_EQ) && (f->f_pmask[fac] == prilev))
@@ -1062,67 +1075,21 @@ logmsg(int pri, char *msg, char *from, int flags)
                         }
                 }
         }
-        if (msgbuf->refcount > 1) {
-                DPRINTF(D_BUFFER, "copying message: %p, %.*s %s\n", msgbuf,
-                        TIMESTAMPLEN, timestamp, from);
-                /* someone wants to queue this msg --> copy */
-                msgbuf->linelen = strlen(msg);
-                if (!(msgbuf_new = calloc(1, sizeof(*msgbuf_new)))
-                 || !(msgbuf->line = malloc(msgbuf->linelen + 1))
-                 || !(msgbuf->timestamp = malloc(TIMESTAMPLEN+1))
-                 || !(msgbuf->host = malloc(strlen(from)+1))) {
-                        free(msgbuf_new);
-                        free(msgbuf->line);
-                        free(msgbuf->timestamp);
-                        logerror("Unable to allocate memory");
-                        return;
-                }
-                memcpy(msgbuf->line, msg, msgbuf->linelen);
-                msgbuf->line[msgbuf->linelen] = '\0';
-
-                strlcpy(msgbuf->timestamp, timestamp, TIMESTAMPLEN+1);
-                strcpy(msgbuf->host, from);
-                msgbuf->flags = flags;
-
+        /* swap buffers */
+        if (msgbuf_new) {
                 msgbuf_new->refcount = 1;
-                msgbuf->refcount--;
+                buf_msg_free(msgbuf);
                 msgbuf = msgbuf_new;
-                DPRINTF(D_BUFFER, "queued and copied\n");
+                DPRINTF(D_BUFFER, "saved msgbuf_new\n");
+        } else {
+                /* TODO */
         }
         (void)sigsetmask(omask);
 }
 
 /*
- * wrapper arround fprintlog() removed again.
+ * wrapper arround fprintlog(): removed
  */
-
-        /* problem: how much control over memory usage do we need?
-         * currently the message buffer is shared among all destinations,
-         * but can only be accessed through f->f_qhead. So we cannot
-         * configure different memory usage limits for files and TLS.
-         * To change that we would need a global buffer queue, in which
-         * every element would need to have backreferences to all destinations
-         * that it belongs to  :-/  
-         * 
-         * So as a practical solution I set up a maximum number of
-         * queue elements per destination type.
-         */
-        /* unlikely but possible lock situation:
-         * if we cannot allocate a storage buffer, then we also will
-         * not be able to allocate the needed buffer in tls_send().
-         * then we might have a working connection and still be unable to
-         * send the messages away, ending up with shifting messages
-         * through the queue.
-         * 
-         * in practice it is enough to have enaugh variation in
-         * message lengths. then deleting a long message frees
-         * enough memory to send the following shorter ones and
-         * the lock situation is resolved.
-         */ 
-        /* note on TAILQ: newest message added at TAIL,
-         *                oldest to be removed is FIRST
-         */
-
 /* 
  * Added parameter struct buf_msg *buffer
  * If present (!= NULL) then a destination that is unable to send the
@@ -1154,13 +1121,10 @@ fprintlog(struct filed *f, int flags, char *msg, struct buf_msg *buffer, struct 
         struct iovec *v;
         struct addrinfo *r;
         int j, lsent, fail, retry, l = 0;
-        size_t msglen, prefixlen;
+        size_t msglen;
         char *line = NULL;
         char repbuf[80], greetings[200];
 #define ADDEV() assert(++v - iov < A_CNT(iov))
-#ifndef DISABLE_TLS
-        char *tlsline;
-#endif /* !DISABLE_TLS */
 
         DPRINTF(D_CALL, "fprintlog(%p, %d, \"%s\", %p)\n", f, flags, msg, buffer);
         v = iov;
@@ -1350,8 +1314,6 @@ sendagain:
                         if (lsent != l && fail) {
                                 f->f_type = F_UNUSED;
                                 logerror("sendto() failed");
-                                if (buffer && !qentry)
-                                        message_queue_add(f, buffer);
                         }
                 }
                 break;
@@ -1359,34 +1321,9 @@ sendagain:
 #ifndef DISABLE_TLS
         case F_TLS:
                 DPRINTF(D_MISC, "Logging to %s %s\n", TypeInfo[f->f_type].name, f->f_un.f_tls.tls_conn->hostname);
-        
-                for (prefixlen = 0, j = l+1; j; j /= 10)
-                        prefixlen++;
-                msglen = prefixlen + 1 + l + 1;  /* with \0 */
-                if (!(tlsline = malloc(msglen))) {
-                        logerror("Unable to allocate memory, drop message");
-                        f->f_prevcount = 0;
-                        /* skip the queue_add() without memory */
-                        return;
-                }
-                DPRINTF(D_DATA, "calculated  prefixlen=%d, msglen=%d\n", prefixlen, msglen);
-
-                j = snprintf(tlsline, msglen, "%d %s", l, line);
-                DPRINTF(D_DATA, "now sending line: %.*s\n", j, tlsline);
-                if (j >= msglen)
-                        j = msglen;
-                fail = (f->f_un.f_tls.tls_conn->sslptr)
-                        ? !tls_send(f, tlsline, j)
-                        : 1;
+                tls_send(f, buffer, line, l);
+                /* TODO: return immediately? */
                 free(line);
-                free(tlsline);
-                if (fail) {
-                        f->f_prevcount = 0;
-                        DPRINTF(D_DATA, "not sent\n");
-                        if (buffer && !qentry)
-                                message_queue_add(f, buffer);
-                        return;
-                }
                 break;
 #endif /* !DISABLE_TLS */
 
@@ -2301,12 +2238,12 @@ init(int fd, short event, void *ev)
                                 tls_opt.keyfile, tls_opt.certfile,
                                 tls_opt.CAfile, tls_opt.CAdir,
                                 tls_opt.x509verify);
-                if (!tls_connect(tls_opt.global_TLS_CTX, f)) {
+                if (!tls_connect(tls_opt.global_TLS_CTX, f->f_un.f_tls.tls_conn)) {
                         logerror("Unable to connect to TLS server %s", f->f_un.f_tls.tls_conn->hostname);
                         /* Reconnect after x seconds  */
                         schedule_event(&f->f_un.f_tls.tls_conn->event,
                                 &((struct timeval){TLS_RECONNECT_SEC, 0}),
-                                tls_reconnect, f);
+                                tls_reconnect, f->f_un.f_tls.tls_conn);
                 }
         }
 #endif /* !DISABLE_TLS */
@@ -2955,6 +2892,9 @@ find_qentry_to_delete(const struct buf_queue_head *head, const int strategy, con
         }
 }
 
+/* note on TAILQ: newest message added at TAIL,
+ *                oldest to be removed is FIRST
+ */
 /*
  * checks length of a destination's message queue
  * if del_entries == 0 then assert queue length is
@@ -2998,6 +2938,44 @@ message_queue_purge(struct filed *f, const unsigned int del_entries, const int s
         return removed;
 }
 
+inline void
+tls_send_msg_free(struct tls_send_msg *msg)
+{
+        if (!msg) {
+                DPRINTF((D_DATA), "invalid tls_send_msg_free(NULL)\n");
+                return;
+        } else
+                DPRINTF((D_DATA), "tls_send_msg_free(%p, refs=%d)\n", msg, msg->refcount);
+
+        msg->refcount--;
+        if (!msg->refcount) {
+                /* char *line is same as in buffer, so do not free it here */
+                buf_msg_free(msg->buffer);
+                FREEPTR(msg);
+        }
+        DPRINTF((D_DATA), "return from tls_send_msg_free()\n");
+}
+
+inline void
+buf_msg_free(struct buf_msg *buf)
+{
+        if (!buf) {
+                DPRINTF((D_DATA), "invalid buf_msg_free(NULL)\n");
+                return;
+        } else
+                DPRINTF((D_DATA), "buf_msg_free(%p, refs=%d)\n", buf, buf->refcount);
+        
+        buf->refcount--;
+        if (!buf->refcount) {
+                FREEPTR(buf->timestamp);
+                FREEPTR(buf->host);
+                FREEPTR(buf->line);
+                FREEPTR(buf->tlsline);
+                FREEPTR(buf);
+        }
+        DPRINTF((D_DATA), "return from buf_msg_free()\n");
+}
+
 inline bool
 message_queue_remove(struct filed *f, struct buf_queue *qentry)
 {
@@ -3005,19 +2983,13 @@ message_queue_remove(struct filed *f, struct buf_queue *qentry)
                 return false;
 
         TAILQ_REMOVE(&f->f_qhead, qentry, entries);
-        qentry->msg->refcount--;
         f->f_qelements--;
         f->f_qsize -= sizeof(*qentry)
                       + sizeof(*qentry->msg)
                       + qentry->msg->linelen
                       + strlen(qentry->msg->host)
                       + strlen(qentry->msg->timestamp);
-        if (!qentry->msg->refcount) {
-                FREEPTR(qentry->msg->timestamp);
-                FREEPTR(qentry->msg->host);
-                FREEPTR(qentry->msg->line);
-                FREEPTR(qentry->msg);
-        }
+        buf_msg_free(qentry->msg);
         FREEPTR(qentry);                
         return true;
 }
@@ -3061,19 +3033,31 @@ message_queue_freeall(struct filed *f)
         while (!TAILQ_EMPTY(&f->f_qhead)) {
                 qentry = TAILQ_FIRST(&f->f_qhead);
                 TAILQ_REMOVE(&f->f_qhead, qentry, entries);
-                qentry->msg->refcount--;
-                if (!qentry->msg->refcount) {
-                        FREEPTR(qentry->msg->timestamp);
-                        FREEPTR(qentry->msg->host);
-                        FREEPTR(qentry->msg->line);
-                        FREEPTR(qentry->msg);
-                }
+                buf_msg_free(qentry->msg);
                 FREEPTR(qentry);                
         }
 
         f->f_qelements = 0;
         f->f_qsize = 0;
 }
+
+#ifndef DISABLE_TLS
+/* utility function for tls_reconnect() */
+inline struct filed *
+get_f_by_conninfo(struct tls_conn_settings *conn_info)
+{
+        struct filed *f;
+
+        for (f = Files; f; f = f->f_next) {
+                if ((f->f_type == F_TLS)
+                 && f->f_un.f_tls.tls_conn == conn_info)
+                return f;
+        }
+        DPRINTF(D_TLS, "get_f_by_conninfo() called on invalid conn_info\n");
+        return NULL;
+}
+#endif /* !DISABLE_TLS */
+
 /*
  * return a timestamp in a static buffer
  */

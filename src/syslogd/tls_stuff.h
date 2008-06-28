@@ -41,7 +41,7 @@
  */
 #define TLS_NONBLOCKING_USEC  750
 #define TLS_NONBLOCKING_TRIES 2
-#define TLS_RETRY_KEVENT_USEC 20000
+#define TLS_RETRY_EVENT_USEC 20000
 
 /* reconnect to lost server after n sec */
 #define TLS_RECONNECT_SEC 10
@@ -53,6 +53,18 @@
 #define X509VERIFY_ALWAYS 0
 #define X509VERIFY_IFPRESENT 1
 #define X509VERIFY_NONE 2
+
+
+/* connection states, currently for outgoing connections only */
+#define ST_NONE       0
+#define ST_TCP_EST    1
+#define ST_CONNECTING 2
+#define ST_TLS_EST    4
+#define ST_WRITING    8
+#define ST_EOF       16
+
+#define ST_CHANGE(x, y) do { DPRINTF(D_TLS, "Change state %p to %d\n", &(x), (y)); \
+                             (x) = (y); } while (0)
 
 /*
  * holds TLS related settings for one connection to be
@@ -68,8 +80,9 @@
  */
 struct tls_conn_settings {
         /* short int verify_depth;      currently not checked. necessary? */
-        unsigned int x509verify:2,              /* kind of validation needed */
-                     incoming:1;                /* set if we are server */
+        unsigned int x509verify:2,      /* kind of validation needed */
+                     incoming:1;        /* set if we are server */
+        unsigned int state;             /* outgoing connection state */
            
         SSL  *sslptr;        /* active SSL object             */
         struct event *event; /* event for read/write activity */

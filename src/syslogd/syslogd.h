@@ -139,14 +139,18 @@ struct socketEvent {
                                 printf("%s:%s:%.4d\t", make_timestamp(true), __FILE__, __LINE__); \
                                 printf(__VA_ARGS__); }
 
-
 #define EVENT_ADD(x) do { \
                         if (event_add(x, NULL) == -1) \
+                                DPRINTF(D_TLS, "Failure in event_add()\n"); \
+                        } while (0)
+#define RETRYEVENT_ADD(x) do { \
+                        if (event_add(x, &((struct timeval){0, TLS_RETRY_EVENT_USEC})) == -1) \
                                 DPRINTF(D_TLS, "Failure in event_add()\n"); \
                         } while (0)
 
 
 #define FREEPTR(x)      if (x)     { free(x);         x = NULL; }
+#define FREE_SSL(x)     if (x)     { SSL_free(x);     x = NULL; }
 #define FREE_SSL_CTX(x) if (x)     { SSL_CTX_free(x); x = NULL; }
 
 #define MAXUNAMES       20      /* maximum number of user names */

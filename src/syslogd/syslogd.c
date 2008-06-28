@@ -2833,6 +2833,8 @@ send_queue(struct filed *f)
         struct buf_queue *qentry;
         struct filed f_tmp;
         
+        DPRINTF((D_DATA|D_CALL), "send_queue(f@%p with %d msgs and head %s)\n",
+                f, f->f_qelements, TAILQ_EMPTY(&f->f_qhead) ? "valid" : "NULL");
         /* 1st: we need a new struct filed to feed the message
          * parts into fprintlog() correctly.
          */

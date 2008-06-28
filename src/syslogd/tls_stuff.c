@@ -594,7 +594,10 @@ dispatch_SSL_connect(int fd, short event, void *arg)
         int rc, error;
 
         DPRINTF((D_TLS|D_CALL), "dispatch_SSL_connect(conn_info@%p, fd %d)\n", conn_info, fd);
-        
+        assert(conn_info->state == ST_TCP_EST
+            || conn_info->state == ST_CONNECTING);
+
+        ST_CHANGE(conn_info->state, ST_CONNECTING);
         rc = SSL_connect(ssl);
         if (0 >= rc) {
                 error = tls_examine_error("SSL_connect()",
@@ -620,11 +623,16 @@ dispatch_SSL_connect(int fd, short event, void *arg)
                 return;
         }
         /* else */
+        ST_CHANGE(conn_info->state, ST_TLS_EST);
         conn_info->retrying = false;
         event_set(conn_info->event, fd, EV_READ, dispatch_eof_tls, conn_info);
         EVENT_ADD(conn_info->event);
         
         DPRINTF(D_TLS, "TLS connection established.\n");
+
+        /* not very elegant but maybe better than
+         * using filed pointers everywhere (?) */
+        send_queue(get_f_by_conninfo(conn_info));
 }
 
 /*
@@ -638,6 +646,9 @@ tls_connect(SSL_CTX *context, struct tls_conn_settings *conn_info)
         const int one = 1;
         char   buf[MAXLINE];
         SSL    *ssl = NULL;
+        
+        DPRINTF((D_TLS|D_CALL), "tls_connect(conn_info@%p)\n", conn_info);
+        assert(conn_info->state == ST_NONE);
         
         memset(&hints, 0, sizeof(hints));
         hints.ai_family = AF_UNSPEC;
@@ -669,21 +680,26 @@ tls_connect(SSL_CTX *context, struct tls_conn_settings *conn_info)
                         sock = -1;
                         continue;
                 }
+                ST_CHANGE(conn_info->state, ST_TCP_EST);
+
                 if (!(ssl = SSL_new(context))) {
                         ERR_error_string_n(ERR_get_error(), buf, sizeof(buf));
                         DPRINTF(D_TLS, "Unable to establish TLS: %s\n", buf);
                         close(sock);
                         sock = -1;
+                        ST_CHANGE(conn_info->state, ST_NONE);
                         continue;                                
                 }
                 if (!SSL_set_fd(ssl, sock)) {
                         ERR_error_string_n(ERR_get_error(), buf, sizeof(buf));
                         DPRINTF(D_TLS, "Unable to connect TLS to socket: %s\n", buf);
-                        SSL_free(ssl);
+                        FREE_SSL(ssl);
                         close(sock);
                         sock = -1;
-                        continue;                                
+                        ST_CHANGE(conn_info->state, ST_NONE);
+                        continue;
                 }
+                
                 SSL_set_app_data(ssl, conn_info);
                 SSL_set_connect_state(ssl);
                 while ((rc = ERR_get_error())) {
@@ -699,18 +715,22 @@ tls_connect(SSL_CTX *context, struct tls_conn_settings *conn_info)
                 /* now we have a TCP connection, so assume we can
                  * use that and do not have to try another res */
                 conn_info->sslptr = ssl;
-                if (!conn_info->event)
-                        conn_info->event = allocev();
-                if (!conn_info->retryevent)
-                        conn_info->retryevent = allocev();
+
+                assert(conn_info->state == ST_TCP_EST);
+                assert(!conn_info->event);
+                assert(!conn_info->retryevent);
+                conn_info->event = allocev();
+                conn_info->retryevent = allocev();
+
                 freeaddrinfo(res);
-        
                 dispatch_SSL_connect(sock, 0, conn_info);
                 return true;
         }
         /* still no connection after for loop */
         DPRINTF((D_TLS|D_NET), "Unable to establish a TCP connection to %s\n", conn_info->hostname);
         freeaddrinfo(res);
+
+        assert(conn_info->state == ST_NONE);
         if (sock != -1)
                 close(sock);
         if (ssl) {
@@ -929,6 +949,9 @@ tls_reconnect(int fd, short event, void *arg)
 
         DPRINTF((D_TLS|D_CALL|D_EVENT), "tls_reconnect(conn_info@%p, "
                 "server %s)\n", conn_info, conn_info->hostname);
+        assert(conn_info->state == ST_NONE);
+        FREEPTR(conn_info->event);
+        FREEPTR(conn_info->retryevent);
 
         if (!tls_connect(tls_opt.global_TLS_CTX, conn_info)) {
                 logerror("Unable to connect to TLS server %s", conn_info->hostname);
@@ -937,9 +960,8 @@ tls_reconnect(int fd, short event, void *arg)
                         &((struct timeval){TLS_RECONNECT_SEC, 0}),
                         tls_reconnect, conn_info);
         } else {
-                /* not very elegant but maybe better than
-                 * using filed pointers everywhere (?) */
-                send_queue(get_f_by_conninfo(conn_info));
+                assert(conn_info->state == ST_TLS_EST
+                    || conn_info->state == ST_CONNECTING);
         }        
 }
 
@@ -1118,8 +1140,11 @@ dispatch_eof_tls(int fd, short event, void *arg)
         struct tls_conn_settings *conn_info = (struct tls_conn_settings *) arg;
 
         DPRINTF((D_TLS|D_EVENT|D_CALL), "dispatch_eof_tls(%d, %d, %p)\n", fd, event, arg);
+        assert(conn_info->state == ST_TLS_EST);
+        ST_CHANGE(conn_info->state, ST_EOF);
 
         free_tls_sslptr(conn_info);
+        assert(conn_info->state == ST_NONE);
 
         /* this overwrites the EV_READ event */
         schedule_event(&conn_info->event,
@@ -1356,10 +1381,6 @@ tls_send(struct filed *f, struct buf_msg *buffer, char *line, size_t len)
                 (len>24 ? 24 : len), line, (len>24 ? "..." : ""),
                 len, f->f_un.f_tls.tls_conn->sslptr ? "" : "un");
 
-        if (!f->f_un.f_tls.tls_conn->sslptr) {
-                return false;
-        }
-
         for (prefixlen = 0, i = len+1; i; i /= 10)
                 prefixlen++;
         calclen = prefixlen + 1 + len + 1;  /* with \0 */
@@ -1380,15 +1401,15 @@ tls_send(struct filed *f, struct buf_msg *buffer, char *line, size_t len)
         buffer->tlsline = sendmsg->line;
         buffer->tlslength = sendmsg->linelen;
 
-        if(f->f_un.f_tls.tls_conn->retrying) {
+        if(f->f_un.f_tls.tls_conn->state == ST_TLS_EST) {
+                DPRINTF(D_DATA, "now sending line: \"%.*s\"\n", sendmsg->linelen, sendmsg->line);
+                dispatch_tls_send(0, 0, sendmsg);
+        } else {        
                 /* other socket operation active */
-                DPRINTF(D_DATA, "something else is retrying, so enqueue line: \"%.*s\"\n", sendmsg->linelen, sendmsg->line);
+                DPRINTF(D_DATA, "connection not ready, enqueue line: \"%.*s\"\n", sendmsg->linelen, sendmsg->line);
                 buffer->refcount++;
                 message_queue_add(f, buffer);
                 tls_send_msg_free(sendmsg);
-        } else {        
-                DPRINTF(D_DATA, "now sending line: \"%.*s\"\n", sendmsg->linelen, sendmsg->line);
-                dispatch_tls_send(0, 0, sendmsg);
         }
         return true;
 }
@@ -1407,7 +1428,10 @@ dispatch_tls_send(int fd, short event, void *arg)
                 sendmsg->line, (sendmsg->linelen>24 ? "..." : ""),
                 sendmsg->linelen, sendmsg->offset,
                 conn_info->sslptr ? "" : "un");
+        assert(conn_info->state == ST_TLS_EST
+            || conn_info->state == ST_WRITING);
 
+        ST_CHANGE(conn_info->state, ST_WRITING);
         rc = SSL_write(conn_info->sslptr,
                 (sendmsg->line + sendmsg->offset),
                 (sendmsg->linelen - sendmsg->offset));
@@ -1425,13 +1449,13 @@ dispatch_tls_send(int fd, short event, void *arg)
                                 }
                                 event_set(conn_info->retryevent, fd, EV_READ,
                                         dispatch_tls_send, sendmsg);
-                                EVENT_ADD(conn_info->retryevent);
+                                RETRYEVENT_ADD(conn_info->retryevent);
                                 return;
                                 break;
                         case TLS_RETRY_WRITE:
                                 event_set(conn_info->retryevent, fd, EV_WRITE,
                                         dispatch_tls_send, sendmsg);
-                                EVENT_ADD(conn_info->retryevent);
+                                RETRYEVENT_ADD(conn_info->retryevent);
                                 break;
                         case TLS_PERM_ERROR:
                                 /* no need to check active events */
@@ -1465,6 +1489,7 @@ dispatch_tls_send(int fd, short event, void *arg)
                 return;
         } else if (rc == (sendmsg->linelen - sendmsg->offset)) {
                 DPRINTF((D_TLS|D_DATA), "TLS: SSL_write() complete\n");
+                ST_CHANGE(conn_info->state, ST_TLS_EST);
                 tls_send_msg_free(sendmsg);
         }
         if (conn_info->retrying) {
@@ -1478,44 +1503,53 @@ dispatch_tls_send(int fd, short event, void *arg)
  * Close a SSL connection and its queue and its tls_conn.
  */
 void
-free_tls_conn(struct tls_conn_settings *tls_conn)
+free_tls_conn(struct tls_conn_settings *conn_info)
 {
-        if (tls_conn->sslptr)
-                free_tls_sslptr(tls_conn);
-        if (tls_conn->port)        free(tls_conn->port);
-        if (tls_conn->subject)     free(tls_conn->subject);
-        if (tls_conn->hostname)    free(tls_conn->hostname);
-        if (tls_conn->certfile)    free(tls_conn->certfile);
-        if (tls_conn->fingerprint) free(tls_conn->fingerprint);
-        if (tls_conn->event)       free(tls_conn->event);
-        if (tls_conn->retryevent)  free(tls_conn->retryevent);
-        if (tls_conn)              free(tls_conn);
+        if (conn_info->sslptr)
+                free_tls_sslptr(conn_info);
+        assert(conn_info->incoming == 1
+            || conn_info->state == ST_NONE);
+
+        if (conn_info->port)        free(conn_info->port);
+        if (conn_info->subject)     free(conn_info->subject);
+        if (conn_info->hostname)    free(conn_info->hostname);
+        if (conn_info->certfile)    free(conn_info->certfile);
+        if (conn_info->fingerprint) free(conn_info->fingerprint);
+        if (conn_info->event)       free(conn_info->event);
+        if (conn_info->retryevent)  free(conn_info->retryevent);
+        if (conn_info)              free(conn_info);
 }
 
 /*
  * Close a SSL object
  */
 void
-free_tls_sslptr(struct tls_conn_settings *tls_conn)
+free_tls_sslptr(struct tls_conn_settings *conn_info)
 {
         int sock;
-        sock = SSL_get_fd(tls_conn->sslptr);
-        
-        if (!tls_conn->sslptr)
+
+        if (!conn_info->sslptr) {
+                assert(conn_info->incoming == 1
+                    || conn_info->state == ST_NONE);
                 return;
-        else {
-                if (SSL_shutdown(tls_conn->sslptr) || SSL_shutdown(tls_conn->sslptr)) {
+        } else {
+                assert(conn_info->incoming == 1
+                    || conn_info->state == ST_EOF
+                    || conn_info->state == ST_TLS_EST);
+                sock = SSL_get_fd(conn_info->sslptr);
+
+                if (SSL_shutdown(conn_info->sslptr) || SSL_shutdown(conn_info->sslptr)) {
                         /* shutdown has two steps, returns 1 on completion */
-                        DPRINTF((D_TLS|D_NET), "Closed TLS connection to %s\n", tls_conn->hostname);
+                        DPRINTF((D_TLS|D_NET), "Closed TLS connection to %s\n", conn_info->hostname);
                 } else { 
-                        DPRINTF((D_TLS|D_NET), "Unable to cleanly shutdown TLS connection to %s\n", tls_conn->hostname);
+                        DPRINTF((D_TLS|D_NET), "Unable to cleanly shutdown TLS connection to %s\n", conn_info->hostname);
                 }        
                 if (shutdown(sock, SHUT_RDWR))
                         DPRINTF((D_TLS|D_NET), "Unable to cleanly shutdown TCP socket %d: %s\n", sock, strerror(errno));
                 if (close(sock))
                         DPRINTF((D_TLS|D_NET), "Unable to cleanly close socket %d: %s\n", sock, strerror(errno));
-                SSL_free(tls_conn->sslptr);
-                tls_conn->sslptr = NULL;
+                ST_CHANGE(conn_info->state, ST_NONE);
+                FREE_SSL(conn_info->sslptr);
         }
 }
 

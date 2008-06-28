@@ -138,7 +138,7 @@ struct TypeInfo {
 } TypeInfo[] = {
         /* values are set in init() 
          * -1 in length/size or max_msg_length means infinite */
-        {"UNUSED",   "0",    "0",  "0",   "0", 0, 0,     0}, 
+        {"UNUSED",  NULL,    "0", NULL,   "0", 0, 0,     0}, 
         {"FILE",    NULL, "1024", NULL,  "1M", 0, 0, 16384}, 
         {"TTY",     NULL,    "0", NULL,   "0", 0, 0,  1024}, 
         {"CONSOLE", NULL,    "0", NULL,   "0", 0, 0,  1024}, 
@@ -1350,9 +1350,9 @@ sendagain:
                 } else {
                         assert((buffer->line && buffer->linelen) || (buffer->tlsline && buffer->tlslen));
                         buffer->refcount++;
-                        if (!tls_send(f, buffer)) {
-                                buffer->refcount++;
-                                message_queue_add(f, buffer);
+                        if (!tls_send(f, buffer) && !qentry) {
+                                        buffer->refcount++;
+                                        message_queue_add(f, buffer);
                         }
                 }
                 free(line);
@@ -1760,7 +1760,7 @@ logerror(const char *fmt, ...)
 void
 die(int fd, short event, void *ev)
 {
-        struct filed *f;
+        struct filed *f, *next;
         char **p;
 #ifndef DISABLE_TLS
         struct TLS_Incoming_Conn *tls_in;
@@ -1788,7 +1788,8 @@ die(int fd, short event, void *ev)
 
 #endif /* !DISABLE_TLS */
 
-        for (f = Files; f != NULL; f = f->f_next) {
+        for (f = Files; f != NULL; f = next) {
+                DPRINTF(D_MEM, "die() cleaning f@%p)\n", f);
                 /* flush any pending output */
                 if (f->f_prevcount)
                         fprintlog(f, 0, (char *)NULL, NULL, NULL);
@@ -1802,8 +1803,14 @@ die(int fd, short event, void *ev)
 #ifndef DISABLE_TLS
                 if (f->f_type == F_TLS)
                         free_tls_conn(f->f_un.f_tls.tls_conn);
+#endif /* !DISABLE_TLS */
+                next = f->f_next;
+                FREEPTR(f->f_program);
+                FREEPTR(f->f_host);
+                free((char *)f);
         }
 
+#ifndef DISABLE_TLS
         FREEPTR(tls_opt.CAdir);
         FREEPTR(tls_opt.CAfile);
         FREEPTR(tls_opt.keyfile);
@@ -1811,8 +1818,6 @@ die(int fd, short event, void *ev)
         free_cred_SLIST(&tls_opt.cert_head);
         free_cred_SLIST(&tls_opt.fprint_head);
         FREE_SSL_CTX(tls_opt.global_TLS_CTX);
-#else
-        }
 #endif /* !DISABLE_TLS */
 
         errno = 0;
@@ -1845,7 +1850,7 @@ init(int fd, short event, void *ev)
         struct TLS_Incoming_Conn *tls_in;
         struct peer_cred *cred = NULL;
         struct peer_cred_head *credhead = NULL;
-        char *tmp_buf;
+        char *tmp_buf = NULL;
 
         /* central list of recognized configuration keywords
          * and an address for their values as strings */
@@ -1964,10 +1969,8 @@ init(int fd, short event, void *ev)
 #endif /* !DISABLE_TLS */
                 }
                 next = f->f_next;
-                if (f->f_program != NULL)
-                        free(f->f_program);
-                if (f->f_host != NULL)
-                        free(f->f_host);
+                FREEPTR(f->f_program);
+                FREEPTR(f->f_host);
                 free((char *)f);
         }
         Files = NULL;
@@ -2009,28 +2012,28 @@ init(int fd, short event, void *ev)
         }
         linenum = 0;
 
-        /* init with new TLS_CTX
-         * as far as I see one cannot change the cert/key of an existing CTX
-         */
-        FREE_SSL_CTX(tls_opt.global_TLS_CTX);
-
-#ifndef DISABLE_TLS
         /* free all previous config options */
         for (i = 0; i < A_CNT(TypeInfo); i++) {
                 if (TypeInfo[i].queue_length_string
                  && TypeInfo[i].queue_length_string != TypeInfo[i].default_length_string) {
                         FREEPTR(TypeInfo[i].queue_length_string);
-                        TypeInfo[i].queue_length_string = TypeInfo[i].default_length_string;
+                        TypeInfo[i].queue_length_string = strdup(TypeInfo[i].default_length_string);
                  }
                 if (TypeInfo[i].queue_size_string
                  && TypeInfo[i].queue_size_string != TypeInfo[i].default_size_string) {
                         FREEPTR(TypeInfo[i].queue_size_string);
-                        TypeInfo[i].queue_size_string = TypeInfo[i].default_size_string;
+                        TypeInfo[i].queue_size_string = strdup(TypeInfo[i].default_size_string);
                  }
         }
         for (i = 0; i < A_CNT(config_keywords); i++)
-                if (*config_keywords[i].variable)
-                        FREEPTR(*config_keywords[i].variable);
+                FREEPTR(*config_keywords[i].variable);
+
+#ifndef DISABLE_TLS
+        /* init with new TLS_CTX
+         * as far as I see one cannot change the cert/key of an existing CTX
+         */
+        FREE_SSL_CTX(tls_opt.global_TLS_CTX);
+
         free_cred_SLIST(&tls_opt.cert_head);
         free_cred_SLIST(&tls_opt.fprint_head);
 
@@ -2050,7 +2053,7 @@ init(int fd, short event, void *ev)
                         if (copy_config_value(config_keywords[i].keyword,
                                                 config_keywords[i].variable,
                                                 &p, ConfFile, linenum)) {
-                                DPRINTF(D_PARSE, "found option %s\n", config_keywords[i].keyword);
+                                DPRINTF((D_PARSE|D_MEM), "found option %s, saved @%p\n", config_keywords[i].keyword, *config_keywords[i].variable);
 
                                 /* special cases with multiple parameters */
                                 if (!strcmp("tls_allow_fingerprints", config_keywords[i].keyword))
@@ -3056,6 +3059,8 @@ message_queue_freeall(struct filed *f)
         struct buf_queue *qentry;
 
         if (!f) return;
+        DPRINTF(D_MEM, "message_queue_freeall(f@%p) with f_qhead@%p\n", f, &f->f_qhead);
+
         while (!TAILQ_EMPTY(&f->f_qhead)) {
                 qentry = TAILQ_FIRST(&f->f_qhead);
                 TAILQ_REMOVE(&f->f_qhead, qentry, entries);

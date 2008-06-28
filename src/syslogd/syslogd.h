@@ -139,8 +139,9 @@ struct socketEvent {
 #define D_PARSE   32    /* configuration/parsing */
 #define D_EVENT   64    /* libevent */
 #define D_BUFFER 128    /* message queues */
-#define D_MISC   256    /* everything else */
-#define D_ALL    511
+#define D_MEM    256    /* malloc/free */
+#define D_MISC  1024    /* everything else */
+#define D_ALL   2047
 /* remove first printf for short debug messages */
 #define DPRINTF(x, ...)    if (Debug & x) { \
                                 printf("%s:%s:%.4d\t", make_timestamp(true), __FILE__, __LINE__); \

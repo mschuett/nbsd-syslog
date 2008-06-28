@@ -1516,19 +1516,21 @@ dispatch_tls_send(int fd, short event, void *arg)
 void
 free_tls_conn(struct tls_conn_settings *conn_info)
 {
+        DPRINTF(D_MEM, "free_tls_conn(conn_info@%p) with sslptr@%p\n", conn_info, conn_info->sslptr);
+
         if (conn_info->sslptr)
                 free_tls_sslptr(conn_info);
         assert(conn_info->incoming == 1
             || conn_info->state == ST_NONE);
 
-        if (conn_info->port)        free(conn_info->port);
-        if (conn_info->subject)     free(conn_info->subject);
-        if (conn_info->hostname)    free(conn_info->hostname);
-        if (conn_info->certfile)    free(conn_info->certfile);
-        if (conn_info->fingerprint) free(conn_info->fingerprint);
-        if (conn_info->event)       free(conn_info->event);
-        if (conn_info->retryevent)  free(conn_info->retryevent);
-        if (conn_info)              free(conn_info);
+        FREEPTR(conn_info->port);
+        FREEPTR(conn_info->subject);
+        FREEPTR(conn_info->hostname);
+        FREEPTR(conn_info->certfile);
+        FREEPTR(conn_info->fingerprint);
+        FREEPTR(conn_info->event);
+        FREEPTR(conn_info->retryevent);
+        FREEPTR(conn_info);
 }
 
 /*
@@ -1538,6 +1540,7 @@ void
 free_tls_sslptr(struct tls_conn_settings *conn_info)
 {
         int sock;
+        DPRINTF(D_MEM, "free_tls_sslptr(conn_info@%p)\n", conn_info);
 
         if (!conn_info->sslptr) {
                 assert(conn_info->incoming == 1

@@ -68,18 +68,23 @@
  * 
  * many different fields because fprintlog
  * uses the different parts for formatting
+ * 
+ * TODO: simplify
  */
 struct buf_msg {
         char        *timestamp;
         char        *host;
-        char        *line;
-        size_t       linelen;
         int          pri;
         int          flags;
         unsigned int refcount;
-        char        *tlsline;
-        size_t       tlslength;
+        char        *msg;       /* only a message like "syslogd: restart" */
+        size_t       msglen;
+        char        *line;      /* a syslog line like "<46>Jun 28 14:32:08 host syslogd: restart" */
+        size_t       linelen;
+        char        *tlsline;   /* a prefixed tls line like "41 <46>Jun 28 14:32:08 host syslogd: restart" */ 
+        size_t       tlslen;
 };
+
 
 /* queue of messages */
 struct buf_queue {
@@ -96,8 +101,6 @@ TAILQ_HEAD(buf_queue_head, buf_queue);
 struct tls_send_msg {
         struct filed   *f;
         struct buf_msg *buffer;
-        char           *line; 
-        size_t          linelen;
         unsigned int    offset;    /* in case of partial writes */
         unsigned int    refcount;
 };

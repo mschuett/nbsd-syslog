@@ -138,7 +138,7 @@ void dispatch_eof_tls(int, short, void *);
 bool tls_connect(SSL_CTX *, struct tls_conn_settings *);
 void dispatch_SSL_connect(int, short, void *);
 void tls_reconnect(int, short, void *);
-bool tls_send(struct filed *, struct buf_msg *, char *, size_t);
+bool tls_send(struct filed *, struct buf_msg *);
 void dispatch_tls_send(int, short, void *);
 
 void free_tls_sslptr(struct tls_conn_settings *);

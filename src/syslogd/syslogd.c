@@ -954,28 +954,32 @@ logmsg(int pri, char *msg, char *from, int flags)
                 (void)sigsetmask(omask);
                 return;
         }
-        
-        /* copy message for buffering */
+
+        /* always copy message for possible buffering */
         if (!(msgbuf_new = calloc(1, sizeof(*msgbuf_new)))
+         || !(msgbuf->msg = malloc(strlen(msg)+1))
          || !(msgbuf->line = malloc(msgbuf->linelen + 1))
          || !(msgbuf->timestamp = malloc(TIMESTAMPLEN+1))
          || !(msgbuf->host = malloc(strlen(from)+1))) {
                 free(msgbuf_new);
+                free(msgbuf->msg);
                 free(msgbuf->line);
                 free(msgbuf->timestamp);
                 logerror("Unable to allocate memory");
+                /* what now? */
         } else {
                 DPRINTF(D_BUFFER, "copying message: %p, %.*s %s\n", msgbuf,
                         TIMESTAMPLEN, timestamp, from);
-                msgbuf->linelen = strlen(msg);
-                memcpy(msgbuf->line, msg, msgbuf->linelen);
-                msgbuf->line[msgbuf->linelen] = '\0';
-        
+                msgbuf->msglen = strlen(msg);
+                memcpy(msgbuf->msg, msg, msgbuf->msglen);
+                msgbuf->msg[msgbuf->msglen] = '\0';
+
                 strlcpy(msgbuf->timestamp, timestamp, TIMESTAMPLEN+1);
                 strcpy(msgbuf->host, from);
                 msgbuf->flags = flags;
+                msgbuf->pri = pri;
         }
-         
+
         for (f = Files; f; f = f->f_next) {
                 /* skip messages that are incorrect priority */
                 if (!(((f->f_pcmp[fac] & PRI_EQ) && (f->f_pmask[fac] == prilev))
@@ -1193,7 +1197,13 @@ fprintlog(struct filed *f, int flags, char *msg, struct buf_msg *buffer, struct 
         v->iov_len = 1;
         ADDEV();
 
-        if (msg) {
+        if ((buffer && buffer->tlsline && buffer->tlslen)
+         || (buffer && buffer->line && buffer->linelen)) {
+                /* skip formatting */
+        } else if (buffer && buffer->msg && buffer->msglen) {
+                v->iov_base = buffer->msg;
+                v->iov_len = buffer->msglen;
+        } else if (msg) {
                 v->iov_base = msg;
                 v->iov_len = strlen(msg);
         } else if (f->f_prevcount > 1) {
@@ -1208,11 +1218,18 @@ fprintlog(struct filed *f, int flags, char *msg, struct buf_msg *buffer, struct 
 
         f->f_time = now;
 
-        if ((f->f_type == F_FORW)
-#ifndef DISABLE_TLS
-         || (f->f_type == F_TLS)
-#endif /* !DISABLE_TLS */
-        ) {
+/* TODO: add 
+ * #ifndef DISABLE_TLS
+ * #endif
+ * later. Currently readability is more important...
+ */
+        if ((f->f_type == F_TLS || (f->f_type == F_FORW))
+          && buffer && buffer->line && buffer->linelen) {
+                /* already formatted */
+        } else if ((f->f_type == F_TLS)
+          && buffer && buffer->tlsline && buffer->tlslen) {
+                /* already formatted */
+        } else if ((f->f_type == F_FORW) || (f->f_type == F_TLS)) {
                 /* keep in sync with format below */
                 msglen = sizeof("<123>  []: ") + 15
                         + strlen(f->f_prevhost) + iov[5].iov_len; 
@@ -1246,7 +1263,11 @@ fprintlog(struct filed *f, int flags, char *msg, struct buf_msg *buffer, struct 
                  && TypeInfo[f->f_type].max_msg_length < l) {
                         l = TypeInfo[f->f_type].max_msg_length;
                         DPRINTF(D_DATA, "truncating oversized message to %d octets\n", l);
-                 }
+                }
+                if (buffer) {
+                        buffer->linelen = l;
+                        buffer->line = line;
+                }
                 /* TODO: check syslog-protocol if we may truncate SD Elements */
         } else {
                 /* limith mesage length for message content in iov[5]
@@ -1321,8 +1342,17 @@ sendagain:
 #ifndef DISABLE_TLS
         case F_TLS:
                 DPRINTF(D_MISC, "Logging to %s %s\n", TypeInfo[f->f_type].name, f->f_un.f_tls.tls_conn->hostname);
-                tls_send(f, buffer, line, l);
-                /* TODO: return immediately? */
+                
+                if (!buffer) {
+                        /* TODO: handle flush messages */
+                } else {
+                        assert((buffer->line && buffer->linelen) || (buffer->tlsline && buffer->tlslen));
+                        buffer->refcount++;
+                        if (!tls_send(f, buffer)) {
+                                buffer->refcount++;
+                                message_queue_add(f, buffer);
+                        }
+                }
                 free(line);
                 break;
 #endif /* !DISABLE_TLS */
@@ -2831,22 +2861,15 @@ void
 send_queue(struct filed *f)
 {
         struct buf_queue *qentry;
-        struct filed f_tmp;
         
         DPRINTF((D_DATA|D_CALL), "send_queue(f@%p with %d msgs and head %s)\n",
                 f, f->f_qelements, TAILQ_EMPTY(&f->f_qhead) ? "valid" : "NULL");
-        /* 1st: we need a new struct filed to feed the message
-         * parts into fprintlog() correctly.
-         */
-        memcpy(&f_tmp, f, sizeof(*f));
-
         while (!TAILQ_EMPTY(&f->f_qhead)) {
                 qentry = TAILQ_FIRST(&f->f_qhead);
-                
-                strlcpy(f_tmp.f_lasttime, qentry->msg->timestamp, TIMESTAMPLEN+1);
-                f_tmp.f_host = qentry->msg->host;
 
-                fprintlog(&f_tmp, qentry->msg->flags, qentry->msg->line, qentry->msg, qentry);
+                DPRINTF((D_DATA|D_CALL), "send_queue() calls fprintlog()\n");
+                /* TODO: check if I get invalid data by using f instead of f_tmp */
+                fprintlog(f, qentry->msg->flags, qentry->msg->line, qentry->msg, qentry);
         }
 }
 
@@ -2951,7 +2974,6 @@ tls_send_msg_free(struct tls_send_msg *msg)
 
         msg->refcount--;
         if (!msg->refcount) {
-                /* char *line is same as in buffer, so do not free it here */
                 buf_msg_free(msg->buffer);
                 FREEPTR(msg);
         }

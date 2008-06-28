@@ -1368,50 +1368,61 @@ tls_split_messages(struct TLS_Incoming_Conn *c)
  * 
  * send one line with tls
  * f has to be of typ TLS
- * line has to be in transport format with length prefix
+ * 
+ * returns false if message cannot be sent right now,
+ *      caller is responsible to enqueue it
+ * returns true if message passed to dispatch_tls_send()
+ *      delivery is not garantueed, but likely
+ * 
+ * TODO: try different algorithm: always remove current message
+ *       from buffer and re-add it on failure 
  */
 bool
-tls_send(struct filed *f, struct buf_msg *buffer, char *line, size_t len)
+tls_send(struct filed *f, struct buf_msg *buffer)
 {
         int i, prefixlen, calclen;
         struct tls_send_msg *sendmsg;
+        char *line = buffer->line;
+        size_t len = buffer->linelen;
 
         DPRINTF((D_TLS|D_CALL), "tls_send(f=%p, buffer=%p, line=\"%.*s%s\", "
                 "len=%d) to %sconnected dest.\n", f, buffer,
                 (len>24 ? 24 : len), line, (len>24 ? "..." : ""),
                 len, f->f_un.f_tls.tls_conn->sslptr ? "" : "un");
 
-        for (prefixlen = 0, i = len+1; i; i /= 10)
-                prefixlen++;
-        calclen = prefixlen + 1 + len + 1;  /* with \0 */
-        DPRINTF(D_DATA, "calculated prefixlen=%d, msglen=%d\n", prefixlen, calclen);
+        if (!buffer->tlsline || !buffer->tlslen) {
+                for (prefixlen = 0, i = len+1; i; i /= 10)
+                        prefixlen++;
+                calclen = prefixlen + 1 + len + 1;  /* with \0 */
+                DPRINTF(D_DATA, "calculated prefixlen=%d, msglen=%d\n", prefixlen, calclen);
 
-        if (!(sendmsg = calloc(1, sizeof(*sendmsg)))
-         || !(sendmsg->line = malloc(calclen))) {
-                logerror("Unable to allocate memory, drop message");
-                /* skip the queue_add() without memory */
-                return false;
+                if (!(buffer->tlsline = malloc(calclen))) {
+                        logerror("Unable to allocate memory, drop message");
+                        return false;
+                }
+                buffer->tlslen = snprintf(buffer->tlsline, calclen, "%d %s", len, line);
         }
-
-        sendmsg->linelen = snprintf(sendmsg->line, calclen, "%d %s", len, line);
-        sendmsg->f = f;
-        sendmsg->refcount = 1;
-        sendmsg->buffer = buffer;
-        buffer->refcount++;
-        buffer->tlsline = sendmsg->line;
-        buffer->tlslength = sendmsg->linelen;
 
         if(f->f_un.f_tls.tls_conn->state == ST_TLS_EST) {
-                DPRINTF(D_DATA, "now sending line: \"%.*s\"\n", sendmsg->linelen, sendmsg->line);
-                dispatch_tls_send(0, 0, sendmsg);
-        } else {        
-                /* other socket operation active */
-                DPRINTF(D_DATA, "connection not ready, enqueue line: \"%.*s\"\n", sendmsg->linelen, sendmsg->line);
+                /* send now */
+                if (!(sendmsg = calloc(1, sizeof(*sendmsg)))) {
+                        logerror("Unable to allocate memory, drop message");
+                        return false;
+                }
+                sendmsg->refcount = 1;
+                sendmsg->f = f;
+                sendmsg->buffer = buffer;
                 buffer->refcount++;
-                message_queue_add(f, buffer);
-                tls_send_msg_free(sendmsg);
+                DPRINTF(D_DATA, "now sending line: \"%.*s\"\n", buffer->tlslen, buffer->tlsline);
+                dispatch_tls_send(0, 0, sendmsg);
+                return true;
+        } else {
+                /* other socket operation active, send later  */
+                DPRINTF(D_DATA, "connection not ready, enqueue line: \"%.*s\"\n", buffer->tlslen, buffer->tlsline);
+                
+                /* now the caller has to enqueue the message (if not already sending from queue) */
+                return false;
         }
-        return true;
 }
 
 void
@@ -1419,22 +1430,23 @@ dispatch_tls_send(int fd, short event, void *arg)
 {
         struct tls_send_msg *sendmsg = (struct tls_send_msg *) arg;
         struct tls_conn_settings *conn_info = sendmsg->f->f_un.f_tls.tls_conn;
+        struct buf_msg *buffer = sendmsg->buffer;
         int rc, error;
         
         DPRINTF((D_TLS|D_CALL), "dispatch_tls_send(f=%p, buffer=%p, "
                 "line=\"%.*s%s\", len=%d, offset=%d) to %sconnected dest.\n",
                 sendmsg->f, sendmsg->buffer,
-                (sendmsg->linelen>24 ? 24 : sendmsg->linelen),
-                sendmsg->line, (sendmsg->linelen>24 ? "..." : ""),
-                sendmsg->linelen, sendmsg->offset,
+                (buffer->tlslen>24 ? 24 : buffer->tlslen),
+                buffer->tlsline, (buffer->tlslen>24 ? "..." : ""),
+                buffer->tlslen, sendmsg->offset,
                 conn_info->sslptr ? "" : "un");
         assert(conn_info->state == ST_TLS_EST
             || conn_info->state == ST_WRITING);
 
         ST_CHANGE(conn_info->state, ST_WRITING);
         rc = SSL_write(conn_info->sslptr,
-                (sendmsg->line + sendmsg->offset),
-                (sendmsg->linelen - sendmsg->offset));
+                (buffer->tlsline + sendmsg->offset),
+                (buffer->tlslen - sendmsg->offset));
         if (0 >= rc) {
                 error = tls_examine_error("SSL_write()",
                         conn_info->sslptr,
@@ -1448,13 +1460,13 @@ dispatch_tls_send(int fd, short event, void *arg)
                                         conn_info->retrying = true;
                                 }
                                 event_set(conn_info->retryevent, fd, EV_READ,
-                                        dispatch_tls_send, sendmsg);
+                                        dispatch_tls_send, arg);
                                 RETRYEVENT_ADD(conn_info->retryevent);
                                 return;
                                 break;
                         case TLS_RETRY_WRITE:
                                 event_set(conn_info->retryevent, fd, EV_WRITE,
-                                        dispatch_tls_send, sendmsg);
+                                        dispatch_tls_send, arg);
                                 RETRYEVENT_ADD(conn_info->retryevent);
                                 break;
                         case TLS_PERM_ERROR:
@@ -1466,37 +1478,34 @@ dispatch_tls_send(int fd, short event, void *arg)
                                 break;
                         default:break;
                 }
-        } else if (rc < sendmsg->linelen) {
+        } else if (rc < buffer->tlslen) {
                 DPRINTF((D_TLS|D_DATA), "TLS: SSL_write() wrote %d out of "
-                        "%d bytes\n", rc, (sendmsg->linelen - sendmsg->offset));
+                        "%d bytes\n", rc, (buffer->tlslen - sendmsg->offset));
                 sendmsg->offset += rc;
                 /* try again */
-                /* TODO: is there a way to eliminate this case?
-                 * it might leave to invalid overlapping message sends, e.g.:
-                 *    Msg A, 1st try: sent partially
-                 *    Msg A, 2nd try: gets TLS_RETRY_READ, sleeps
-                 *    Msg B, 1st try: sends in the middle of msg A
-                 *    Msg A, 3rd try: writes end of msg
-                 *  --> invalid message stream not parseable by receiver
-                 * 
-                 * maybe this is a case for busy waiting :-(
-                 */
                 if (conn_info->retrying) {
                         conn_info->retrying = false;
                         EVENT_ADD(conn_info->event);
                 }
+                buffer->refcount++;
                 dispatch_tls_send(0, 0, sendmsg);
                 return;
-        } else if (rc == (sendmsg->linelen - sendmsg->offset)) {
+        } else if (rc == (buffer->tlslen - sendmsg->offset)) {
                 DPRINTF((D_TLS|D_DATA), "TLS: SSL_write() complete\n");
                 ST_CHANGE(conn_info->state, ST_TLS_EST);
                 tls_send_msg_free(sendmsg);
+        } else {
+                /* should not be reached */
+                DPRINTF((D_TLS|D_DATA), "unreachable code after SSL_write()\n");
+                ST_CHANGE(conn_info->state, ST_TLS_EST);
         }
         if (conn_info->retrying) {
                 conn_info->retrying = false;
                 if (conn_info->event->ev_events)
                         EVENT_ADD(conn_info->event);
         }
+
+        
 }
 
 /*

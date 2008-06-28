@@ -210,24 +210,28 @@ void    wallmsg(struct filed *, struct iovec *, size_t);
 int     main(int, char *[]);
 void    logpath_add(char ***, int *, int *, char *);
 void    logpath_fileadd(char ***, int *, int *, char *);
-inline char *make_timestamp(bool);
+char *make_timestamp(bool);
 
 struct event *allocev(void);
-inline void schedule_event(struct event **, struct timeval *, void (*)(int, short, void *), void *);
+void schedule_event(struct event **, struct timeval *, void (*)(int, short, void *), void *);
 static void dispatch_read_klog(int fd, short event, void *ev);
 static void dispatch_read_finet(int fd, short event, void *ev);
 static void dispatch_read_funix(int fd, short event, void *ev);
 
 unsigned int message_queue_purge(struct filed *f, const unsigned int, const int);
 void send_queue(struct filed *);
-inline void free_cred_SLIST(struct peer_cred_head *);
-inline struct buf_queue *find_qentry_to_delete(const struct buf_queue_head *, const int, const bool);
-inline void tls_send_msg_free(struct tls_send_msg *msg);
-inline void buf_msg_free(struct buf_msg *msg);
+void free_cred_SLIST(struct peer_cred_head *);
+static struct buf_queue *find_qentry_to_delete(const struct buf_queue_head *, const int, const bool);
+void buf_msg_free(struct buf_msg *msg);
+void tls_send_msg_free(struct tls_send_msg *msg);
 
-inline bool message_queue_remove(struct filed *, struct buf_queue *);
-inline bool message_queue_add(struct filed *, struct buf_msg *);
-inline void message_queue_freeall(struct filed *);
+bool message_queue_remove(struct filed *, struct buf_queue *);
+bool message_queue_add(struct filed *, struct buf_msg *);
+void message_queue_freeall(struct filed *);
+
+/* for make_timestamp() */
+#define TIMESTAMPBUFSIZE 35
+char timestamp[TIMESTAMPBUFSIZE];
 
 /*
  * Global line buffer.  Since we only process one event at a time,
@@ -257,10 +261,8 @@ struct TLS_Incoming TLS_Incoming_Head = \
 extern char *SSL_ERRCODE[];
 struct tls_global_options_t tls_opt;
 
-inline struct filed *get_f_by_conninfo(struct tls_conn_settings *conn_info);
+struct filed *get_f_by_conninfo(struct tls_conn_settings *conn_info);
 #endif /* !DISABLE_TLS */
-
-extern int expand_number(char *, int64_t *);
 
 int
 main(int argc, char *argv[])
@@ -2072,17 +2074,17 @@ init(int fd, short event, void *ev)
         }
         /* convert strings to integer values */
         if (global_memory_limit.configstring
-         && !expand_number(global_memory_limit.configstring, &global_memory_limit.numeric)) {
+         && !dehumanize_number(global_memory_limit.configstring, &global_memory_limit.numeric)) {
                 if (setrlimit(RLIMIT_DATA,
                         &((struct rlimit) {global_memory_limit.numeric, global_memory_limit.numeric})) == -1)
                         logerror("Unable to setrlimit()");
         }
         for (i = 0; i < A_CNT(TypeInfo); i++) {
                 if (!TypeInfo[i].queue_length_string
-                 || expand_number(TypeInfo[i].queue_length_string, &TypeInfo[i].queue_length) == -1)
+                 || dehumanize_number(TypeInfo[i].queue_length_string, &TypeInfo[i].queue_length) == -1)
                         TypeInfo[i].queue_length = strtol(TypeInfo[i].default_length_string, NULL, 10);
                 if (!TypeInfo[i].queue_size_string
-                 || expand_number(TypeInfo[i].queue_size_string, &TypeInfo[i].queue_size) == -1)
+                 || dehumanize_number(TypeInfo[i].queue_size_string, &TypeInfo[i].queue_size) == -1)
                         TypeInfo[i].queue_size = strtol(TypeInfo[i].default_size_string, NULL, 10);
         }
         rewind(cf);
@@ -2828,7 +2830,7 @@ allocev(void)
  * 
  * *ev is allocated if necessary
  */
-inline void 
+void 
 schedule_event(struct event **ev, struct timeval *tv, void (*cb)(int, short, void *), void *arg)
 {
         if (!*ev && !(*ev = allocev())) {
@@ -2841,7 +2843,7 @@ schedule_event(struct event **ev, struct timeval *tv, void (*cb)(int, short, voi
 }
 
 /* abbreviation for freeing credential lists */
-inline void
+void
 free_cred_SLIST(struct peer_cred_head *head)
 {
         struct peer_cred *cred;
@@ -2880,7 +2882,7 @@ send_queue(struct filed *f)
  * after that every call will return one next queue elemen to delete,
  * depending on strategy either the oldest or the one with the lowest priority
  */
-inline struct buf_queue *
+static struct buf_queue *
 find_qentry_to_delete(const struct buf_queue_head *head, const int strategy, const bool reset)
 {
         static int pri;
@@ -2963,7 +2965,7 @@ message_queue_purge(struct filed *f, const unsigned int del_entries, const int s
         return removed;
 }
 
-inline void
+void
 tls_send_msg_free(struct tls_send_msg *msg)
 {
         if (!msg) {
@@ -2980,7 +2982,7 @@ tls_send_msg_free(struct tls_send_msg *msg)
         DPRINTF((D_DATA), "return from tls_send_msg_free()\n");
 }
 
-inline void
+void
 buf_msg_free(struct buf_msg *buf)
 {
         if (!buf) {
@@ -3000,7 +3002,7 @@ buf_msg_free(struct buf_msg *buf)
         DPRINTF((D_DATA), "return from buf_msg_free()\n");
 }
 
-inline bool
+bool
 message_queue_remove(struct filed *f, struct buf_queue *qentry)
 {
         if (!f || !qentry)
@@ -3018,7 +3020,7 @@ message_queue_remove(struct filed *f, struct buf_queue *qentry)
         return true;
 }
 
-inline bool
+bool
 message_queue_add(struct filed *f, struct buf_msg *buffer)
 {
         struct buf_queue *qentry;
@@ -3048,7 +3050,7 @@ message_queue_add(struct filed *f, struct buf_msg *buffer)
         }
 }
 
-inline void
+void
 message_queue_freeall(struct filed *f)
 {
         struct buf_queue *qentry;
@@ -3067,7 +3069,7 @@ message_queue_freeall(struct filed *f)
 
 #ifndef DISABLE_TLS
 /* utility function for tls_reconnect() */
-inline struct filed *
+struct filed *
 get_f_by_conninfo(struct tls_conn_settings *conn_info)
 {
         struct filed *f;
@@ -3085,12 +3087,10 @@ get_f_by_conninfo(struct tls_conn_settings *conn_info)
 /*
  * return a timestamp in a static buffer
  */
-inline char *
+char *
 make_timestamp(bool iso)
 {
-#define TIMESTAMPBUFSIZE 35
         const int frac_digits = 6;
-        static char timestamp[TIMESTAMPBUFSIZE];
         struct tm *ltime;
         struct timeval tv;
         int len = 0;

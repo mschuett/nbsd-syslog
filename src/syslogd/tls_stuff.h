@@ -145,7 +145,7 @@ void free_tls_sslptr(struct tls_conn_settings *);
 void free_tls_conn(struct tls_conn_settings *);
 int tls_examine_error(const char *, const SSL *, struct tls_conn_settings *, const int);
 
-inline int accept_cert(const char* , struct tls_conn_settings *, char *, char *);
-inline int deny_cert(struct tls_conn_settings *, char *, char *);
+int accept_cert(const char* , struct tls_conn_settings *, char *, char *);
+int deny_cert(struct tls_conn_settings *, char *, char *);
 
 #endif /* !_TLS_STUFF_H */

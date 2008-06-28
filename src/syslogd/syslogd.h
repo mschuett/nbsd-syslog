@@ -51,6 +51,10 @@
 #include <limits.h>
 #endif /* !_NO_NETBSD_USR_SRC_ */
 
+#ifndef HAVE_DEHUMANIZE_NUMBER  /* not in my 4.0-STABLE yet */
+extern int dehumanize_number(const char *str, int64_t *size);
+#endif /* !HAVE_DEHUMANIZE_NUMBER */
+
 #ifndef DISABLE_TLS
 #include <netinet/tcp.h>
 #include <sys/stdint.h>

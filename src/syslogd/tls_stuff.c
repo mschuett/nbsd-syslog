@@ -32,20 +32,22 @@ extern short int Debug;
 
 extern struct tls_global_options_t tls_opt;
 extern struct TLS_Incoming TLS_Incoming_Head;
-extern char *linebuf;
+extern char  *linebuf;
 extern size_t linebufsize;
-extern int     RemoteAddDate; 
+extern int    RemoteAddDate; 
+extern char  *timestamp;
 
 extern void    logerror(const char *, ...);
 extern void    printline(char *, char *, int);
 extern void    die(int fd, short event, void *ev);
 extern struct event *allocev(void);
 extern void    send_queue(struct filed *);
-extern inline void schedule_event(struct event **, struct timeval *, void (*)(int, short, void *), void *);
-extern inline char *make_timestamp(bool);
-extern inline struct filed *get_f_by_conninfo(struct tls_conn_settings *conn_info);
-extern inline void tls_send_msg_free(struct tls_send_msg *msg);
-extern inline bool message_queue_add(struct filed *, struct buf_msg *);
+extern void schedule_event(struct event **, struct timeval *, void (*)(int, short, void *), void *);
+extern char *make_timestamp(bool);
+extern struct filed *get_f_by_conninfo(struct tls_conn_settings *conn_info);
+extern void tls_send_msg_free(struct tls_send_msg *msg);
+extern bool message_queue_add(struct filed *, struct buf_msg *);
+
 /*
  * init OpenSSL lib and one context. returns NULL on error, otherwise SSL_CTX
  * all pointer arguments may be NULL (at least for clients)
@@ -349,7 +351,7 @@ match_certfile(const X509 *cert, const char *certfilename)
 }
 
 /* used for incoming connections in check_peer_cert() */
-inline int
+int
 accept_cert(const char* reason, struct tls_conn_settings *conn_info, char *cur_fingerprint, char *cur_subjectline)
 {
         if (cur_fingerprint)
@@ -364,7 +366,7 @@ accept_cert(const char* reason, struct tls_conn_settings *conn_info, char *cur_f
                 cur_subjectline, cur_fingerprint);
         return 1;        
 }
-inline int
+int
 deny_cert(struct tls_conn_settings *conn_info, char *cur_fingerprint, char *cur_subjectline)
 {
         logerror("Deny %s certificate from %s. "

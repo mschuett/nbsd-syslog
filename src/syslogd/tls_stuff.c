@@ -627,6 +627,7 @@ dispatch_SSL_connect(int fd, short event, void *arg)
         /* else */
         ST_CHANGE(conn_info->state, ST_TLS_EST);
         conn_info->retrying = false;
+        conn_info->reconnect = TLS_RECONNECT_SEC;
         event_set(conn_info->event, fd, EV_READ, dispatch_eof_tls, conn_info);
         EVENT_ADD(conn_info->event);
         
@@ -782,6 +783,7 @@ tls_examine_error(const char *functionname, const SSL *ssl, struct tls_conn_sett
         }
         if (tls_conn)
                 tls_conn->errorcount++;
+        /* TODO: is this ever reached? */
         return TLS_TEMP_ERROR;
 }
 
@@ -882,6 +884,7 @@ parse_tls_destination(char *p, struct filed *f)
         }
         /* default values */
         f->f_un.f_tls.tls_conn->x509verify = X509VERIFY_ALWAYS;
+        f->f_un.f_tls.tls_conn->reconnect = TLS_RECONNECT_SEC;
 
         if (!(copy_string(&(f->f_un.f_tls.tls_conn->hostname), p, q)))
                 return false;
@@ -944,6 +947,8 @@ parse_tls_destination(char *p, struct filed *f)
 /*
  * Dispatch routine (triggered by timer) to reconnect to a lost TLS server
  */
+#define RECONNECT_BACKOFF_FACTOR 15/10
+#define RECONNECT_BACKOFF(x)     (x) = (x) * RECONNECT_BACKOFF_FACTOR
 void
 tls_reconnect(int fd, short event, void *arg)
 {
@@ -956,17 +961,19 @@ tls_reconnect(int fd, short event, void *arg)
         FREEPTR(conn_info->retryevent);
 
         if (!tls_connect(tls_opt.global_TLS_CTX, conn_info)) {
-                logerror("Unable to connect to TLS server %s", conn_info->hostname);
+                logerror("Unable to connect to TLS server %s, "
+                        "try again in %d sec", conn_info->hostname,
+                        conn_info->reconnect);
                 /* TODO: slow backoff algorithm */
                 schedule_event(&conn_info->event,
-                        &((struct timeval){TLS_RECONNECT_SEC, 0}),
+                        &((struct timeval){conn_info->reconnect, 0}),
                         tls_reconnect, conn_info);
+                RECONNECT_BACKOFF(conn_info->reconnect);
         } else {
                 assert(conn_info->state == ST_TLS_EST
                     || conn_info->state == ST_CONNECTING);
         }        
 }
-
 /*
  * Dispatch routine for accepting TLS connections.
  * Has to be idempotent in case of TLS_RETRY (~ EAGAIN),
@@ -1150,8 +1157,9 @@ dispatch_eof_tls(int fd, short event, void *arg)
 
         /* this overwrites the EV_READ event */
         schedule_event(&conn_info->event,
-                &((struct timeval){0, TLS_RECONNECT_SEC}),
+                &((struct timeval){conn_info->reconnect, 0}),
                 tls_reconnect, conn_info);
+        RECONNECT_BACKOFF(conn_info->reconnect);
 }
 
 /*
@@ -1479,8 +1487,9 @@ dispatch_tls_send(int fd, short event, void *arg)
                                 /* no need to check active events */
                                 free_tls_sslptr(conn_info);
                                 schedule_event(&conn_info->event,
-                                        &((struct timeval){0, TLS_RECONNECT_SEC}),
+                                        &((struct timeval){conn_info->reconnect, 0}),
                                         tls_reconnect, sendmsg->f);
+                                RECONNECT_BACKOFF(conn_info->reconnect);
                                 break;
                         default:break;
                 }

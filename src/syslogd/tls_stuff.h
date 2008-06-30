@@ -44,7 +44,7 @@
 #define TLS_RETRY_EVENT_USEC 20000
 
 /* reconnect to lost server after n sec */
-#define TLS_RECONNECT_SEC 10
+#define TLS_RECONNECT_SEC 2
 
 /* default algorithm for certificate fingerprints */
 #define DEFAULT_FINGERPRINT_ALG "SHA1"
@@ -93,6 +93,7 @@ struct tls_conn_settings {
         char *subject;       /* configured hostname in cert  */
         char *fingerprint;   /* fingerprint of peer cert     */
         char *certfile;      /* copy of peer cert */
+        unsigned int reconnect;   /* seconds between reconnects */
         char errorcount;     /* to be able to close a connection after sveral errors */
         struct tls_global_options_t *tls_opt;   /* global tls options. 
                                 only set for incoming connections

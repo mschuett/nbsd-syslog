@@ -196,7 +196,8 @@ int     getmsgbufsize(void);
 struct socketEvent* socksetup(int, const char *);
 void    init(int fd, short event, void *ev);  /* SIGHUP kevent dispatch routine */
 void    logerror(const char *, ...);
-void    logmsg(int, char *, char *, int);
+void    logmsg_async(const int, const char *, const char *, const int);
+void    logmsg(struct buf_msg *);
 void    log_deadchild(pid_t, int, const char *);
 int     matches_spec(const char *, const char *,
                      char *(*)(const char *, const char *));
@@ -222,6 +223,7 @@ unsigned int message_queue_purge(struct filed *f, const unsigned int, const int)
 void send_queue(struct filed *);
 void free_cred_SLIST(struct peer_cred_head *);
 static struct buf_queue *find_qentry_to_delete(const struct buf_queue_head *, const int, const bool);
+struct buf_msg *buf_msg_new(const size_t);
 void buf_msg_free(struct buf_msg *msg);
 void tls_send_msg_free(struct tls_send_msg *msg);
 
@@ -414,14 +416,13 @@ getgroup:
         if (linebufsize < MAXLINE)
                 linebufsize = MAXLINE;
         linebufsize++;
-        linebuf = malloc(linebufsize);
         
-        msgbuf = calloc(1, sizeof(*msgbuf));
-        if (linebuf == NULL || msgbuf == NULL) {
+        if (!(linebuf = malloc(linebufsize))) {
                 logerror("Couldn't allocate buffer");
                 die(0, 0, NULL);
         }
-        msgbuf->refcount = 1;
+	/* TODO: remove global buffer? */
+        msgbuf = buf_msg_new(linebufsize);
 
 #ifndef SUN_LEN
 #define SUN_LEN(unp) (strlen((unp)->sun_path) + 2)
@@ -593,13 +594,21 @@ usage(void)
 
 /*
  * Dispatch routine for reading /dev/klog
+ * 
+ * Note: slightly different semantic in dispatch_read functions:
+ *       - read_klog() might give multiple messages in linebuf and
+ *         leaves the task of splitting them to printsys()
+ *       - all other read functions receive one message and
+ *         then call printline() with one buffer.
  */
 static void
 dispatch_read_klog(int fd, short event, void *ev)
 {
         ssize_t rv;
 
-        DPRINTF((D_CALL|D_EVENT), "Kernel log active (ev@%p, fd %d, linebuf@%p, size %d)\n", ev, fd, linebuf, linebufsize-1);
+        DPRINTF((D_CALL|D_EVENT), "Kernel log active (%d, %d, %p)"
+                " with linebuf@%p, length %d)\n", fd, event, ev,
+                linebuf, linebufsize);
 
         rv = read(fd, linebuf, linebufsize - 1);
         if (rv > 0) {
@@ -636,16 +645,20 @@ dispatch_read_funix(int fd, short event, void *ev)
                 return;
         }
 
-        DPRINTF((D_CALL|D_EVENT|D_NET), "Unix socket (%.*s) active (ev@%p, fd %d, linebuf@%p, size %d)\n", (myname.sun_len-sizeof(myname.sun_len)-sizeof(myname.sun_family)), myname.sun_path, ev, fd, linebuf, linebufsize-1);
+        DPRINTF((D_CALL|D_EVENT|D_NET), "Unix socket (%.*s) active (%d, %d %p)"
+                " with linebuf@%p, size %d)\n", (myname.sun_len
+                - sizeof(myname.sun_len) - sizeof(myname.sun_family)),
+                myname.sun_path, fd, event, ev, linebuf, linebufsize-1);
 
         sunlen = sizeof(fromunix);
-        rv = recvfrom(fd, linebuf, MAXLINE, 0,
+        rv = recvfrom(fd, linebuf, linebufsize-1, 0,
             (struct sockaddr *)&fromunix, &sunlen);
         if (rv > 0) {
                 linebuf[rv] = '\0';
                 printline(LocalHostName, linebuf, 0);
         } else if (rv < 0 && errno != EINTR) {
-                logerror("recvfrom() unix `%.*s'", myname.sun_len, myname.sun_path);
+                logerror("recvfrom() unix `%.*s'",
+                        myname.sun_len, myname.sun_path);
         }
 }
 
@@ -663,7 +676,9 @@ dispatch_read_finet(int fd, short event, void *ev)
         socklen_t len;
         int reject = 0;
 
-        DPRINTF((D_CALL|D_EVENT|D_NET), "inet socket active (ev@%p, fd %d, linebuf@%p, size %d)\n", ev, fd, linebuf, linebufsize-1);
+        DPRINTF((D_CALL|D_EVENT|D_NET), "inet socket active (%d, %d %p) "
+                " with linebuf@%p, size %d)\n",
+                fd, event, ev, linebuf, linebufsize-1);
 
 #ifdef LIBWRAP
         request_init(&req, RQ_DAEMON, "syslogd", RQ_FILE, fd, NULL);
@@ -674,7 +689,7 @@ dispatch_read_finet(int fd, short event, void *ev)
 #endif
 
         len = sizeof(frominet);
-        rv = recvfrom(fd, linebuf, MAXLINE, 0,
+        rv = recvfrom(fd, linebuf, linebufsize-1, 0,
             (struct sockaddr *)&frominet, &len);
         if (rv == 0 || (rv < 0 && errno == EINTR))
                 return;
@@ -750,8 +765,10 @@ logpath_fileadd(char ***lp, int *szp, int *maxszp, char *file)
 void
 printline(char *hname, char *msg, int flags)
 {
+	struct buf_msg *buffer;
         int c, pri;
-        char *p, *q, line[MAXLINE + 1];
+        char *p, *q, *start;
+        size_t len;
         long n;
 
         /* test for special codes */
@@ -776,10 +793,18 @@ printline(char *hname, char *msg, int flags)
         if ((pri & LOG_FACMASK) == LOG_KERN)
                 pri = LOG_MAKEPRI(LOG_USER, LOG_PRI(pri));
 
-        q = line;
-
+        /* 10% extra for control character escaping */
+        len = strlen(msg)+1;
+        len += len/10;
+        buffer = buf_msg_new(len);
+        q = buffer->msg;
+        if (!q) {
+                logerror("Unable to allocate memory");
+                return;
+        }
+        start = p;
         while ((c = *p++) != '\0' &&
-            q < &line[sizeof(line) - 2]) {
+            q < &(buffer->msg[len - 2])) {
                 c &= 0177;
                 if (iscntrl(c))
                         if (c == '\n')
@@ -794,8 +819,13 @@ printline(char *hname, char *msg, int flags)
                         *q++ = c;
         }
         *q = '\0';
+        buffer->msglen = p-start;
+        buffer->flags = flags;
+        buffer->pri = pri;
+        buffer->host = strdup(hname);
 
-        logmsg(pri, line, hname, flags);
+        logmsg(buffer);
+        buf_msg_free(buffer);
 }
 
 /*
@@ -804,35 +834,47 @@ printline(char *hname, char *msg, int flags)
 void
 printsys(char *msg)
 {
-        int n, pri, flags, is_printf;
+        int n, is_printf;
         char *p, *q;
+        size_t cplen;
+        struct buf_msg *buffer;
 
         for (p = msg; *p != '\0'; ) {
-                flags = ISKERNEL | ADDDATE;
+                buffer = buf_msg_new(linebufsize);
+                buffer->flags = ISKERNEL | ADDDATE;
                 if (SyncKernel)
-                        flags |= SYNC_FILE;
-                pri = DEFSPRI;
+                        buffer->flags |= SYNC_FILE;
+                buffer->pri = DEFSPRI;
                 is_printf = 1;
                 if (*p == '<') {
                         errno = 0;
                         n = (int)strtol(p + 1, &q, 10);
                         if (*q == '>' && n >= 0 && n < INT_MAX && errno == 0) {
                                 p = q + 1;
-                                pri = n;
+                                buffer->pri = n;
                                 is_printf = 0;
                         }
                 }
                 if (is_printf) {
                         /* kernel printf's come out on console */
-                        flags |= IGN_CONS;
+                        buffer->flags |= IGN_CONS;
                 }
-                if (pri &~ (LOG_FACMASK|LOG_PRIMASK))
-                        pri = DEFSPRI;
+                if (buffer->pri &~ (LOG_FACMASK|LOG_PRIMASK))
+                        buffer->pri = DEFSPRI;
                 for (q = p; *q != '\0' && *q != '\n'; q++)
                         /* look for end of line */;
                 if (*q != '\0')
                         *q++ = '\0';
-                logmsg(pri, p, LocalHostName, flags);
+
+                cplen = q-p;
+                if (cplen > buffer->msgsize)
+                        /* this should never be reached since
+                         * linebufsize = getmsgbufsize()   */
+                        cplen = buffer->msgsize;
+                buffer->msglen = strlcpy(buffer->msg, p, cplen);
+                buffer->host = LocalHostName;
+                logmsg(buffer);
+                buf_msg_free(buffer);
                 p = q;
         }
 }
@@ -872,75 +914,119 @@ matches_spec(const char *name, const char *spec,
         return (0);
 }
 
+/* 
+ * wrapper with old function signature,
+ * keeps calling code shorter and hides buffer allocation
+ */
+void
+logmsg_async(const int pri, const char *msg, const char *from, const int flags)
+{
+        struct buf_msg *buffer;
+        size_t msglen;
+        
+        msglen = strlen(msg)+1;
+        buffer = buf_msg_new(msglen);
+        
+        buffer->pri = pri;
+        buffer->msglen = strlcpy(buffer->msg, msg, msglen);
+        buffer->host = strdup(from);
+        buffer->flags = flags;
+        logmsg(buffer);
+        buf_msg_free(buffer);
+}
+
 /*
  * Log a message to the appropriate log files, users, etc. based on
  * the priority.
  */
 void
-logmsg(int pri, char *msg, char *from, int flags)
+logmsg(struct buf_msg *buffer)
 {
         struct filed *f;
-        int fac, msglen, omask, prilev, i;
-        char *timestamp;
+        int fac, omask, prilev, i;
         char prog[NAME_MAX + 1];
-        char buf[MAXLINE + 1];
-        struct buf_msg *msgbuf_new;
+        char *kernelmsgbuf;
+        size_t kernelmsgbuflen;
 
-        DPRINTF(D_CALL, "logmsg: pri 0%o, flags 0x%x, from %s, msg %s\n",
-            pri, flags, from, msg);
+        DPRINTF((D_CALL|D_BUFFER), "logmsg: buffer@%p, pri 0%o, flags 0x%x, "
+                "timestamp \"%s\", from \"%s\", msg \"%s\"\n",
+                buffer, buffer->pri, buffer->flags, buffer->timestamp,
+                buffer->host, buffer->msg);
 
         omask = sigblock(sigmask(SIGHUP)|sigmask(SIGALRM));
 
-        /* prepare msgbuf */
-        if (msgbuf->refcount != 1) {
-                DPRINTF(D_BUFFER, "msgbuf->refcount != 1\n");
+        /* sanity check */
+        if (Debug) {
+                if (buffer->refcount != 1)
+                        DPRINTF(D_BUFFER,
+                                "msgbuf->refcount != 1 -- memory leak?\n");
+                if (buffer->msglen != strlen(buffer->msg)+1)
+                        DPRINTF((D_BUFFER|D_DATA),
+                                "buffer->msglen = %d != %d = "
+                                "strlen(buffer->msg)+1\n",
+                                buffer->msglen, strlen(buffer->msg)+1);
+                /* struct elements assumed to be present */
+                assert(buffer->msg);
+                assert(buffer->msglen);
+                assert(buffer->msgorig);
+                assert(buffer->msgsize);
+                assert(!buffer->timestamp);
+                /* basic invariants */
+                assert(buffer->msglen <= buffer->msgsize);
+                assert(buffer->msgorig <= buffer->msg);
         }
-        
+
         /*
          * Check to see if msg looks non-standard.
          */
-        msglen = strlen(msg);
-        if (msglen < TIMESTAMPLEN+1 || msg[3] != ' ' || msg[6] != ' ' ||
-            msg[9] != ':' || msg[12] != ':' || msg[15] != ' ')
-                flags |= ADDDATE;
+        if (buffer->msglen < TIMESTAMPLEN+1 || buffer->msg[3] != ' '
+         || buffer->msg[6] != ' ' || buffer->msg[9] != ':'
+         || buffer->msg[12] != ':' || buffer->msg[15] != ' ')
+                buffer->flags |= ADDDATE;
 
         (void)time(&now);
-        if (flags & ADDDATE)
-                timestamp = make_timestamp(false);
+        if (buffer->flags & ADDDATE)
+                buffer->timestamp = strdup(make_timestamp(false));
         else {
-                timestamp = msg;
-                msg += TIMESTAMPLEN+1;
-                msglen -= TIMESTAMPLEN+1;
+                buffer->timestamp = strndup(buffer->msg, TIMESTAMPLEN);
+                buffer->msg    += TIMESTAMPLEN+1;
+                buffer->msglen -= TIMESTAMPLEN+1;
         }
 
         /* skip leading whitespace */
-        while (isspace((unsigned char)*msg)) {
-                msg++;
-                msglen--;
+        while (isspace((unsigned char)*buffer->msg)) {
+                buffer->msg++;
+                buffer->msglen--;
         }
 
         /* extract facility and priority level */
-        if (flags & MARK)
+        if (buffer->flags & MARK)
                 fac = LOG_NFACILITIES;
         else
-                fac = LOG_FAC(pri);
-        prilev = LOG_PRI(pri);
+                fac = LOG_FAC(buffer->pri);
+        prilev = LOG_PRI(buffer->pri);
 
         /* extract program name */
         for (i = 0; i < NAME_MAX; i++) {
-                if (!isprint((unsigned char)msg[i]) ||
-                    msg[i] == ':' || msg[i] == '[')
+                if (!isprint((unsigned char)buffer->msg[i]) ||
+                    buffer->msg[i] == ':' || buffer->msg[i] == '[')
                         break;
-                prog[i] = msg[i];
+                prog[i] = buffer->msg[i];
         }
         prog[i] = '\0';
 
         /* add kernel prefix for kernel messages */
-        if (flags & ISKERNEL) {
-                snprintf(buf, sizeof(buf), "%s: %s",
-                    _PATH_UNIX, msg);
-                msg = buf;
-                msglen = strlen(buf);
+        if (buffer->flags & ISKERNEL) {
+                kernelmsgbuflen = buffer->msglen + sizeof(_PATH_UNIX) + 1;
+                if (!(kernelmsgbuf = malloc(kernelmsgbuflen))) {
+                        logerror("Unable to allocate memory");
+                } else {
+                        snprintf(kernelmsgbuf, kernelmsgbuflen, "%s: %s",
+                            _PATH_UNIX, buffer->msg);
+                        FREEPTR(buffer->msgorig);
+                        buffer->msgorig = buffer->msg = kernelmsgbuf;
+                        buffer->msglen = buffer->msgsize = kernelmsgbuflen;
+                }
         }
 
         /* log the message to the particular outputs */
@@ -949,37 +1035,12 @@ logmsg(int pri, char *msg, char *from, int flags)
                 f->f_file = open(ctty, O_WRONLY, 0);
 
                 if (f->f_file >= 0) {
-                        (void)strncpy(f->f_lasttime, timestamp, 15);
-                        fprintlog(f, flags, msg, NULL, false);
+                        (void)strncpy(f->f_lasttime, buffer->timestamp, TIMESTAMPLEN);
+                        fprintlog(f, buffer->flags, buffer->msg, NULL, NULL);
                         (void)close(f->f_file);
                 }
                 (void)sigsetmask(omask);
                 return;
-        }
-
-        /* always copy message for possible buffering */
-        if (!(msgbuf_new = calloc(1, sizeof(*msgbuf_new)))
-         || !(msgbuf->msg = malloc(strlen(msg)+1))
-         || !(msgbuf->line = malloc(msgbuf->linelen + 1))
-         || !(msgbuf->timestamp = malloc(TIMESTAMPLEN+1))
-         || !(msgbuf->host = malloc(strlen(from)+1))) {
-                free(msgbuf_new);
-                free(msgbuf->msg);
-                free(msgbuf->line);
-                free(msgbuf->timestamp);
-                logerror("Unable to allocate memory");
-                /* what now? */
-        } else {
-                DPRINTF(D_BUFFER, "copying message: %p, %.*s %s\n", msgbuf,
-                        TIMESTAMPLEN, timestamp, from);
-                msgbuf->msglen = strlen(msg);
-                memcpy(msgbuf->msg, msg, msgbuf->msglen);
-                msgbuf->msg[msgbuf->msglen] = '\0';
-
-                strlcpy(msgbuf->timestamp, timestamp, TIMESTAMPLEN+1);
-                strcpy(msgbuf->host, from);
-                msgbuf->flags = flags;
-                msgbuf->pri = pri;
         }
 
         for (f = Files; f; f = f->f_next) {
@@ -995,12 +1056,12 @@ logmsg(int pri, char *msg, char *from, int flags)
                 if (f->f_host != NULL) {
                         switch (f->f_host[0]) {
                         case '+':
-                                if (! matches_spec(from, f->f_host + 1,
+                                if (! matches_spec(buffer->host, f->f_host + 1,
                                                    strcasestr))
                                         continue;
                                 break;
                         case '-':
-                                if (matches_spec(from, f->f_host + 1,
+                                if (matches_spec(buffer->host, f->f_host + 1,
                                                  strcasestr))
                                         continue;
                                 break;
@@ -1028,21 +1089,21 @@ logmsg(int pri, char *msg, char *from, int flags)
                         }
                 }
 
-                if (f->f_type == F_CONSOLE && (flags & IGN_CONS))
+                if (f->f_type == F_CONSOLE && (buffer->flags & IGN_CONS))
                         continue;
 
                 /* don't output marks to recently written files */
-                if ((flags & MARK) && (now - f->f_time) < MarkInterval / 2)
+                if ((buffer->flags & MARK) && (now - f->f_time) < MarkInterval / 2)
                         continue;
 
                 /*
                  * suppress duplicate lines to this file unless NoRepeat
                  */
-                if ((flags & MARK) == 0 && msglen == f->f_prevlen &&
+                if ((buffer->flags & MARK) == 0 && buffer->msglen == f->f_prevlen &&
                     !NoRepeat &&
-                    !strcmp(msg, f->f_prevline) &&
-                    !strcasecmp(from, f->f_prevhost)) {
-                        (void)strncpy(f->f_lasttime, timestamp, 15);
+                    !strcmp(buffer->msg, f->f_prevline) &&
+                    !strcasecmp(buffer->host, f->f_prevhost)) {
+                        (void)strncpy(f->f_lasttime, buffer->timestamp, TIMESTAMPLEN);
                         f->f_prevcount++;
                         DPRINTF(D_DATA, "Msg repeated %d times, %ld sec of %d\n",
                             f->f_prevcount, (long)(now - f->f_time),
@@ -1054,41 +1115,32 @@ logmsg(int pri, char *msg, char *from, int flags)
                          * in the future.
                          */
                         if (now > REPEATTIME(f)) {
-                                fprintlog(f, flags, (char *)NULL, msgbuf, false);
+                                fprintlog(f, buffer->flags, (char *)NULL, buffer, NULL);
                                 BACKOFF(f);
                         }
                 } else {
                         /* new line, save it */
                         if (f->f_prevcount)
                                 /* sending this old line is not buffered */
-                                fprintlog(f, 0, (char *)NULL, NULL, false);
+                                fprintlog(f, 0, (char *)NULL, NULL, NULL);
                         f->f_repeatcount = 0;
-                        f->f_prevpri = pri;
-                        (void)strncpy(f->f_lasttime, timestamp, 15);
-                        (void)strncpy(f->f_prevhost, from,
+                        f->f_prevpri = buffer->pri;
+                        (void)strncpy(f->f_lasttime, buffer->timestamp, TIMESTAMPLEN);
+                        (void)strncpy(f->f_prevhost, buffer->host,
                                         sizeof(f->f_prevhost));
-                        if (msglen < MAXSVLINE) {
+                        if (buffer->msglen < MAXSVLINE) {
                                 /* message passed as part of struct filed :-/
                                  * TODO: remove MAXSVLINE and unify these two branches  */
-                                f->f_prevlen = msglen;
-                                (void)strlcpy(f->f_prevline, msg,
+                                f->f_prevlen = buffer->msglen;
+                                (void)strlcpy(f->f_prevline, buffer->msg,
                                     sizeof(f->f_prevline));
-                                fprintlog(f, flags, (char *)NULL, msgbuf, false);
+                                fprintlog(f, buffer->flags, (char *)NULL, buffer, NULL);
                         } else {
                                 f->f_prevline[0] = 0;
                                 f->f_prevlen = 0;
-                                fprintlog(f, flags, msg, msgbuf, false);
+                                fprintlog(f, buffer->flags, buffer->msg, buffer, NULL);
                         }
                 }
-        }
-        /* swap buffers */
-        if (msgbuf_new) {
-                msgbuf_new->refcount = 1;
-                buf_msg_free(msgbuf);
-                msgbuf = msgbuf_new;
-                DPRINTF(D_BUFFER, "saved msgbuf_new\n");
-        } else {
-                /* TODO */
         }
         (void)sigsetmask(omask);
 }
@@ -1587,6 +1639,8 @@ reapchild(int fd, short event, void *ev)
 
 /*
  * Return a printable representation of a host address.
+ * 
+ * TODO: use FQDN for syslog-protocol
  */
 char *
 cvthname(struct sockaddr_storage *f)
@@ -1664,14 +1718,16 @@ domark(int fd, short event, void *ev)
                 
                 snprintf(markline, MARKLINELENGTH, "-- MARK -- (mem usage: %s/%s)",
                         usemem, maxmem);
-                /* TODO: check for overflow */
-                if (ru.ru_idrss+ru.ru_isrss >= (MEMORY_HIGH_PERC * rlp.rlim_max) / 100)
+                /* negative numbers imply overflow. check necessary? */
+                if ((ru.ru_idrss+ru.ru_isrss+ru.ru_ixrss > 0)
+                 && ((MEMORY_HIGH_PERC * rlp.rlim_max) > 0)
+                 && (ru.ru_idrss+ru.ru_isrss+ru.ru_ixrss >= (MEMORY_HIGH_PERC * rlp.rlim_max) / 100))
                         sweep_queues = true;
         }
         now = time((time_t *)NULL);
         MarkSeq += TIMERINTVL;
         if (MarkSeq >= MarkInterval) {
-                logmsg(LOG_INFO, markline, LocalHostName, ADDDATE|MARK);
+                logmsg_async(LOG_INFO, markline, LocalHostName, ADDDATE|MARK);
                 MarkSeq = 0;
         }
 
@@ -1735,10 +1791,9 @@ logerror(const char *fmt, ...)
                 return;
         logerror_running = 1;
 
+
         va_start(ap, fmt);
-
         (void)vsnprintf(tmpbuf, sizeof(tmpbuf), fmt, ap);
-
         va_end(ap);
 
         if (errno)
@@ -1748,7 +1803,7 @@ logerror(const char *fmt, ...)
                 (void)snprintf(buf, sizeof(buf), "syslogd: %s", tmpbuf);
 
         if (daemonized) 
-                logmsg(LOG_SYSLOG|LOG_ERR, buf, LocalHostName, ADDDATE);
+                logmsg_async(LOG_SYSLOG|LOG_ERR, buf, LocalHostName, ADDDATE);
         if (!daemonized && Debug)
                 DPRINTF(D_MISC, "%s\n", buf);
         if (!daemonized && !Debug)
@@ -2283,7 +2338,7 @@ init(int fd, short event, void *ev)
         }
 #endif /* !DISABLE_TLS */
 
-        logmsg(LOG_SYSLOG|LOG_INFO, "syslogd: restart", LocalHostName, ADDDATE);
+        logmsg_async(LOG_SYSLOG|LOG_INFO, "syslogd: restart", LocalHostName, ADDDATE);
         DPRINTF(D_MISC, "syslogd: restarted\n");
         /*
          * Log a change in hostname, but only on a restart (we detect this
@@ -2293,7 +2348,7 @@ init(int fd, short event, void *ev)
                 (void)snprintf(hostMsg, sizeof(hostMsg),
                     "syslogd: host name changed, \"%s\" to \"%s\"",
                     oldLocalHostName, LocalHostName);
-                logmsg(LOG_SYSLOG|LOG_INFO, hostMsg, LocalHostName, ADDDATE);
+                logmsg_async(LOG_SYSLOG|LOG_INFO, hostMsg, LocalHostName, ADDDATE);
                 DPRINTF(D_MISC, "%s\n", hostMsg);
         }
 }
@@ -2874,7 +2929,7 @@ send_queue(struct filed *f)
 
                 DPRINTF((D_DATA|D_CALL), "send_queue() calls fprintlog()\n");
                 /* TODO: check if I get invalid data by using f instead of f_tmp */
-                fprintlog(f, qentry->msg->flags, qentry->msg->line, qentry->msg, qentry);
+                fprintlog(f, qentry->msg->flags, qentry->msg->msg, qentry->msg, qentry);
         }
 }
 
@@ -2985,6 +3040,25 @@ tls_send_msg_free(struct tls_send_msg *msg)
         DPRINTF((D_DATA), "return from tls_send_msg_free()\n");
 }
 
+struct buf_msg *
+buf_msg_new(const size_t len)
+{
+        struct buf_msg *newbuf;
+
+        if (!(newbuf = calloc(1, sizeof(*newbuf)))
+         || !(newbuf->msg = malloc(len))) {
+                free(newbuf);
+                logerror("Couldn't allocate new message buffer");
+                /* TODO: check all malloc()s and change 'if' into 'while'.
+                 * after a failed allocation run queue_purge to free memory */
+        }
+        newbuf->msgorig = newbuf->msg;
+        newbuf->msgsize = len;
+        newbuf->refcount = 1;
+
+        return newbuf;
+}
+        
 void
 buf_msg_free(struct buf_msg *buf)
 {
@@ -2996,8 +3070,10 @@ buf_msg_free(struct buf_msg *buf)
         
         buf->refcount--;
         if (!buf->refcount) {
+                if (buf->host != LocalHostName)
+                        FREEPTR(buf->host);
+                FREEPTR(buf->msgorig);  /* instead of msg */
                 FREEPTR(buf->timestamp);
-                FREEPTR(buf->host);
                 FREEPTR(buf->line);
                 FREEPTR(buf->tlsline);
                 FREEPTR(buf);

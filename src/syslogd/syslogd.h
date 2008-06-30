@@ -82,7 +82,10 @@ struct buf_msg {
         int          flags;
         unsigned int refcount;
         char        *msg;       /* only a message like "syslogd: restart" */
+        char        *msgorig;   /* in case we advance *msg beyond the timestamp
+                                   we still want to free() the original ptr  */
         size_t       msglen;
+        size_t       msgsize;   /* msglen is strlen(msg), msgsize is allocated memory */
         char        *line;      /* a syslog line like "<46>Jun 28 14:32:08 host syslogd: restart" */
         size_t       linelen;
         char        *tlsline;   /* a prefixed tls line like "41 <46>Jun 28 14:32:08 host syslogd: restart" */ 

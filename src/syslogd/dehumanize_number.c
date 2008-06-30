@@ -35,10 +35,6 @@ __RCSID("$NetBSD: dehumanize_number.c,v 1.3 2008/04/28 20:22:59 martin Exp $");
 #endif /* LIBC_SCCS and not lint */
 
 //#include "namespace.h"
-#ifdef __FreeBSD__
-#else
-#include <inttypes.h>
-#endif /* __FreeBSD__ */
 #include <inttypes.h>
 #include <ctype.h>
 #include <stdlib.h>

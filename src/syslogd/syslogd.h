@@ -51,10 +51,6 @@
 #include <limits.h>
 #endif /* !_NO_NETBSD_USR_SRC_ */
 
-#ifndef HAVE_DEHUMANIZE_NUMBER  /* not in my 4.0-STABLE yet */
-extern int dehumanize_number(const char *str, int64_t *size);
-#endif /* !HAVE_DEHUMANIZE_NUMBER */
-
 #ifndef DISABLE_TLS
 #include <netinet/tcp.h>
 #include <sys/stdint.h>
@@ -121,10 +117,20 @@ struct socketEvent {
 #include "pathnames.h"
 #include <sys/syslog.h>
 
-#ifdef _NO_NETBSD_USR_SRC_
+/* some differences between the BSDs  */
+#ifdef __FreeBSD_version
 #undef _PATH_UNIX
 #define _PATH_UNIX "kernel"
-#endif /* _NO_NETBSD_USR_SRC_ */
+#define HAVE_STRNDUP 0
+#endif /* __FreeBSD_version */
+
+#ifndef HAVE_DEHUMANIZE_NUMBER  /* not in my 4.0-STABLE yet */
+extern int dehumanize_number(const char *str, int64_t *size);
+#endif /* !HAVE_DEHUMANIZE_NUMBER */
+
+#if !HAVE_STRNDUP
+char *strndup(const char *str, size_t n);
+#endif /* !HAVE_STRNDUP */
 
 #ifdef LIBWRAP
 #include <tcpd.h>

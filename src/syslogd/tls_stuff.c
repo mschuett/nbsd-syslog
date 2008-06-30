@@ -1255,6 +1255,7 @@ tls_split_messages(struct TLS_Incoming_Conn *c)
         unsigned int offset = 0;
         unsigned int msglen = 0;
         char *newbuf;
+        char buf_char;
         
         DPRINTF((D_TLS|D_CALL|D_DATA), "tls_split_messages() -- incoming status is " \
                 "msg_start %d, msg_len %d, pos %d\n",
@@ -1307,11 +1308,11 @@ tls_split_messages(struct TLS_Incoming_Conn *c)
         if (c->inbuf[offset] == ' ') {
                 c->cur_msg_len = msglen;
                 c->cur_msg_start = offset + 1;
-                if (MSG_END_OFFSET > c->inbuflen) {
-                        newbuf = realloc(c->inbuf, MSG_END_OFFSET);
+                if (MSG_END_OFFSET+1 > c->inbuflen) {  /* +1 for the '\0' */
+                        newbuf = realloc(c->inbuf, MSG_END_OFFSET+1);
                         if (newbuf) {
                                 DPRINTF(D_DATA, "Reallocated inbuf\n");
-                                c->inbuflen = MSG_END_OFFSET;
+                                c->inbuflen = MSG_END_OFFSET+1;
                                 c->inbuf = newbuf;
                         } else {
                                 logerror("Couldn't reallocate buffer, will skip this message");
@@ -1337,9 +1338,12 @@ tls_split_messages(struct TLS_Incoming_Conn *c)
         /* read one syslog message */        
         if (c->read_pos >= MSG_END_OFFSET) {
                 /* process complete msg */
-                (void)memcpy(linebuf, &c->inbuf[c->cur_msg_start], c->cur_msg_len);
-                linebuf[c->cur_msg_len] = '\0';
-                printline(c->tls_conn->hostname, linebuf, RemoteAddDate ? ADDDATE : 0);
+                assert(MSG_END_OFFSET+1 <= c->inbuflen);
+                /* message in c->inbuf is not NULL-terminated, so this avoids a complete copy */
+                buf_char = c->inbuf[MSG_END_OFFSET];
+                c->inbuf[MSG_END_OFFSET] = '\0';
+                printline(c->tls_conn->hostname, &c->inbuf[c->cur_msg_start], RemoteAddDate ? ADDDATE : 0);
+                c->inbuf[MSG_END_OFFSET] = buf_char;
 
                 if (MSG_END_OFFSET == c->read_pos) {
                         /* no unprocessed data in buffer --> reset to empty */

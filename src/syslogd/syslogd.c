@@ -1561,7 +1561,7 @@ sendagain:
 void
 wallmsg(struct filed *f, struct iovec *iov, size_t iovcnt)
 {
-#ifndef _NO_NETBSD_USR_SRC_
+#ifdef __NetBSD_Version
         static int reenter;                     /* avoid calling ourselves */
         int i;
         char *p;
@@ -1601,7 +1601,54 @@ wallmsg(struct filed *f, struct iovec *iov, size_t iovcnt)
                 }
         }
         reenter = 0;
-#endif /* !_NO_NETBSD_USR_SRC_ */
+#endif /* __NetBSD_Version */
+#ifdef __FreeBSD_Version
+        static int reenter;                     /* avoid calling ourselves */
+        FILE *uf;
+        struct utmp ut;
+        int i;
+        const char *p;
+        char line[sizeof(ut.ut_line) + 1];
+
+        if (reenter++)
+                return;
+        if ((uf = fopen(_PATH_UTMP, "r")) == NULL) {
+                logerror(_PATH_UTMP);
+                reenter = 0;
+                return;
+        }
+        /* NOSTRICT */
+        while (fread((char *)&ut, sizeof(ut), 1, uf) == 1) {
+                if (ut.ut_name[0] == '\0')
+                        continue;
+                /* We must use strncpy since ut_* may not be NUL terminated. */
+                strncpy(line, ut.ut_line, sizeof(line) - 1);
+                line[sizeof(line) - 1] = '\0';
+                if (f->f_type == F_WALL) {
+                        if ((p = ttymsg(iov, iovcnt, line, TTYMSGTIME)) != NULL) {
+                                errno = 0;      /* already in msg */
+                                logerror(p);
+                        }
+                        continue;
+                }
+                /* should we send the message to this user? */
+                for (i = 0; i < MAXUNAMES; i++) {
+                        if (!f->f_un.f_uname[i][0])
+                                break;
+                        if (!strncmp(f->f_un.f_uname[i], ut.ut_name,
+                            UT_NAMESIZE)) {
+                                if ((p = ttymsg(iov, iovcnt, line, TTYMSGTIME))
+                                                                != NULL) {
+                                        errno = 0;      /* already in msg */
+                                        logerror(p);
+                                }
+                                break;
+                        }
+                }
+        }
+        (void)fclose(uf);
+        reenter = 0;
+#endif /* __FreeBSD_Version */
 }
 
 void
@@ -1740,7 +1787,7 @@ domark(int fd, short event, void *ev)
                         BACKOFF(f);
                 }
                 if (sweep_queues)
-                        message_queue_purge(f, /* arbitrary value */ 20,
+                        message_queue_purge(f, f->f_qelements/10,
                                 PURGE_BY_PRIORITY);
         }
 

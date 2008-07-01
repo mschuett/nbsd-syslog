@@ -795,7 +795,8 @@ tls_examine_error(const char *functionname, const SSL *ssl, struct tls_conn_sett
         int ssl_error, err_error;
         
         ssl_error = SSL_get_error(ssl, rc);
-        DPRINTF(D_TLS, "%s returned rc %d and error %s: %s\n", functionname, rc, SSL_ERRCODE[ssl_error], ERR_error_string(ssl_error, NULL));
+        DPRINTF(D_TLS, "%s returned rc %d and error %s: %s\n", functionname,
+                rc, SSL_ERRCODE[ssl_error], ERR_error_string(ssl_error, NULL));
         switch (ssl_error) {
                 case SSL_ERROR_WANT_READ:
                         return TLS_RETRY_READ;
@@ -1230,7 +1231,8 @@ dispatch_read_tls(int fd_lib, short event, void *ev)
         int fd = EVENT_FD(((struct event *)ev));
 
         DPRINTF((D_TLS|D_EVENT|D_CALL), "active TLS socket %d\n", fd);
-        
+
+        /* first: find the TLS_Incoming_Conn this socket belongs to */
         SLIST_FOREACH(c, &TLS_Incoming_Head, entries) {
                 DPRINTF(D_TLS, "look at tls_in@%p with fd %d\n", c, c->socket);
                 if (c->socket == fd)
@@ -1242,18 +1244,6 @@ dispatch_read_tls(int fd_lib, short event, void *ev)
                 return;
         }
 
-/* according to draft-ietf-syslog-transport-tls-12 "It is ... possible
- * that a syslog message be transferred in multiple TLS records."
- * So we have to buffer it just like with TCP with a seperate incoming buffer.
- * 
- * Example: If a msg is sent in two TLS records 
- * then we might read the beginning (from the 1st record),
- * but wait some time for the end (in the 2nd record).
- * In that waiting time we must not block.
- */
-        
-        DPRINTF(D_DATA, "incoming status is msg_start %d, msg_len %d, pos %d\n",
-                c->cur_msg_start, c->cur_msg_len, c->read_pos);
         DPRINTF(D_TLS, "calling SSL_read(%p, %p, %d)\n", c->ssl,
                 &(c->inbuf[c->read_pos]), c->inbuflen - c->read_pos);
         rc = SSL_read(c->ssl, &(c->inbuf[c->read_pos]), c->inbuflen - c->read_pos);
@@ -1609,6 +1599,66 @@ free_tls_conn(struct tls_conn_settings *conn_info)
 }
 
 /*
+ * Dispatch routine for non-blocking TLS shutdown
+ */
+void dispatch_SSL_shutdown(int fd, short event, void *arg)
+{
+        struct tls_conn_settings *conn_info = (struct tls_conn_settings *) arg;
+        int rc, error;
+        
+        DPRINTF((D_TLS|D_CALL), "dispatch_SSL_shutdown(conn_info@%p, fd %d)\n", conn_info, fd);
+        
+        rc = SSL_shutdown(conn_info->sslptr);
+        if (rc == 1) {  /* shutdown complete */
+                DPRINTF((D_TLS|D_NET), "Closed TLS connection to %s\n", conn_info->hostname);
+                ST_CHANGE(conn_info->state, ST_TCP_EST);  /* check this */
+                if (shutdown(fd, SHUT_RDWR) == -1)
+                        DPRINTF((D_TLS|D_NET), "Unable to cleanly shutdown TCP socket %d: %s\n", fd, strerror(errno));
+                if (close(fd) == -1)
+                        DPRINTF((D_TLS|D_NET), "Unable to cleanly close socket %d: %s\n", fd, strerror(errno));
+                ST_CHANGE(conn_info->state, ST_NONE);
+                FREE_SSL(conn_info->sslptr);
+        } else if (rc == 0) { /* unidirectional, now call a 2nd time */
+                ST_CHANGE(conn_info->state, ST_CLOSING);
+                dispatch_SSL_shutdown(fd, 0, conn_info);
+        } else if (rc == -1) {
+                error = tls_examine_error("SSL_shutdown()",
+                        conn_info->sslptr, NULL, rc);
+                switch (error) {
+                        case TLS_RETRY_READ:
+                                if (!conn_info->retrying) {
+                                        conn_info->retrying = true;
+                                        event_del(conn_info->event);
+                                }
+                                event_set(conn_info->retryevent, fd,
+                                        EV_READ, dispatch_SSL_shutdown,
+                                        conn_info);
+                                EVENT_ADD(conn_info->retryevent);
+                                return;
+                                break;
+                        case TLS_RETRY_WRITE:
+                                if (!conn_info->retrying) {
+                                        conn_info->retrying = true;
+                                        event_del(conn_info->event);
+                                }
+                                event_set(conn_info->retryevent, fd,
+                                        EV_WRITE, dispatch_SSL_shutdown,
+                                        conn_info);
+                                EVENT_ADD(conn_info->retryevent);
+                                return;
+                                break;
+                        default:
+                                /* we cannot shutdown after an error in
+                                 * shutdown, can we?   %-)           */
+                                break;
+                }
+        }
+        if (conn_info->retrying)
+                conn_info->retrying = false;
+}
+
+
+/*
  * Close a SSL object
  */
 void
@@ -1627,19 +1677,7 @@ free_tls_sslptr(struct tls_conn_settings *conn_info)
                     || conn_info->state == ST_CONNECTING
                     || conn_info->state == ST_TLS_EST);
                 sock = SSL_get_fd(conn_info->sslptr);
-
-                if (SSL_shutdown(conn_info->sslptr) || SSL_shutdown(conn_info->sslptr)) {
-                        /* shutdown has two steps, returns 1 on completion */
-                        DPRINTF((D_TLS|D_NET), "Closed TLS connection to %s\n", conn_info->hostname);
-                } else { 
-                        DPRINTF((D_TLS|D_NET), "Unable to cleanly shutdown TLS connection to %s\n", conn_info->hostname);
-                }        
-                if (shutdown(sock, SHUT_RDWR))
-                        DPRINTF((D_TLS|D_NET), "Unable to cleanly shutdown TCP socket %d: %s\n", sock, strerror(errno));
-                if (close(sock))
-                        DPRINTF((D_TLS|D_NET), "Unable to cleanly close socket %d: %s\n", sock, strerror(errno));
-                ST_CHANGE(conn_info->state, ST_NONE);
-                FREE_SSL(conn_info->sslptr);
+                dispatch_SSL_shutdown(sock, 0, conn_info);
         }
 }
 

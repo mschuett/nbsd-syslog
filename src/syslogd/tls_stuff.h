@@ -70,10 +70,11 @@
 /* connection states, currently for outgoing connections only */
 #define ST_NONE       0
 #define ST_TCP_EST    1
-#define ST_CONNECTING 2
-#define ST_TLS_EST    4
-#define ST_WRITING    8
-#define ST_EOF       16
+#define ST_CLOSING    2
+#define ST_CONNECTING 4
+#define ST_EOF        8
+#define ST_WRITING   16
+#define ST_TLS_EST   32
 
 #define ST_CHANGE(x, y) do { DPRINTF(D_TLS, "Change state %p to %d\n", &(x), (y)); \
                              (x) = (y); } while (0)
@@ -155,6 +156,7 @@ void tls_reconnect(int, short, void *);
 bool tls_send(struct filed *, struct buf_msg *);
 void dispatch_tls_send(int, short, void *);
 
+void dispatch_SSL_shutdown(int, short, void *);
 void free_tls_sslptr(struct tls_conn_settings *);
 void free_tls_conn(struct tls_conn_settings *);
 int tls_examine_error(const char *, const SSL *, struct tls_conn_settings *, const int);

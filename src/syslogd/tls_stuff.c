@@ -76,21 +76,46 @@ init_global_TLS_CTX(const char *keyfilename, const char *certfilename,
         if (keyfilename && certfilename) {
                 if (!(SSL_CTX_use_PrivateKey_file(ctx, keyfilename, SSL_FILETYPE_PEM)
                     && SSL_CTX_use_certificate_chain_file(ctx, certfilename))) {
-                        DPRINTF((D_TLS|D_FILE), "unable to get private key and certificate\n");
+                        logerror("Unable to get private key and certificate "
+                                "from files \"%s\" and \"%s\"",
+                                keyfilename, certfilename);
                         ERR_print_errors_fp(stderr);
                         exit(1);
                 }
                 if (!SSL_CTX_check_private_key(ctx)) {
-                        DPRINTF(D_TLS, "private key does not match certificate\n");
+                        logerror("Private key \"%s\" does not match "
+                                "certificate \"%s\"",
+                                keyfilename, certfilename);
                         ERR_print_errors_fp(stderr);
                         exit(1);
                 } else {
+                        char *fp = NULL, *cn = NULL;
+                        X509 *cert;
+                        
+                        if (!read_certfile(&cert, certfilename))
+                                fp = cn = NULL;
+                        else {
+                                get_fingerprint(cert, &fp, NULL);
+                                get_commonname(cert, &cn);
+                        }
                         DPRINTF(D_TLS, "loaded and checked own certificate\n");
+                        logerror("Initialize SSL context using library \"%s\"."
+                                " Load certificate from file \"%s\" with CN "
+                                "\"%s\" and fingerprint \"%s\"",
+                                SSLeay_version(SSLEAY_VERSION),
+                                certfilename, cn, fp);
+                        free(cn);
+                        free(fp);
                 }
         }
         if (CAfile || CApath) {
                 if (!SSL_CTX_load_verify_locations(ctx, CAfile, CApath)) {
-                        DPRINTF((D_TLS|D_FILE), "unable to load trust anchors\n");
+                	if (CAfile && CApath)
+	                        logerror("unable to load trust anchors from "
+	                        	"\"%s\" and \"%s\"\n", CAfile, CApath);
+	                else
+	                        logerror("unable to load trust anchors from "
+	                        	"\"%s\"\n", CAfile ? CAfile : CApath);
                         ERR_print_errors_fp(stderr);
                 } else {
                         DPRINTF(D_TLS, "loaded trust anchors\n");
@@ -325,29 +350,49 @@ match_fingerprint(const X509 *cert, const char *fingerprint)
 bool
 match_certfile(const X509 *cert, const char *certfilename)
 {
-        bool rc;
-        FILE *certfile;
         X509 *add_cert;
+        bool rc = false;
         errno = 0;
         
-        DPRINTF((D_TLS|D_CALL), "match_certfile(%p, \"%s\")\n", cert, certfilename);
+        if (read_certfile(&add_cert, certfilename)) {
+                rc = X509_cmp(cert, add_cert);
+                OPENSSL_free(add_cert);
+                DPRINTF(D_TLS, "X509_cmp() returns %d\n", rc);
+        }
+        return rc;
+}
+
+/*
+ * reads X.509 certificate from file
+ * caller has to free it later with 'OPENSSL_free(cert);'
+ */
+bool
+read_certfile(X509 **cert, const char *certfilename)
+{
+        FILE *certfile;
+        errno = 0;
+        
+        DPRINTF((D_TLS|D_CALL), "read_certfile(%p, \"%s\")\n", cert, certfilename);
         if (!cert || !certfilename)
-                return -1;
+                return false;
 
         if (!(certfile = fopen(certfilename, "rb"))) {
                 logerror("Unable to open certificate file: %s", certfilename);
                 return false;
-        } else if (!(d2i_X509_fp(certfile, &add_cert))) {
-                /* always gives an error  :-(   */
-                logerror("Unable to read certificate from %s", certfilename);
+        }
+
+        /* either PEM or DER */
+        if (!(*cert = PEM_read_X509(certfile, NULL, NULL, NULL))
+         && !(*cert = d2i_X509_fp(certfile, NULL))) {
+                DPRINTF((D_TLS), "Unable to read certificate from %s\n", certfilename);
                 (void)fclose(certfile);
                 return false;
         }
-        (void)fclose(certfile);
-        
-        rc = X509_cmp(cert, add_cert);
-        DPRINTF(D_TLS, "X509_cmp() returns %d\n", rc);
-        return rc;
+        else {
+                DPRINTF((D_TLS), "Read certificate from %s\n", certfilename);
+                (void)fclose(certfile);
+                return true;
+        }
 }
 
 /* used for incoming connections in check_peer_cert() */
@@ -359,11 +404,10 @@ accept_cert(const char* reason, struct tls_conn_settings *conn_info, char *cur_f
         if (cur_subjectline)
                 conn_info->subject = cur_subjectline;
 
-        logerror("Accept %s certificate from %s due to %s. "
-                "Subject is \"%s\", fingerprint is \"%s\"",
-                conn_info->incoming ? "server" : "client", 
-                conn_info->hostname, reason,
-                cur_subjectline, cur_fingerprint);
+        logerror("Established connection and accepted %s certificate "
+                "from %s due to %s. Subject is \"%s\", fingerprint is "
+                "\"%s\"", conn_info->incoming ? "server" : "client", 
+                conn_info->hostname, reason, cur_subjectline, cur_fingerprint);
         return 1;        
 }
 int
@@ -407,10 +451,10 @@ check_peer_cert(int preverify_ok, X509_STORE_CTX *ctx)
         /* some info */
         (void)get_commonname(cur_cert, &cur_subjectline);
         (void)get_fingerprint(cur_cert, &cur_fingerprint, NULL);
-        DPRINTF((D_TLS|D_CALL), "check cert for connection with %s. depth is %d, "
-                "preverify is %d, subject is %s, fingerprint is %s\n",
-                conn_info->hostname, cur_depth, preverify_ok,
-                cur_subjectline, cur_fingerprint);
+        DPRINTF((D_TLS|D_CALL), "check cert for connection with %s. "
+                "depth is %d, preverify is %d, subject is %s, fingerprint "
+                "is %s, conn_info@%p\n", conn_info->hostname, cur_depth, 
+                preverify_ok, cur_subjectline, cur_fingerprint, conn_info);
         if (Debug && !preverify_ok) {
                 DPRINTF(D_TLS, "openssl verify error:num=%d:%s:depth=%d:%s\t\n", cur_err,
                     X509_verify_cert_error_string(cur_err), cur_depth, cur_subjectline);
@@ -448,10 +492,11 @@ check_peer_cert(int preverify_ok, X509_STORE_CTX *ctx)
          * 
          */
         /* shortcut */
-        if (cur_depth != 0)
+        if (cur_depth != 0) {
                 FREEPTR(cur_fingerprint);
                 FREEPTR(cur_subjectline);
                 return 1;
+        }
 
         if (conn_info->x509verify == X509VERIFY_NONE)
                 return accept_cert("disabled verification", conn_info,
@@ -499,6 +544,7 @@ check_peer_cert(int preverify_ok, X509_STORE_CTX *ctx)
                 else
                         return deny_cert(conn_info, cur_fingerprint, cur_subjectline);
         }
+        return 0;
 }
 
 /*
@@ -1014,7 +1060,7 @@ dispatch_accept_tls(int fd, short event, void *arg)
         }
         /* else */
         if (!(tls_in = calloc(1, sizeof(*tls_in)))
-         || !(tls_in->inbuf = malloc(MAXLINE))) {
+         || !(tls_in->inbuf = malloc(TLS_MIN_LINELENGTH))) {
                 logerror("Unable to allocate memory for accepted connection");
                 free(tls_in);
                 free_tls_conn(conn_info);
@@ -1024,14 +1070,16 @@ dispatch_accept_tls(int fd, short event, void *arg)
         tls_in->socket = SSL_get_fd(conn_info->sslptr);
         tls_in->ssl = conn_info->sslptr;
         tls_in->inbuf[0] = '\0';
-        tls_in->inbuflen = MAXLINE;
+        tls_in->inbuflen = TLS_MIN_LINELENGTH;
         SLIST_INSERT_HEAD(&TLS_Incoming_Head, tls_in, entries);
 
         conn_info->retrying = false;
         event_set(conn_info->event, tls_in->socket, EV_READ | EV_PERSIST, dispatch_read_tls, conn_info->event);
         EVENT_ADD(conn_info->event);
 
-        DPRINTF(D_TLS, "established TLS connection from %s\n", conn_info->hostname);
+        logerror("established TLS connection from %s with certificate "
+                "%s (%s)", conn_info->hostname, conn_info->subject,
+                conn_info->fingerprint);
         /*
          * We could also listen to EOF kevents -- but I do not think
          * that would be useful, because we still had to read() the buffer
@@ -1368,6 +1416,20 @@ tls_split_messages(struct TLS_Incoming_Conn *c)
                         c->cur_msg_start = c->cur_msg_len = 0;
                 }
         }
+        
+        /* shrink inbuf if too large */
+        if ((c->inbuflen > TLS_PERSIST_LINELENGTH)
+         && (c->read_pos < TLS_LARGE_LINELENGTH)) {
+                newbuf = realloc(c->inbuf, TLS_LARGE_LINELENGTH);
+                if (newbuf) {
+                        DPRINTF(D_DATA, "Shrink inbuf\n");
+                        c->inbuflen = TLS_LARGE_LINELENGTH;
+                        c->inbuf = newbuf;
+                } else {
+                        logerror("Couldn't shrink inbuf");
+                        /* no change necessary */
+                }
+        }
         DPRINTF(D_DATA, "return with status: msg_start %d, msg_len %d, pos %d\n",
                  c->cur_msg_start, c->cur_msg_len, c->read_pos);
 
@@ -1562,6 +1624,7 @@ free_tls_sslptr(struct tls_conn_settings *conn_info)
         } else {
                 assert(conn_info->incoming == 1
                     || conn_info->state == ST_EOF
+                    || conn_info->state == ST_CONNECTING
                     || conn_info->state == ST_TLS_EST);
                 sock = SSL_get_fd(conn_info->sslptr);
 

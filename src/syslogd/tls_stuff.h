@@ -8,10 +8,22 @@
 #include <openssl/x509v3.h>
 #include <openssl/err.h>
 #include <openssl/rand.h>
+#include <openssl/pem.h>
 
 #define SERVICENAME "55555"
 #define TLSBACKLOG 4
 #define TLS_MAXERRORCOUNT 4
+
+/* initial size for TLS inbuf, minimum prefix + linelength
+ * guaranteed to be accepted */
+#define TLS_MIN_LINELENGTH         (2048 + 5) 
+/* usually the inbuf is enlarged as needed and then kept.
+ * if bigger than TLS_PERSIST_LINELENGTH, then shrink
+ * to TLS_LARGE_LINELENGTH immediately  */
+#define TLS_LARGE_LINELENGTH      8192
+#define TLS_PERSIST_LINELENGTH   32768
+/* TODO: keep simple statistics with a moving average linelength? */ 
+
 
 /* copied from FreeBSD -- makes some loops shorter */
 #ifndef SLIST_FOREACH_SAFE
@@ -117,6 +129,7 @@ struct daemon_status {
 
 SSL_CTX *init_global_TLS_CTX(const char *, const char *, const char *, const char *, const char *);
 int check_peer_cert(int, X509_STORE_CTX *);
+bool read_certfile(X509 **, const char *);
 bool get_fingerprint(const X509 *, char **, const char *);
 bool get_commonname(X509 *, char **);
 bool match_hostnames(X509 *, const char *, const char *);

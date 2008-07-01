@@ -664,8 +664,18 @@ dispatch_SSL_connect(int fd, short event, void *arg)
                                         dispatch_SSL_connect, conn_info);
                                 EVENT_ADD(conn_info->retryevent);
                                 break;
-                        default: /* should not happen */
-                                free_tls_conn(conn_info);
+                        default: /* should not happen,
+                                  * ... but does if the cert is not accepted */
+                                logerror("Cannot establish TLS connection "
+                                        "to \"%s\" -- wrong certificate "
+                                        "configured?", conn_info->hostname);
+                                ST_CHANGE(conn_info->state, ST_NONE);
+                                conn_info->retrying = false;
+                                conn_info->reconnect = 5*TLS_RECONNECT_SEC;
+                                schedule_event(&conn_info->event,
+                                        &((struct timeval)
+                                        {conn_info->reconnect, 0}),
+                                        tls_reconnect, conn_info);
                                 break;
                 }
                 return;
@@ -1672,10 +1682,6 @@ free_tls_sslptr(struct tls_conn_settings *conn_info)
                     || conn_info->state == ST_NONE);
                 return;
         } else {
-                assert(conn_info->incoming == 1
-                    || conn_info->state == ST_EOF
-                    || conn_info->state == ST_CONNECTING
-                    || conn_info->state == ST_TLS_EST);
                 sock = SSL_get_fd(conn_info->sslptr);
                 dispatch_SSL_shutdown(sock, 0, conn_info);
         }

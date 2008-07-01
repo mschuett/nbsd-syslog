@@ -149,8 +149,11 @@ char *strndup(const char *str, size_t n);
 #define D_EVENT   64    /* libevent */
 #define D_BUFFER 128    /* message queues */
 #define D_MEM    256    /* malloc/free */
-#define D_MISC  1024    /* everything else */
-#define D_ALL   2047
+#define D_MEM2  1024    /* every single malloc/free */
+#define D_MISC  2048    /* everything else */
+#define D_ALL   3071    /* without D_MEM2 */ 
+/*#define D_ALL   4095  */
+
 /* remove first printf for short debug messages */
 #define DPRINTF(x, ...)    if (Debug & x) { \
                                 printf("%s:%s:%.4d\t", make_timestamp(true), __FILE__, __LINE__); \
@@ -166,7 +169,8 @@ char *strndup(const char *str, size_t n);
                         } while (0)
 
 
-#define FREEPTR(x)      if (x)     { free(x);         x = NULL; }
+#define FREEPTR(x)      if (x)     { DPRINTF(D_MEM2, "free(%s@%p)\n", #x, x); \
+                                     free(x);         x = NULL; }
 #define FREE_SSL(x)     if (x)     { SSL_free(x);     x = NULL; }
 #define FREE_SSL_CTX(x) if (x)     { SSL_CTX_free(x); x = NULL; }
 

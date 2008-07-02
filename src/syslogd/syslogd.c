@@ -1968,6 +1968,7 @@ init(int fd, short event, void *ev)
                 {"tls_bindport",          &tls_opt.bindport},
                 {"tls_bindhost",          &tls_opt.bindhost},
                 {"tls_client_only",       &tls_opt.client_only},
+                {"tls_gen_cert",          &tls_opt.gen_cert},
                 /* special cases in parsing */
                 {"tls_allow_fingerprints",&tmp_buf},
                 {"tls_allow_clientcerts", &tmp_buf},

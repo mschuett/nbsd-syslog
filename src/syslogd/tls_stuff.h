@@ -66,6 +66,10 @@
 #define X509VERIFY_IFPRESENT 1
 #define X509VERIFY_NONE 2
 
+/* attributes for self-generated keys/certificates */
+#define TLS_GENCERT_BITS  1024
+#define TLS_GENCERT_SERIAL   1
+#define TLS_GENCERT_DAYS   365
 
 /* connection states, currently for outgoing connections only */
 #define ST_NONE       0
@@ -131,6 +135,9 @@ struct daemon_status {
 SSL_CTX *init_global_TLS_CTX(const char *, const char *, const char *, const char *, const char *);
 int check_peer_cert(int, X509_STORE_CTX *);
 bool read_certfile(X509 **, const char *);
+bool write_x509files(EVP_PKEY *, X509 *, const char *, const char *);
+bool mk_x509_cert(X509 **, EVP_PKEY **, int, int, int);
+
 bool get_fingerprint(const X509 *, char **, const char *);
 bool get_commonname(X509 *, char **);
 bool match_hostnames(X509 *, const char *, const char *);

@@ -61,6 +61,10 @@
 /* default algorithm for certificate fingerprints */
 #define DEFAULT_FINGERPRINT_ALG "SHA1"
 
+/* default X.509 filas */
+#define DEFAULT_X509_CERTFILE "/etc/openssl/default.crt"
+#define DEFAULT_X509_KEYFILE "/etc/openssl/default.key"
+
 /* options for peer certificate verification */
 #define X509VERIFY_ALWAYS 0
 #define X509VERIFY_IFPRESENT 1

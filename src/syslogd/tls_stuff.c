@@ -57,8 +57,11 @@ SSL_CTX *
 init_global_TLS_CTX(const char *keyfilename, const char *certfilename,
                 const char *CAfile, const char *CApath, const char *strx509verify)
 {
+        FILE *certfile, *keyfile;
         SSL_CTX *ctx;
         int x509verify = X509VERIFY_ALWAYS;
+        EVP_PKEY *pkey = NULL;
+        X509     *cert = NULL;
         
         if (strx509verify && !strcasecmp(strx509verify, "off"))
                 x509verify = X509VERIFY_NONE;
@@ -69,62 +72,95 @@ init_global_TLS_CTX(const char *keyfilename, const char *certfilename,
         (void) SSL_library_init();
         OpenSSL_add_all_digests();
         if (!(ctx = SSL_CTX_new(SSLv23_method()))) {
+                logerror("Unable to initialize OpenSSL");
                 ERR_print_errors_fp(stderr);
-                return NULL;
+                die(0,0,NULL);
         }
 
-        if (keyfilename && certfilename) {
-                /* TODO: first check if files exist */
-                if (tls_opt.gen_cert) {
-                        EVP_PKEY *pkey = NULL;
-                        X509     *cert = NULL;
+        if (!keyfilename && !certfilename) {
+                /* none configured, use default */
+                keyfilename = DEFAULT_X509_KEYFILE;
+                certfilename = DEFAULT_X509_CERTFILE;
+        }
         
-                        logerror("Generating a self-signed certificate and "
-                                "writing files \"%s\" and \"%s\"",
-                                keyfilename, certfilename);
-                        mk_x509_cert(&cert, &pkey, TLS_GENCERT_BITS,
-                                TLS_GENCERT_SERIAL, TLS_GENCERT_DAYS);
-                        write_x509files(pkey, cert,
-                                keyfilename, certfilename);
+        /* TODO: would it be better to use stat() for access checking? */
+        if (!(keyfile  = fopen(keyfilename,  "r"))
+         && !(certfile = fopen(certfilename, "r"))) {
+                errno = 0;
+                if (!tls_opt.gen_cert) {
+                        logerror("TLS certificate files \"%s\" and \"%s\""
+                                "not readable. Please configure them with "
+                                "\"tls_cert\" and \"tls_key\" or set "
+                                "\"tls_gen_cert=1\" to generate a new "
+                                "certificate");
+                        die(0,0,NULL);
+                }
+
+                logerror("Generating a self-signed certificate and writing "
+                        "files \"%s\" and \"%s\"",keyfilename, certfilename);
+                if (!mk_x509_cert(&cert, &pkey, TLS_GENCERT_BITS,
+                        TLS_GENCERT_SERIAL, TLS_GENCERT_DAYS)) {
+                        logerror("Unable to generate new certificate.");
+                        die(0,0,NULL);
+                }
+                if (!write_x509files(pkey, cert,
+                        keyfilename, certfilename)) {
+                        logerror("Unable to write certificate to files \"%s\""
+                                " and \"%s\"", keyfilename, certfilename);
+                        /* not fatal */
                 }
         }
+        if (keyfile)
+                (void)fclose(keyfile);
+        if (certfile)
+                (void)fclose(certfile);
+        errno = 0;
 
-        /* load keys and certs here */
-        if (keyfilename && certfilename) {
-                if (!(SSL_CTX_use_PrivateKey_file(ctx, keyfilename, SSL_FILETYPE_PEM)
-                    && SSL_CTX_use_certificate_chain_file(ctx, certfilename))) {
-                        logerror("Unable to get private key and "
-                                "certificate from files \"%s\" and \"%s\"",
-                                keyfilename, certfilename);
+        /* if generated, then use directly */
+        if (cert && pkey) {
+                if (!SSL_CTX_use_PrivateKey(ctx, pkey)
+                 || !SSL_CTX_use_certificate(ctx, cert)) {
+                        logerror("Unable to use generated private "
+                                "key and certificate");
                         ERR_print_errors_fp(stderr);
                         die(0,0,NULL);  /* any better reaction? */
-                }
-                if (!SSL_CTX_check_private_key(ctx)) {
-                        logerror("Private key \"%s\" does not match "
-                                "certificate \"%s\"",
+                 }
+        } else {
+                /* load keys and certs from files */
+                if (!SSL_CTX_use_PrivateKey_file(ctx, keyfilename, SSL_FILETYPE_PEM)
+                 || !SSL_CTX_use_certificate_chain_file(ctx, certfilename)) {
+                        logerror("Unable to load private key and "
+                                "certificate from files \"%s\" and \"%s\"",
                                 keyfilename, certfilename);
-                        ERR_print_errors_fp(stderr);
-                        die(0,0,NULL);
-                } else {
-                        char *fp = NULL, *cn = NULL;
-                        X509 *cert;
-                        
-                        if (!read_certfile(&cert, certfilename))
-                                fp = cn = NULL;
-                        else {
-                                get_fingerprint(cert, &fp, NULL);
-                                get_commonname(cert, &cn);
+                                ERR_print_errors_fp(stderr);
+                                die(0,0,NULL);  /* any better reaction? */
                         }
-                        DPRINTF(D_TLS, "loaded and checked own certificate\n");
-                        logerror("Initialize SSL context using library \"%s\"."
-                                " Load certificate from file \"%s\" with CN "
-                                "\"%s\" and fingerprint \"%s\"",
-                                SSLeay_version(SSLEAY_VERSION),
-                                certfilename, cn, fp);
-                        free(cn);
-                        free(fp);
-                }
         }
+        if (!SSL_CTX_check_private_key(ctx)) {
+                logerror("Private key \"%s\" does not match "
+                        "certificate \"%s\"",
+                        keyfilename, certfilename);
+                ERR_print_errors_fp(stderr);
+                die(0,0,NULL);
+        }
+
+        char *fp = NULL, *cn = NULL;
+        
+        if (!cert && !read_certfile(&cert, certfilename))
+                fp = cn = NULL;
+        else {
+                get_fingerprint(cert, &fp, NULL);
+                get_commonname(cert, &cn);
+        }
+        DPRINTF(D_TLS, "loaded and checked own certificate\n");
+        logerror("Initialize SSL context using library \"%s\"."
+                " Load certificate from file \"%s\" with CN "
+                "\"%s\" and fingerprint \"%s\"",
+                SSLeay_version(SSLEAY_VERSION),
+                certfilename, cn, fp);
+        free(cn);
+        free(fp);
+
         if (CAfile || CApath) {
                 if (!SSL_CTX_load_verify_locations(ctx, CAfile, CApath)) {
                 	if (CAfile && CApath)
@@ -139,18 +175,6 @@ init_global_TLS_CTX(const char *keyfilename, const char *certfilename,
                 }
         }
         /* peer verification */
-        /* 
-         * TODO: is it possible to have one destination with and one
-         * without verification?
-         * --> no. there is only SSL_CTX_set_verify() but no SSL_set_verify()
-         *     so the settings are global for all connections.
-         * 
-         * --> the latest draft mandates the use of certificates for client and server.
-         *     so the option X509VERIFY_NONE should give a warning and the
-         *     practically useless X509VERIFY_IFPRESENT can be eliminated
-         * (http://tools.ietf.org/html/draft-ietf-syslog-transport-tls-13#section-4.2.1)
-         * 
-         */
         if ((x509verify == X509VERIFY_NONE) || (x509verify == X509VERIFY_IFPRESENT))
                 /* ask for cert, but a client does not have to send one */
                 SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, check_peer_cert);
@@ -1744,10 +1768,26 @@ free_tls_sslptr(struct tls_conn_settings *conn_info)
 }
 
 /* write self-generated certificates */
-bool write_x509files(EVP_PKEY *pkey, X509 *cert, const char *keyfilename, const char *crtfilename)
+bool
+write_x509files(EVP_PKEY *pkey, X509 *cert, const char *keyfilename, const char *certfilename)
 {
-        /* TODO */
-        return false;
+        FILE *certfile, *keyfile;
+        
+        if (!(umask(0177),(keyfile  = fopen(keyfilename,  "a")))
+         || !(umask(0122),(certfile = fopen(certfilename, "a")))) {
+                logerror("Unable to write to files \"%s\" and \"%s\"",
+                        keyfilename, certfilename);
+                return false;
+        }
+        if (!PEM_write_PrivateKey(keyfile, pkey, NULL, NULL, 0, NULL, NULL))
+                logerror("Unable to write key to \"%s\"", keyfilename);
+        if (!X509_print_fp(certfile, cert)
+         || !PEM_write_X509(certfile, cert))
+                logerror("Unable to write certificate to \"%s\"", certfilename);
+
+        (void)fclose(keyfile);
+        (void)fclose(certfile);
+        return true;
 }
 
 /* 

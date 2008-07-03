@@ -1967,7 +1967,7 @@ init(int fd, short event, void *ev)
                 {"tls_verify",            &tls_opt.x509verify},
                 {"tls_bindport",          &tls_opt.bindport},
                 {"tls_bindhost",          &tls_opt.bindhost},
-                {"tls_client_only",       &tls_opt.client_only},
+                {"tls_server",            &tls_opt.server},
                 {"tls_gen_cert",          &tls_opt.gen_cert},
                 /* special cases in parsing */
                 {"tls_allow_fingerprints",&tmp_buf},
@@ -2361,21 +2361,12 @@ init(int fd, short event, void *ev)
          && (   !strcasecmp(tls_opt.x509verify, "off")
              || !strcasecmp(tls_opt.x509verify, "opt")))
                 logerror("insecure configuration, peer authentication disabled");
-        tls_opt.global_TLS_CTX = init_global_TLS_CTX(tls_opt.keyfile,
-                                        tls_opt.certfile, tls_opt.CAfile,
-                                        tls_opt.CAdir, tls_opt.x509verify);
-
         DPRINTF((D_NET|D_TLS), "Preparing sockets for TLS\n");
         TLS_Listen_Set = socksetup_tls(PF_UNSPEC, tls_opt.bindhost, tls_opt.bindport);
 
         for (f = Files; f; f = f->f_next) {
                 if (f->f_type != F_TLS)
                         continue;
-                if(!tls_opt.global_TLS_CTX)
-                        tls_opt.global_TLS_CTX = init_global_TLS_CTX(
-                                tls_opt.keyfile, tls_opt.certfile,
-                                tls_opt.CAfile, tls_opt.CAdir,
-                                tls_opt.x509verify);
                 if (!tls_connect(tls_opt.global_TLS_CTX, f->f_un.f_tls.tls_conn)) {
                         logerror("Unable to connect to TLS server %s", f->f_un.f_tls.tls_conn->hostname);
                         /* Reconnect after x seconds  */

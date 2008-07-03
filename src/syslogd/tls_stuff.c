@@ -577,8 +577,14 @@ socksetup_tls(const int af, const char *bindhostname, const char *port)
         const int on = 1;
         struct socketEvent *s, *socks;
 
-        if(tls_opt.client_only)
+        if(tls_opt.server)
                 return(NULL);
+
+        if (!tls_opt.global_TLS_CTX)
+                tls_opt.global_TLS_CTX = init_global_TLS_CTX(tls_opt.keyfile,
+                                        tls_opt.certfile, tls_opt.CAfile,
+                                        tls_opt.CAdir, tls_opt.x509verify);
+
 
         memset(&hints, 0, sizeof(hints));
         hints.ai_flags = AI_PASSIVE;
@@ -725,6 +731,12 @@ tls_connect(SSL_CTX *context, struct tls_conn_settings *conn_info)
         
         DPRINTF((D_TLS|D_CALL), "tls_connect(conn_info@%p)\n", conn_info);
         assert(conn_info->state == ST_NONE);
+        
+        if(!tls_opt.global_TLS_CTX)
+        tls_opt.global_TLS_CTX = init_global_TLS_CTX(
+                tls_opt.keyfile, tls_opt.certfile,
+                tls_opt.CAfile, tls_opt.CAdir,
+                tls_opt.x509verify);
         
         memset(&hints, 0, sizeof(hints));
         hints.ai_family = AF_UNSPEC;
@@ -1634,20 +1646,36 @@ void dispatch_SSL_shutdown(int fd, short event, void *arg)
         int rc, error;
         
         DPRINTF((D_TLS|D_CALL), "dispatch_SSL_shutdown(conn_info@%p, fd %d)\n", conn_info, fd);
-        
+        if ((conn_info->state != ST_CLOSING0)
+         && (conn_info->state != ST_CLOSING1)
+         && (conn_info->state != ST_CLOSING2))
+                ST_CHANGE(conn_info->state, ST_CLOSING0);
+
         rc = SSL_shutdown(conn_info->sslptr);
         if (rc == 1) {  /* shutdown complete */
                 DPRINTF((D_TLS|D_NET), "Closed TLS connection to %s\n", conn_info->hostname);
                 ST_CHANGE(conn_info->state, ST_TCP_EST);  /* check this */
-                if (shutdown(fd, SHUT_RDWR) == -1)
-                        DPRINTF((D_TLS|D_NET), "Unable to cleanly shutdown TCP socket %d: %s\n", fd, strerror(errno));
-                if (close(fd) == -1)
-                        DPRINTF((D_TLS|D_NET), "Unable to cleanly close socket %d: %s\n", fd, strerror(errno));
-                ST_CHANGE(conn_info->state, ST_NONE);
-                FREE_SSL(conn_info->sslptr);
+                /* closing TCP comes below */
         } else if (rc == 0) { /* unidirectional, now call a 2nd time */
-                ST_CHANGE(conn_info->state, ST_CLOSING);
-                dispatch_SSL_shutdown(fd, 0, conn_info);
+                /* problem: when connecting as a client to rsyslogd this
+                 * loops and I keep getting rc == 0
+                 * maybe I hit this bug?
+                 * http://www.mail-archive.com/openssl-dev@openssl.org/msg24105.html
+                 * 
+                 * anyway, now I use three closing states to make sure I abort
+                 * after two rc = 0. 
+                 */
+                if (conn_info->state == ST_CLOSING0) {
+                        ST_CHANGE(conn_info->state, ST_CLOSING1);
+                        dispatch_SSL_shutdown(fd, 0, conn_info);
+                } else if (conn_info->state == ST_CLOSING1) {
+                        ST_CHANGE(conn_info->state, ST_CLOSING2);
+                        dispatch_SSL_shutdown(fd, 0, conn_info);
+                } else if (conn_info->state == ST_CLOSING2) {
+                        /* abort shutdown, jump to close TCP below */
+                } else
+                        DPRINTF(D_TLS, "Unexpected connection state %d\n", conn_info->state);
+                        /* and abort here too*/
         } else if (rc == -1) {
                 error = tls_examine_error("SSL_shutdown()",
                         conn_info->sslptr, NULL, rc);
@@ -1682,6 +1710,17 @@ void dispatch_SSL_shutdown(int fd, short event, void *arg)
         }
         if (conn_info->retrying)
                 conn_info->retrying = false;
+        if ((conn_info->state != ST_TLS_EST)
+         && (conn_info->state != ST_CLOSING0)
+         && (conn_info->state != ST_CLOSING1)) {
+                if (shutdown(fd, SHUT_RDWR) == -1)
+                        DPRINTF((D_TLS|D_NET), "Unable to cleanly shutdown TCP socket %d: %s\n", fd, strerror(errno));
+                if (close(fd) == -1)
+                        DPRINTF((D_TLS|D_NET), "Unable to cleanly close socket %d: %s\n", fd, strerror(errno));
+                ST_CHANGE(conn_info->state, ST_NONE);
+                FREE_SSL(conn_info->sslptr);                
+         }
+
 }
 
 

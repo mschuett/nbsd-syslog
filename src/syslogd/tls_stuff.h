@@ -72,13 +72,15 @@
 #define TLS_GENCERT_DAYS   365
 
 /* connection states, currently for outgoing connections only */
-#define ST_NONE       0
-#define ST_TCP_EST    1
-#define ST_CLOSING    2
-#define ST_CONNECTING 4
-#define ST_EOF        8
-#define ST_WRITING   16
-#define ST_TLS_EST   32
+#define ST_NONE        0
+#define ST_TCP_EST     1
+#define ST_CLOSING0    2
+#define ST_CLOSING1    4
+#define ST_CLOSING2    8
+#define ST_CONNECTING 16
+#define ST_EOF        32
+#define ST_WRITING    64
+#define ST_TLS_EST   128
 
 #define ST_CHANGE(x, y) do { DPRINTF(D_TLS, "Change state %p to %d\n", &(x), (y)); \
                              (x) = (y); } while (0)

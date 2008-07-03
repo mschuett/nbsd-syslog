@@ -162,6 +162,7 @@ struct  filed consfile;
 
 int     Debug = D_NONE;         /* debug flag */
 int     daemonized = 0;         /* we are not daemonized yet */
+char    *LocalFQDN;             /* our FQDN */
 char    LocalHostName[MAXHOSTNAMELEN];  /* our hostname */
 char    oldLocalHostName[MAXHOSTNAMELEN];/* previous hostname */
 char    *LocalDomain;           /* our local domain name */
@@ -193,6 +194,7 @@ void    die(int fd, short event, void *ev);   /* SIGTERM kevent dispatch routine
 void    domark(int fd, short event, void *ev);/* timer kevent dispatch routine */
 void    fprintlog(struct filed *, int, char *, struct buf_msg *, struct buf_queue *);
 int     getmsgbufsize(void);
+char   *getLocalFQDN(void);
 struct socketEvent* socksetup(int, const char *);
 void    init(int fd, short event, void *ev);  /* SIGHUP kevent dispatch routine */
 void    logerror(const char *, ...);
@@ -656,7 +658,7 @@ dispatch_read_funix(int fd, short event, void *ev)
             (struct sockaddr *)&fromunix, &sunlen);
         if (rv > 0) {
                 linebuf[rv] = '\0';
-                printline(LocalHostName, linebuf, 0);
+                printline(LocalFQDN, linebuf, 0);
         } else if (rv < 0 && errno != EINTR) {
                 logerror("recvfrom() unix `%.*s'",
                         myname.sun_len, myname.sun_path);
@@ -873,7 +875,7 @@ printsys(char *msg)
                          * linebufsize = getmsgbufsize()   */
                         cplen = buffer->msgsize;
                 buffer->msglen = strlcpy(buffer->msg, p, cplen);
-                buffer->host = LocalHostName;
+                buffer->host = LocalFQDN;
                 logmsg(buffer);
                 buf_msg_free(buffer);
                 p = q;
@@ -1302,7 +1304,7 @@ fprintlog(struct filed *f, int flags, char *msg, struct buf_msg *buffer, struct 
                  * check for local vs remote messages
                  * (from FreeBSD PR#bin/7055)
                  */
-                if (strcasecmp(f->f_prevhost, LocalHostName)) {
+                if (strcasecmp(f->f_prevhost, LocalFQDN)) {
                         l = snprintf(line, msglen,
                                      "<%d>%.15s [%s]: %s",
                                      f->f_prevpri, (char *) iov[0].iov_base,
@@ -1775,7 +1777,7 @@ domark(int fd, short event, void *ev)
         now = time((time_t *)NULL);
         MarkSeq += TIMERINTVL;
         if (MarkSeq >= MarkInterval) {
-                logmsg_async(LOG_INFO, markline, LocalHostName, ADDDATE|MARK);
+                logmsg_async(LOG_INFO, markline, LocalFQDN, ADDDATE|MARK);
                 MarkSeq = 0;
         }
 
@@ -1851,7 +1853,7 @@ logerror(const char *fmt, ...)
                 (void)snprintf(buf, sizeof(buf), "syslogd: %s", tmpbuf);
 
         if (daemonized) 
-                logmsg_async(LOG_SYSLOG|LOG_ERR, buf, LocalHostName, ADDDATE);
+                logmsg_async(LOG_SYSLOG|LOG_ERR, buf, LocalFQDN, ADDDATE);
         if (!daemonized && Debug)
                 DPRINTF(D_MISC, "%s\n", buf);
         if (!daemonized && !Debug)
@@ -1876,7 +1878,7 @@ loginfo(const char *fmt, ...)
         (void)snprintf(buf, sizeof(buf), "syslogd: %s", tmpbuf);
 
         if (daemonized) 
-                logmsg_async(LOG_SYSLOG|LOG_INFO, buf, LocalHostName, ADDDATE);
+                logmsg_async(LOG_SYSLOG|LOG_INFO, buf, LocalFQDN, ADDDATE);
         if (!daemonized && Debug)
                 DPRINTF(D_MISC, "%s\n", buf);
         if (!daemonized && !Debug)
@@ -1969,7 +1971,6 @@ init(int fd, short event, void *ev)
         char cline[LINE_MAX];
         char prog[NAME_MAX + 1];
         char host[MAXHOSTNAMELEN];
-        char hostMsg[2*MAXHOSTNAMELEN + 40];
         unsigned int linenum;
         bool found_keyword;
 #ifndef DISABLE_TLS
@@ -2008,14 +2009,18 @@ init(int fd, short event, void *ev)
 
         DPRINTF((D_EVENT|D_CALL), "init\n");
 
-        (void)strlcpy(oldLocalHostName, LocalHostName,
-                      sizeof(oldLocalHostName));
-        (void)gethostname(LocalHostName, sizeof(LocalHostName));
-        if ((p = strchr(LocalHostName, '.')) != NULL) {
-                *p++ = '\0';
+        /* get FQDN and hostname/domain */
+        if (LocalFQDN)
+                (void)strlcpy(oldLocalHostName, LocalFQDN, sizeof(oldLocalHostName));
+        FREEPTR(LocalFQDN);
+        LocalFQDN = getLocalFQDN();
+        if ((p = strchr(LocalFQDN, '.')) != NULL) {
                 LocalDomain = p;
-        } else
+                (void)strlcpy(LocalHostName, LocalFQDN, p-LocalFQDN);
+        } else {
                 LocalDomain = "";
+                (void)strlcpy(LocalHostName, LocalFQDN, sizeof(LocalHostName));
+        }
         LocalDomainLen = strlen(LocalDomain);
 
         Initialized = 0;
@@ -2262,6 +2267,8 @@ init(int fd, short event, void *ev)
                                 strcpy(host, "*");
                                 continue;
                         }
+                        /* the +hostname expression will continue
+                         * to use the LocalHostName, not the FQDN */
                         for (i = 1; i < MAXHOSTNAMELEN - 1; i++) {
                                 if (*p == '@') {
                                         (void)strncpy(&host[i], LocalHostName,
@@ -2381,10 +2388,6 @@ init(int fd, short event, void *ev)
                 DPRINTF(D_PARSE, "Accepting peer certificate with fingerprint: \"%s\"\n", cred->data);
         }
 
-        if (tls_opt.x509verify
-         && (   !strcasecmp(tls_opt.x509verify, "off")
-             || !strcasecmp(tls_opt.x509verify, "opt")))
-                loginfo("insecure configuration, peer authentication disabled");
         DPRINTF((D_NET|D_TLS), "Preparing sockets for TLS\n");
         TLS_Listen_Set = socksetup_tls(PF_UNSPEC, tls_opt.bindhost, tls_opt.bindport);
 
@@ -2406,13 +2409,9 @@ init(int fd, short event, void *ev)
          * Log a change in hostname, but only on a restart (we detect this
          * by checking to see if we're passed a kevent).
          */
-        if (ev != NULL && strcmp(oldLocalHostName, LocalHostName) != 0) {
-                (void)snprintf(hostMsg, sizeof(hostMsg),
-                    "host name changed, \"%s\" to \"%s\"",
+        if (ev != NULL && strcmp(oldLocalHostName, LocalHostName) != 0)
+                loginfo("host name changed, \"%s\" to \"%s\"",
                     oldLocalHostName, LocalHostName);
-                loginfo(hostMsg);
-                DPRINTF(D_MISC, "%s\n", hostMsg);
-        }
 }
 
 /*
@@ -2710,6 +2709,30 @@ getmsgbufsize(void)
 #else
         return 16368;  /* value on my NetBSD/i386 */
 #endif /* !_NO_NETBSD_USR_SRC_ */
+}
+
+/*
+ * Retrieve the hostname, via sysctl.
+ */
+char *
+getLocalFQDN(void)
+{
+        int mib[2];
+        char *hostname;
+        size_t len;
+
+        mib[0] = CTL_KERN;
+        mib[1] = KERN_HOSTNAME;
+        sysctl(mib, 2, NULL, &len, NULL, 0);
+
+        if (!(hostname = malloc(len))) {
+                logerror("Unable to allocate memory");
+                die(0,0,NULL);
+        } else if (sysctl(mib, 2, hostname, &len, NULL, 0) == -1) {
+                        DPRINTF(D_MISC, "Couldn't get kern.hostname\n");
+                        (void)gethostname(hostname, sizeof(len));
+        }
+        return hostname;
 }
 
 struct socketEvent *

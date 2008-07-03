@@ -266,7 +266,7 @@ struct tls_global_options_t {
         char *certfile;     /* file with own certificate */
         char *CAfile;       /* file with CA certificate */
         char *CAdir;        /* alternative: path to directory with CA certs */
-        char *x509verify;   /* level of peer verification */
+        char *x509verify;    /* level of peer verification */
         char *bindhost;     /* hostname/IP to bind to */ 
         char *bindport;     /* port/service to bind to */
         char *server;  /* if !NULL: do not listen to incoming TLS */

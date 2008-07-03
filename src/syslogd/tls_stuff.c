@@ -36,6 +36,7 @@ extern char  *linebuf;
 extern size_t linebufsize;
 extern int    RemoteAddDate; 
 extern char  *timestamp;
+extern char  *LocalFQDN;
 
 extern void    logerror(const char *, ...);
 extern void    loginfo(const char *, ...);
@@ -49,6 +50,22 @@ extern struct filed *get_f_by_conninfo(struct tls_conn_settings *conn_info);
 extern void tls_send_msg_free(struct tls_send_msg *msg);
 extern bool message_queue_add(struct filed *, struct buf_msg *);
 
+inline unsigned int getVerifySetting(const char *x509verifystring);
+
+
+inline unsigned int
+getVerifySetting(const char *x509verifystring)
+{
+        if (!x509verifystring)
+                return X509VERIFY_ALWAYS;
+
+        if (!strcasecmp(x509verifystring, "off"))
+                return X509VERIFY_NONE;
+        else if (!strcasecmp(x509verifystring, "opt"))
+                return X509VERIFY_IFPRESENT;
+        else
+                return X509VERIFY_ALWAYS;
+}
 /*
  * init OpenSSL lib and one context. returns NULL on error, otherwise SSL_CTX
  * all pointer arguments may be NULL (at least for clients)
@@ -58,17 +75,17 @@ SSL_CTX *
 init_global_TLS_CTX(const char *keyfilename, const char *certfilename,
                 const char *CAfile, const char *CApath, const char *strx509verify)
 {
-        FILE *certfile, *keyfile;
         SSL_CTX *ctx;
-        int x509verify = X509VERIFY_ALWAYS;
+        unsigned int x509verify = X509VERIFY_ALWAYS;
         EVP_PKEY *pkey = NULL;
         X509     *cert = NULL;
+        FILE *certfile = NULL;
+        FILE *keyfile  = NULL;
         
-        if (strx509verify && !strcasecmp(strx509verify, "off"))
-                x509verify = X509VERIFY_NONE;
-        else if (strx509verify && !strcasecmp(strx509verify, "opt"))
-                x509verify = X509VERIFY_IFPRESENT;
-        
+        x509verify = getVerifySetting(strx509verify);
+        if (x509verify != X509VERIFY_ALWAYS)
+                loginfo("insecure configuration, peer authentication disabled");
+
         SSL_load_error_strings();
         (void) SSL_library_init();
         OpenSSL_add_all_digests();
@@ -78,11 +95,10 @@ init_global_TLS_CTX(const char *keyfilename, const char *certfilename,
                 die(0,0,NULL);
         }
 
-        if (!keyfilename && !certfilename) {
-                /* none configured, use default */
+        if (!keyfilename)
                 keyfilename = DEFAULT_X509_KEYFILE;
+        if (!certfilename)
                 certfilename = DEFAULT_X509_CERTFILE;
-        }
         
         /* TODO: would it be better to use stat() for access checking? */
         if (!(keyfile  = fopen(keyfilename,  "r"))
@@ -457,12 +473,12 @@ deny_cert(struct tls_conn_settings *conn_info, char *cur_fingerprint, char *cur_
 {
         loginfo("Deny %s certificate from %s. "
                 "Subject is \"%s\", fingerprint is \"%s\"",
-                conn_info->incoming ? "server" : "client", 
+                conn_info->incoming ? "client" : "server", 
                 conn_info->hostname,
                 cur_subjectline, cur_fingerprint);
         FREEPTR(cur_fingerprint);
         FREEPTR(cur_subjectline);
-        return 0;        
+        return 0;
 }
 
 /*
@@ -1024,15 +1040,8 @@ parse_tls_destination(char *p, struct filed *f)
                                 q = p += sizeof("verify=")-1;
                                 if (*p == '\"') { p++; q++; }  /* "" are optional */
                                 while (isalpha((unsigned char)*q)) q++;
-                                if ((q-p > 1) && !strncasecmp("off", p, sizeof("off")-1))
-                                        f->f_un.f_tls.tls_conn->x509verify = X509VERIFY_NONE;
-                                else if ((q-p > 1) && !strncasecmp("opt", p, sizeof("opt")-1))
-                                        f->f_un.f_tls.tls_conn->x509verify = X509VERIFY_IFPRESENT;
-                                else if ((q-p > 1) && !strncasecmp("on", p, sizeof("on")-1))
-                                        f->f_un.f_tls.tls_conn->x509verify = X509VERIFY_ALWAYS;
-                                else {
-                                        logerror("unknown verify value %.*s", q-p, p);
-                                }
+                                f->f_un.f_tls.tls_conn->x509verify =
+                                                        getVerifySetting(p);
                                 if (*q == '\"') q++;  /* "" are optional */
                                 p = q;
                         }
@@ -1082,7 +1091,8 @@ tls_reconnect(int fd, short event, void *arg)
                 RECONNECT_BACKOFF(conn_info->reconnect);
         } else {
                 assert(conn_info->state == ST_TLS_EST
-                    || conn_info->state == ST_CONNECTING);
+                    || conn_info->state == ST_CONNECTING
+                    || conn_info->state == ST_NONE);
         }        
 }
 /*
@@ -1232,9 +1242,9 @@ dispatch_accept_socket(int fd, short event, void *ev)
         /* store connection details inside ssl object, used to verify
          * cert and immediately match against hostname */
         conn_info->hostname = peername;
-        conn_info->x509verify = X509VERIFY_ALWAYS;
         conn_info->sslptr = ssl;
         conn_info->tls_opt = &tls_opt;
+        conn_info->x509verify = getVerifySetting(tls_opt.x509verify);
         conn_info->incoming = true;
         conn_info->event = allocev();
         conn_info->retryevent = allocev();
@@ -1802,8 +1812,7 @@ mk_x509_cert(X509 **x509p, EVP_PKEY **pkeyp, int bits, int serial, int days)
     RSA            *rsa;
     X509_NAME      *name = NULL;
     X509_EXTENSION *ex = NULL;
-    /* TODO: cannot access LocalHostName from syslogd.c? */
-    char *hostname = "localhost";
+    char *hostname = LocalFQDN;
 
     printf("mk_x509_cert(%p, %p, %d, %d, %d)\n", x509p, pkeyp, bits, serial, days);
     
@@ -1843,7 +1852,8 @@ mk_x509_cert(X509 **x509p, EVP_PKEY **pkeyp, int bits, int serial, int days)
      * string type and performing checks on its length. Normally we'd check
      * the return value for errors...
      */
-    X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, (unsigned char *) "The NetBSD Project", -1, -1, 0);
+    X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
+        (unsigned char *) hostname, -1, -1, 0);
 
     X509_set_issuer_name(x, name);
 
@@ -1858,7 +1868,7 @@ mk_x509_cert(X509 **x509p, EVP_PKEY **pkeyp, int bits, int serial, int days)
     X509_EXTENSION_free(ex);
 
     ex = X509V3_EXT_conf_nid(NULL, NULL, NID_netscape_comment,
-                             "auto-generated by syslogd");
+                             "auto-generated by the NetBSD syslogd");
     X509_add_ext(x, ex, -1);
     X509_EXTENSION_free(ex);
 

@@ -196,6 +196,7 @@ int     getmsgbufsize(void);
 struct socketEvent* socksetup(int, const char *);
 void    init(int fd, short event, void *ev);  /* SIGHUP kevent dispatch routine */
 void    logerror(const char *, ...);
+void    loginfo(const char *, ...);
 void    logmsg_async(const int, const char *, const char *, const int);
 void    logmsg(struct buf_msg *);
 void    log_deadchild(pid_t, int, const char *);
@@ -1859,6 +1860,29 @@ logerror(const char *fmt, ...)
         logerror_running = 0;
 }
 
+/*
+ * Print syslogd info some place.
+ */
+void
+loginfo(const char *fmt, ...)
+{
+        va_list ap;
+        char tmpbuf[BUFSIZ];
+        char buf[BUFSIZ];
+
+        va_start(ap, fmt);
+        (void)vsnprintf(tmpbuf, sizeof(tmpbuf), fmt, ap);
+        va_end(ap);
+        (void)snprintf(buf, sizeof(buf), "syslogd: %s", tmpbuf);
+
+        if (daemonized) 
+                logmsg_async(LOG_SYSLOG|LOG_INFO, buf, LocalHostName, ADDDATE);
+        if (!daemonized && Debug)
+                DPRINTF(D_MISC, "%s\n", buf);
+        if (!daemonized && !Debug)
+                printf("%s\n", buf);
+}
+
 void
 die(int fd, short event, void *ev)
 {
@@ -2360,7 +2384,7 @@ init(int fd, short event, void *ev)
         if (tls_opt.x509verify
          && (   !strcasecmp(tls_opt.x509verify, "off")
              || !strcasecmp(tls_opt.x509verify, "opt")))
-                logerror("insecure configuration, peer authentication disabled");
+                loginfo("insecure configuration, peer authentication disabled");
         DPRINTF((D_NET|D_TLS), "Preparing sockets for TLS\n");
         TLS_Listen_Set = socksetup_tls(PF_UNSPEC, tls_opt.bindhost, tls_opt.bindport);
 
@@ -2377,17 +2401,16 @@ init(int fd, short event, void *ev)
         }
 #endif /* !DISABLE_TLS */
 
-        logmsg_async(LOG_SYSLOG|LOG_INFO, "syslogd: restart", LocalHostName, ADDDATE);
-        DPRINTF(D_MISC, "syslogd: restarted\n");
+        loginfo("restart");
         /*
          * Log a change in hostname, but only on a restart (we detect this
          * by checking to see if we're passed a kevent).
          */
         if (ev != NULL && strcmp(oldLocalHostName, LocalHostName) != 0) {
                 (void)snprintf(hostMsg, sizeof(hostMsg),
-                    "syslogd: host name changed, \"%s\" to \"%s\"",
+                    "host name changed, \"%s\" to \"%s\"",
                     oldLocalHostName, LocalHostName);
-                logmsg_async(LOG_SYSLOG|LOG_INFO, hostMsg, LocalHostName, ADDDATE);
+                loginfo(hostMsg);
                 DPRINTF(D_MISC, "%s\n", hostMsg);
         }
 }

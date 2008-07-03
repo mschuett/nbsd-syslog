@@ -38,6 +38,7 @@ extern int    RemoteAddDate;
 extern char  *timestamp;
 
 extern void    logerror(const char *, ...);
+extern void    loginfo(const char *, ...);
 extern void    printline(char *, char *, int);
 extern void    die(int fd, short event, void *ev);
 extern struct event *allocev(void);
@@ -96,7 +97,7 @@ init_global_TLS_CTX(const char *keyfilename, const char *certfilename,
                         die(0,0,NULL);
                 }
 
-                logerror("Generating a self-signed certificate and writing "
+                loginfo("Generating a self-signed certificate and writing "
                         "files \"%s\" and \"%s\"",keyfilename, certfilename);
                 if (!mk_x509_cert(&cert, &pkey, TLS_GENCERT_BITS,
                         TLS_GENCERT_SERIAL, TLS_GENCERT_DAYS)) {
@@ -153,7 +154,7 @@ init_global_TLS_CTX(const char *keyfilename, const char *certfilename,
                 get_commonname(cert, &cn);
         }
         DPRINTF(D_TLS, "loaded and checked own certificate\n");
-        logerror("Initialize SSL context using library \"%s\"."
+        loginfo("Initialize SSL context using library \"%s\"."
                 " Load certificate from file \"%s\" with CN "
                 "\"%s\" and fingerprint \"%s\"",
                 SSLeay_version(SSLEAY_VERSION),
@@ -445,7 +446,7 @@ accept_cert(const char* reason, struct tls_conn_settings *conn_info, char *cur_f
         if (cur_subjectline)
                 conn_info->subject = cur_subjectline;
 
-        logerror("Established connection and accepted %s certificate "
+        loginfo("Established connection and accepted %s certificate "
                 "from %s due to %s. Subject is \"%s\", fingerprint is "
                 "\"%s\"", conn_info->incoming ? "server" : "client", 
                 conn_info->hostname, reason, cur_subjectline, cur_fingerprint);
@@ -454,7 +455,7 @@ accept_cert(const char* reason, struct tls_conn_settings *conn_info, char *cur_f
 int
 deny_cert(struct tls_conn_settings *conn_info, char *cur_fingerprint, char *cur_subjectline)
 {
-        logerror("Deny %s certificate from %s. "
+        loginfo("Deny %s certificate from %s. "
                 "Subject is \"%s\", fingerprint is \"%s\"",
                 conn_info->incoming ? "server" : "client", 
                 conn_info->hostname,
@@ -1141,7 +1142,7 @@ dispatch_accept_tls(int fd, short event, void *arg)
         event_set(conn_info->event, tls_in->socket, EV_READ | EV_PERSIST, dispatch_read_tls, conn_info->event);
         EVENT_ADD(conn_info->event);
 
-        logerror("established TLS connection from %s with certificate "
+        loginfo("established TLS connection from %s with certificate "
                 "%s (%s)", conn_info->hostname, conn_info->subject,
                 conn_info->fingerprint);
         /*

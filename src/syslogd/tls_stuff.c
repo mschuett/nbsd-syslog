@@ -5,9 +5,6 @@
  * checks from http://tools.ietf.org/html/draft-ietf-syslog-transport-tls-12
  * (without hostname wildcards)
  *
- * TODO: trans-port-tls12+ (Mail from jsalowey on 080523) requires
- *       server and client to be able to generate self-signed certificates
- *
  * Martin Schütte
  */
 
@@ -762,7 +759,7 @@ dispatch_SSL_connect(int fd, short event, void *arg)
  * establish TLS connection 
  */
 bool
-tls_connect(SSL_CTX *context, struct tls_conn_settings *conn_info)
+tls_connect(struct tls_conn_settings *conn_info)
 {
         struct addrinfo hints, *res, *res1;
         int    error, rc, sock;
@@ -774,10 +771,10 @@ tls_connect(SSL_CTX *context, struct tls_conn_settings *conn_info)
         assert(conn_info->state == ST_NONE);
         
         if(!tls_opt.global_TLS_CTX)
-        tls_opt.global_TLS_CTX = init_global_TLS_CTX(
-                tls_opt.keyfile, tls_opt.certfile,
-                tls_opt.CAfile, tls_opt.CAdir,
-                tls_opt.x509verify);
+                tls_opt.global_TLS_CTX = init_global_TLS_CTX(
+                        tls_opt.keyfile, tls_opt.certfile,
+                        tls_opt.CAfile, tls_opt.CAdir,
+                        tls_opt.x509verify);
         
         memset(&hints, 0, sizeof(hints));
         hints.ai_family = AF_UNSPEC;
@@ -787,10 +784,6 @@ tls_connect(SSL_CTX *context, struct tls_conn_settings *conn_info)
         error = getaddrinfo(conn_info->hostname, (conn_info->port ? conn_info->port : SERVICENAME), &hints, &res);
         if (error) {
                 logerror(gai_strerror(error));
-                return false;
-        }
-        if (!context) {
-                logerror("No TLS context in tls_connect()");
                 return false;
         }
         
@@ -811,7 +804,7 @@ tls_connect(SSL_CTX *context, struct tls_conn_settings *conn_info)
                 }
                 ST_CHANGE(conn_info->state, ST_TCP_EST);
 
-                if (!(ssl = SSL_new(context))) {
+                if (!(ssl = SSL_new(tls_opt.global_TLS_CTX))) {
                         ERR_error_string_n(ERR_get_error(), buf, sizeof(buf));
                         DPRINTF(D_TLS, "Unable to establish TLS: %s\n", buf);
                         close(sock);
@@ -1080,11 +1073,10 @@ tls_reconnect(int fd, short event, void *arg)
         FREEPTR(conn_info->event);
         FREEPTR(conn_info->retryevent);
 
-        if (!tls_connect(tls_opt.global_TLS_CTX, conn_info)) {
+        if (!tls_connect(conn_info)) {
                 logerror("Unable to connect to TLS server %s, "
                         "try again in %d sec", conn_info->hostname,
                         conn_info->reconnect);
-                /* TODO: slow backoff algorithm */
                 schedule_event(&conn_info->event,
                         &((struct timeval){conn_info->reconnect, 0}),
                         tls_reconnect, conn_info);

@@ -2394,7 +2394,7 @@ init(int fd, short event, void *ev)
         for (f = Files; f; f = f->f_next) {
                 if (f->f_type != F_TLS)
                         continue;
-                if (!tls_connect(tls_opt.global_TLS_CTX, f->f_un.f_tls.tls_conn)) {
+                if (!tls_connect(f->f_un.f_tls.tls_conn)) {
                         logerror("Unable to connect to TLS server %s", f->f_un.f_tls.tls_conn->hostname);
                         /* Reconnect after x seconds  */
                         schedule_event(&f->f_un.f_tls.tls_conn->event,

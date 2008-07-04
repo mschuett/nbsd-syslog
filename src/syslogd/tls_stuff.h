@@ -163,7 +163,7 @@ void dispatch_accept_socket(int, short, void *);
 void dispatch_accept_tls(int, short, void *);
 void dispatch_read_tls(int, short, void *);
 void dispatch_eof_tls(int, short, void *);
-bool tls_connect(SSL_CTX *, struct tls_conn_settings *);
+bool tls_connect(struct tls_conn_settings *);
 void dispatch_SSL_connect(int, short, void *);
 void tls_reconnect(int, short, void *);
 bool tls_send(struct filed *, struct buf_msg *);

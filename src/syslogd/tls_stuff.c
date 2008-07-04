@@ -23,6 +23,36 @@ const char *SSL_ERRCODE[] = {
         "SSL_ERROR_WANT_CONNECT",
         "SSL_ERROR_WANT_ACCEPT"};
 
+/* TLS connection states */
+#define ST_NONE       0
+#define ST_TLS_EST    1
+#define ST_TCP_EST    2
+#define ST_CONNECTING 3
+#define ST_ACCEPTING  4  
+#define ST_READING    5
+#define ST_WRITING    6
+#define ST_EOF        7
+#define ST_CLOSING0   8
+#define ST_CLOSING1   9
+#define ST_CLOSING2  10
+/* and for output */
+const char *TLS_CONN_STATES[] = {
+        "ST_NONE",
+        "ST_TLS_EST",
+        "ST_TCP_EST",
+        "ST_CONNECTING",
+        "ST_ACCEPTING",
+        "ST_READING",
+        "ST_WRITING",
+        "ST_EOF",
+        "ST_CLOSING0",
+        "ST_CLOSING1",
+        "ST_CLOSING2"};
+
+#define ST_CHANGE(x, y) do { if ((x) != (y)) { \
+                DPRINTF(D_TLS, "Change state %p: %s --> %s\n", \
+                        &(x), TLS_CONN_STATES[x], TLS_CONN_STATES[y]); \
+                (x) = (y); } } while (0)
 
 /* definitions in syslogd.c */
 extern short int Debug;
@@ -712,9 +742,6 @@ dispatch_SSL_connect(int fd, short event, void *arg)
                 error = tls_examine_error("SSL_connect()",
                         conn_info->sslptr, NULL, rc);
                 switch (error) {
-                        /* no need to change retrying-bit, as retrying
-                         * is the only way to dispatch this function
-                         */
                         case TLS_RETRY_READ:
                                 event_set(conn_info->retryevent, fd, EV_READ,
                                         dispatch_SSL_connect, conn_info);
@@ -731,7 +758,6 @@ dispatch_SSL_connect(int fd, short event, void *arg)
                                         "to \"%s\" -- wrong certificate "
                                         "configured?", conn_info->hostname);
                                 ST_CHANGE(conn_info->state, ST_NONE);
-                                conn_info->retrying = false;
                                 conn_info->reconnect = 5*TLS_RECONNECT_SEC;
                                 schedule_event(&conn_info->event,
                                         &((struct timeval)
@@ -743,7 +769,6 @@ dispatch_SSL_connect(int fd, short event, void *arg)
         }
         /* else */
         ST_CHANGE(conn_info->state, ST_TLS_EST);
-        conn_info->retrying = false;
         conn_info->reconnect = TLS_RECONNECT_SEC;
         event_set(conn_info->event, fd, EV_READ, dispatch_eof_tls, conn_info);
         EVENT_ADD(conn_info->event);
@@ -1101,14 +1126,12 @@ dispatch_accept_tls(int fd, short event, void *arg)
 
         DPRINTF((D_TLS|D_CALL), "dispatch_accept_tls(conn_info@%p, fd %d)\n", conn_info, fd);
         
+        ST_CHANGE(conn_info->state, ST_ACCEPTING);
         rc = SSL_accept(conn_info->sslptr);
         if (0 >= rc) {
                 error = tls_examine_error("SSL_accept()",
                         conn_info->sslptr, NULL, rc);
                 switch (error) {
-                        /* no need to change retrying-bit, as retrying
-                         * is the only way to dispatch this function
-                         */
                         case TLS_RETRY_READ:
                                 event_set(conn_info->retryevent, fd, EV_READ,
                                         dispatch_accept_tls, conn_info);
@@ -1126,6 +1149,7 @@ dispatch_accept_tls(int fd, short event, void *arg)
                 return;
         }
         /* else */
+        ST_CHANGE(conn_info->state, ST_TLS_EST);
         if (!(tls_in = calloc(1, sizeof(*tls_in)))
          || !(tls_in->inbuf = malloc(TLS_MIN_LINELENGTH))) {
                 logerror("Unable to allocate memory for accepted connection");
@@ -1140,7 +1164,6 @@ dispatch_accept_tls(int fd, short event, void *arg)
         tls_in->inbuflen = TLS_MIN_LINELENGTH;
         SLIST_INSERT_HEAD(&TLS_Incoming_Head, tls_in, entries);
 
-        conn_info->retrying = false;
         event_set(conn_info->event, tls_in->socket, EV_READ | EV_PERSIST, dispatch_read_tls, conn_info->event);
         EVENT_ADD(conn_info->event);
 
@@ -1243,9 +1266,9 @@ dispatch_accept_socket(int fd, short event, void *ev)
         SSL_set_app_data(ssl, conn_info);
         SSL_set_accept_state(ssl);
 
+        ST_CHANGE(conn_info->state, ST_TCP_EST);
         DPRINTF(D_TLS, "socket connection from %s accept()ed with fd %d, " \
                 "calling SSL_accept()...\n",  peername, newsock);
-        
         dispatch_accept_tls(newsock, 0, conn_info);
 }
 
@@ -1295,6 +1318,7 @@ dispatch_read_tls(int fd_lib, short event, void *ev)
         int_fast16_t rc;
         struct TLS_Incoming_Conn *c;
         int fd = EVENT_FD(((struct event *)ev));
+        bool retrying;
 
         DPRINTF((D_TLS|D_EVENT|D_CALL), "active TLS socket %d\n", fd);
 
@@ -1312,6 +1336,8 @@ dispatch_read_tls(int fd_lib, short event, void *ev)
 
         DPRINTF(D_TLS, "calling SSL_read(%p, %p, %d)\n", c->ssl,
                 &(c->inbuf[c->read_pos]), c->inbuflen - c->read_pos);
+        retrying = (c->tls_conn->state == ST_READING);
+        ST_CHANGE(c->tls_conn->state, ST_READING);
         rc = SSL_read(c->ssl, &(c->inbuf[c->read_pos]), c->inbuflen - c->read_pos);
         if (rc <= 0) {
                 error = tls_examine_error("SSL_read()", c->ssl, c->tls_conn, rc);
@@ -1320,10 +1346,8 @@ dispatch_read_tls(int fd_lib, short event, void *ev)
                                 /* normal event loop will call us again */
                                 break;
                         case TLS_RETRY_WRITE:
-                                if (!c->tls_conn->retrying) {
-                                        c->tls_conn->retrying = true;
+                                if (!retrying)
                                         event_del(c->tls_conn->event);
-                                }
                                 event_set(c->tls_conn->retryevent, fd,
                                         EV_WRITE, dispatch_read_tls,
                                         &c->tls_conn);
@@ -1346,10 +1370,9 @@ dispatch_read_tls(int fd_lib, short event, void *ev)
                 c->errorcount = 0;
                 c->read_pos += rc;
         }
-        if (c->tls_conn->retrying) {
-                c->tls_conn->retrying = false;
+        ST_CHANGE(c->tls_conn->state, ST_TLS_EST);
+        if (retrying)
                 EVENT_ADD(c->tls_conn->event);
-        }
         tls_split_messages(c);
 }
 
@@ -1564,6 +1587,7 @@ dispatch_tls_send(int fd, short event, void *arg)
         struct tls_conn_settings *conn_info = sendmsg->f->f_un.f_tls.tls_conn;
         struct buf_msg *buffer = sendmsg->buffer;
         int rc, error;
+        bool retrying;
         
         DPRINTF((D_TLS|D_CALL), "dispatch_tls_send(f=%p, buffer=%p, "
                 "line=\"%.*s%s\", len=%d, offset=%d) to %sconnected dest.\n",
@@ -1575,6 +1599,7 @@ dispatch_tls_send(int fd, short event, void *arg)
         assert(conn_info->state == ST_TLS_EST
             || conn_info->state == ST_WRITING);
 
+        retrying = (conn_info->state == ST_WRITING);
         ST_CHANGE(conn_info->state, ST_WRITING);
         rc = SSL_write(conn_info->sslptr,
                 (buffer->tlsline + sendmsg->offset),
@@ -1584,13 +1609,10 @@ dispatch_tls_send(int fd, short event, void *arg)
                         conn_info->sslptr,
                         conn_info, rc);
                 switch (error) {
-                        /* currently only called by retrying, so no checking here */
                         case TLS_RETRY_READ:
                                 /* collides with eof event */
-                                if (!conn_info->retrying) {
+                                if (!retrying)
                                         event_del(conn_info->event);
-                                        conn_info->retrying = true;
-                                }
                                 event_set(conn_info->retryevent, fd, EV_READ,
                                         dispatch_tls_send, arg);
                                 RETRYEVENT_ADD(conn_info->retryevent);
@@ -1616,10 +1638,8 @@ dispatch_tls_send(int fd, short event, void *arg)
                         "%d bytes\n", rc, (buffer->tlslen - sendmsg->offset));
                 sendmsg->offset += rc;
                 /* try again */
-                if (conn_info->retrying) {
-                        conn_info->retrying = false;
+                if (retrying)
                         EVENT_ADD(conn_info->event);
-                }
                 buffer->refcount++;
                 dispatch_tls_send(0, 0, sendmsg);
                 return;
@@ -1632,13 +1652,8 @@ dispatch_tls_send(int fd, short event, void *arg)
                 DPRINTF((D_TLS|D_DATA), "unreachable code after SSL_write()\n");
                 ST_CHANGE(conn_info->state, ST_TLS_EST);
         }
-        if (conn_info->retrying) {
-                conn_info->retrying = false;
-                if (conn_info->event->ev_events)
-                        EVENT_ADD(conn_info->event);
-        }
-
-        
+        if (retrying && conn_info->event->ev_events)
+                EVENT_ADD(conn_info->event);
 }
 
 /*
@@ -1671,11 +1686,13 @@ void dispatch_SSL_shutdown(int fd, short event, void *arg)
 {
         struct tls_conn_settings *conn_info = (struct tls_conn_settings *) arg;
         int rc, error;
+        bool retrying;
         
         DPRINTF((D_TLS|D_CALL), "dispatch_SSL_shutdown(conn_info@%p, fd %d)\n", conn_info, fd);
-        if ((conn_info->state != ST_CLOSING0)
-         && (conn_info->state != ST_CLOSING1)
-         && (conn_info->state != ST_CLOSING2))
+        retrying = ((conn_info->state == ST_CLOSING0)
+                 || (conn_info->state == ST_CLOSING1)
+                 || (conn_info->state == ST_CLOSING2));
+        if (!retrying)
                 ST_CHANGE(conn_info->state, ST_CLOSING0);
 
         rc = SSL_shutdown(conn_info->sslptr);
@@ -1708,10 +1725,8 @@ void dispatch_SSL_shutdown(int fd, short event, void *arg)
                         conn_info->sslptr, NULL, rc);
                 switch (error) {
                         case TLS_RETRY_READ:
-                                if (!conn_info->retrying) {
-                                        conn_info->retrying = true;
+                                if (!retrying)
                                         event_del(conn_info->event);
-                                }
                                 event_set(conn_info->retryevent, fd,
                                         EV_READ, dispatch_SSL_shutdown,
                                         conn_info);
@@ -1719,10 +1734,8 @@ void dispatch_SSL_shutdown(int fd, short event, void *arg)
                                 return;
                                 break;
                         case TLS_RETRY_WRITE:
-                                if (!conn_info->retrying) {
-                                        conn_info->retrying = true;
+                                if (!retrying)
                                         event_del(conn_info->event);
-                                }
                                 event_set(conn_info->retryevent, fd,
                                         EV_WRITE, dispatch_SSL_shutdown,
                                         conn_info);
@@ -1735,21 +1748,13 @@ void dispatch_SSL_shutdown(int fd, short event, void *arg)
                                 break;
                 }
         }
-        if (conn_info->retrying)
-                conn_info->retrying = false;
         if ((conn_info->state != ST_TLS_EST)
          && (conn_info->state != ST_CLOSING0)
          && (conn_info->state != ST_CLOSING1)) {
-                if (shutdown(fd, SHUT_RDWR) == -1)
-                        DPRINTF((D_TLS|D_NET), "Unable to cleanly shutdown TCP socket %d: %s\n", fd, strerror(errno));
-                if (close(fd) == -1)
-                        DPRINTF((D_TLS|D_NET), "Unable to cleanly close socket %d: %s\n", fd, strerror(errno));
                 ST_CHANGE(conn_info->state, ST_NONE);
                 FREE_SSL(conn_info->sslptr);                
          }
-
 }
-
 
 /*
  * Close a SSL object

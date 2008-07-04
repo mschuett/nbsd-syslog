@@ -75,20 +75,6 @@
 #define TLS_GENCERT_SERIAL   1
 #define TLS_GENCERT_DAYS   365
 
-/* connection states, currently for outgoing connections only */
-#define ST_NONE        0
-#define ST_TCP_EST     1
-#define ST_CLOSING0    2
-#define ST_CLOSING1    4
-#define ST_CLOSING2    8
-#define ST_CONNECTING 16
-#define ST_EOF        32
-#define ST_WRITING    64
-#define ST_TLS_EST   128
-
-#define ST_CHANGE(x, y) do { DPRINTF(D_TLS, "Change state %p to %d\n", &(x), (y)); \
-                             (x) = (y); } while (0)
-
 /*
  * holds TLS related settings for one connection to be
  * included in the SSL object and available in callbacks
@@ -110,7 +96,6 @@ struct tls_conn_settings {
         SSL  *sslptr;        /* active SSL object             */
         struct event *event; /* event for read/write activity */
         struct event *retryevent;  /* event for retries       */
-        bool  retrying;      /* keeps state which event is active */
         char *hostname;      /* hostname or IP we connect to */
         char *port;          /* service name or port number  */
         char *subject;       /* configured hostname in cert  */

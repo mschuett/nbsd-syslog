@@ -1361,7 +1361,7 @@ dispatch_read_tls(int fd_lib, short event, void *ev)
                         case TLS_PERM_ERROR:
                                 /* there might be data in the inbuf, so only
                                  * mark for closing after message retrieval */
-                                c->closenow = 1;
+                                c->closenow = true;
                                 break;
                         default:break;
                 }
@@ -1370,10 +1370,16 @@ dispatch_read_tls(int fd_lib, short event, void *ev)
                 c->errorcount = 0;
                 c->read_pos += rc;
         }
-        ST_CHANGE(c->tls_conn->state, ST_TLS_EST);
         if (retrying)
                 EVENT_ADD(c->tls_conn->event);
         tls_split_messages(c);
+        if (c->closenow) {
+                free_tls_conn(c->tls_conn);
+                FREEPTR(c->inbuf);
+                SLIST_REMOVE(&TLS_Incoming_Head, c, TLS_Incoming_Conn, entries);
+                free(c);
+        } else
+                ST_CHANGE(c->tls_conn->state, ST_TLS_EST);
 }
 
 /* moved message splitting out of dispatching function.
@@ -1396,14 +1402,6 @@ tls_split_messages(struct TLS_Incoming_Conn *c)
                 "msg_start %d, msg_len %d, pos %d\n",
                 c->cur_msg_start, c->cur_msg_len, c->read_pos);
 
-        if(c->closenow && !c->read_pos) {
-                /* close socket */
-                free_tls_conn(c->tls_conn);
-                FREEPTR(c->inbuf);
-                SLIST_REMOVE(&TLS_Incoming_Head, c, TLS_Incoming_Conn, entries);
-                free(c);
-                return;
-        }
         if (!c->read_pos)
                 return;
                 
@@ -1465,6 +1463,7 @@ tls_split_messages(struct TLS_Incoming_Conn *c)
                  */
                 logerror("Unable to handle TLS length prefix. " \
                         "Protocol error? Closing connection now.");
+                c->read_pos = 0;
                 free_tls_conn(c->tls_conn);
                 SLIST_REMOVE(&TLS_Incoming_Head, c, TLS_Incoming_Conn, entries);
                 free(c);

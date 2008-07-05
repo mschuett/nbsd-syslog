@@ -195,7 +195,7 @@ int     deadq_remove(pid_t);
 int     decode(const char *, CODE *);
 void    die(int fd, short event, void *ev);   /* SIGTERM kevent dispatch routine */
 void    domark(int fd, short event, void *ev);/* timer kevent dispatch routine */
-void    fprintlog(struct filed *, int, char *, struct buf_msg *, struct buf_queue *);
+void    fprintlog(struct filed *, struct buf_msg *, struct buf_queue *);
 int     getmsgbufsize(void);
 char   *getLocalFQDN(void);
 struct socketEvent* socksetup(int, const char *);
@@ -927,7 +927,7 @@ printsys(char *msg)
                                 buffer->pri = n;
                                 is_printf = 0;
 	                        if (*p == '1')
-       	                        	bsdsyslog = false;
+       	                        	buffer->flags |= BSDSYSLOG;
                         }
                 }
                 if (is_printf) {
@@ -1198,8 +1198,10 @@ logmsg(struct buf_msg *buffer)
                 f->f_file = open(ctty, O_WRONLY, 0);
 
                 if (f->f_file >= 0) {
-                        (void)strncpy(f->f_lasttime, buffer->timestamp, BSD_TIMESTAMPLEN);
-                        fprintlog(f, buffer->flags, buffer->msg, NULL, NULL);
+                        buf_msg_free(f->f_prevmsg);
+                        buffer->refcount++;
+                        f->f_prevmsg = buffer;
+                        fprintlog(f, buffer, NULL);
                         (void)close(f->f_file);
                 }
                 (void)sigsetmask(omask);
@@ -1262,11 +1264,12 @@ logmsg(struct buf_msg *buffer)
                 /*
                  * suppress duplicate lines to this file unless NoRepeat
                  */
-                if ((buffer->flags & MARK) == 0 && buffer->msglen == f->f_prevlen &&
+                if ((buffer->flags & MARK) == 0 &&
+                     f->f_prevmsg &&
+                     buffer->msglen == f->f_prevmsg->msglen &&
                     !NoRepeat &&
-                    !strcmp(buffer->msg, f->f_prevline) &&
-                    !strcasecmp(buffer->host, f->f_prevhost)) {
-                        (void)strncpy(f->f_lasttime, buffer->timestamp, MAX_TIMESTAMPLEN);
+                    !strcmp(buffer->msg, f->f_prevmsg->msg) &&
+                    !strcasecmp(buffer->host, f->f_prevmsg->host)) {
                         f->f_prevcount++;
                         DPRINTF(D_DATA, "Msg repeated %d times, %ld sec of %d\n",
                             f->f_prevcount, (long)(now - f->f_time),
@@ -1278,95 +1281,74 @@ logmsg(struct buf_msg *buffer)
                          * in the future.
                          */
                         if (now > REPEATTIME(f)) {
-                                fprintlog(f, buffer->flags, (char *)NULL, buffer, NULL);
+                                fprintlog(f, buffer, NULL);
                                 BACKOFF(f);
                         }
                 } else {
                         /* new line, save it */
                         if (f->f_prevcount)
-                                /* TODO: sending this old line is not buffered */
-                                fprintlog(f, 0, (char *)NULL, NULL, NULL);
+                                fprintlog(f, NULL, NULL);
                         f->f_repeatcount = 0;
-                        f->f_prevpri = buffer->pri;
-                        (void)strncpy(f->f_lasttime, buffer->timestamp, MAX_TIMESTAMPLEN);
-                        (void)strncpy(f->f_prevhost, buffer->host,
-                                        sizeof(f->f_prevhost));
-                        f->f_prevlen = buffer->msglen;
-                        (void)strlcpy(f->f_prevline, buffer->msg, sizeof(f->f_prevline));
-                        fprintlog(f, buffer->flags, (char *)NULL, buffer, NULL);
+                        buf_msg_free(f->f_prevmsg);
+                        buffer->refcount++;
+                        f->f_prevmsg = buffer;
+                        fprintlog(f, buffer, NULL);
                 }
         }
         (void)sigsetmask(omask);
 }
 
-/*
- * wrapper arround fprintlog(): removed
- */
 /* 
  * Added parameter struct buf_msg *buffer
  * If present (!= NULL) then a destination that is unable to send the
  * message can queue the message for later delivery.
- * To do so it has to save the pointer (ie add it to its queue)
- * and increment buffer->refcount.
- *
- * Note: At this time buffer->refcount is the only valid field in the buffer.
- * All other fields are undefined. Only after fprintlog() increases it
- * the caller will allocate space and copy the required data.
- * 
- * This design avoids memory allocations and copies in 'normal mode'
- * where every message is delivered immediately and only consumes the
- * additional space and time if a destination is really unavailable.
- * 
- * 2nd Note: several parts of the message are assembled in fprintlog.
- * So buf_msg does not contain the line as it will be send to the network,
- * but several parts that will have to be joined and formatted again.
  */
 /*
  * if qentry == NULL: new message, if temporarily undeliverable it will be enqueued
  * if qentry != NULL: a temporarily undeliverable message will not be enqueued,
  *                  but after delivery be removed from the queue
  */
-/* print syslog-protocol fields */
 #define OUT(x) ((x)?(x):"-")
-
 void
-fprintlog(struct filed *f, int flags, char *msg, struct buf_msg *buffer, struct buf_queue *qentry)
+fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentry)
 {
-        struct iovec iov[10];
-        struct iovec *v;
+        struct buf_msg *buffer = passedbuffer;
+        struct iovec iov[3];
+        struct iovec *v = iov;
         struct addrinfo *r;
-        int j, lsent, fail, retry, l = 0;
+        int j, lsent, fail, retry, len = 0;
         size_t msglen;
         char *line = NULL;
-        char repbuf[80], greetings[200];
+#define REPBUFSIZE 80
+#define FPBUFSIZE 30
+        char greetings[200];
+        char fp_buf[FPBUFSIZE] = "\0";
 #define ADDEV() assert(++v - iov < A_CNT(iov))
 
-        /* TODO: replace all prevhost/prevtime with buffer->host/timestamp */
-        DPRINTF(D_CALL, "fprintlog(%p, %d, \"%s\", %p, %p)\n", f, flags, msg, buffer, qentry);
-        v = iov;
-        if (f->f_type == F_WALL) {
-                v->iov_base = greetings;
-                v->iov_len = snprintf(greetings, sizeof greetings,
-                    "\r\n\7Message from syslogd@%s at %.24s ...\r\n",
-                    f->f_prevhost, ctime(&now));
-                ADDEV();
-                v->iov_base = "";
-                v->iov_len = 0;
-                ADDEV();
-        } else {
-                v->iov_base = f->f_lasttime;
-                v->iov_len = 15;
-                ADDEV();
-                v->iov_base = " ";
-                v->iov_len = 1;
-                ADDEV();
+        DPRINTF(D_CALL, "fprintlog(%p, %p, %p)\n", f, buffer, qentry);
+
+        f->f_time = now;
+
+        if (!buffer) {
+                /* ad-hoc buffer to format repeat message */
+                if (f->f_prevcount > 1) {
+                        buffer = buf_msg_new(REPBUFSIZE);
+                        buffer->msglen = snprintf(buffer->msg, REPBUFSIZE,
+                            "last message repeated %d times", f->f_prevcount);
+                        buffer->timestamp = strdup(f->f_prevmsg->timestamp);
+                        buffer->pri = f->f_prevmsg->pri;
+                        buffer->host = strdup(f->f_prevmsg->host);
+                        buffer->prog = strdup("syslogd");
+                } else
+                        buffer = f->f_prevmsg;
         }
 
+        /* TODO: has to become a per-destination option later
+         *       because syslog-sign needs priority prefix */
         if (LogFacPri) {
-                static char fp_buf[30];
                 const char *f_s = NULL, *p_s = NULL;
-                int fac = f->f_prevpri & LOG_FACMASK;
-                int pri = LOG_PRI(f->f_prevpri);
+                int fac = buffer->pri & LOG_FACMASK;
+                int pri = LOG_PRI(buffer->pri);
                 char f_n[5], p_n[5];
 
                 if (LogFacPri > 1) {
@@ -1394,125 +1376,154 @@ fprintlog(struct filed *f, int flags, char *msg, struct buf_msg *buffer, struct 
                         p_s = p_n;
                 }
                 snprintf(fp_buf, sizeof(fp_buf), "<%s.%s>", f_s, p_s);
-                v->iov_base = fp_buf;
-                v->iov_len = strlen(fp_buf);
-        } else {
-                v->iov_base = "";
-                v->iov_len = 0;
         }
-        ADDEV();
 
-        v->iov_base = f->f_prevhost;
-        v->iov_len = strlen(v->iov_base);
-        ADDEV();
-        v->iov_base = " ";
-        v->iov_len = 1;
-        ADDEV();
-
-        if ((buffer && buffer->tlsline && buffer->tlslen)
-         || (buffer && buffer->line && buffer->linelen)) {
-                /* skip formatting */
-        } else if (buffer && buffer->msg && buffer->msglen) {
-                v->iov_base = buffer->msg;
-                v->iov_len = buffer->msglen;
-        } else if (msg) { /* TODO: remove msg parameter */
-                v->iov_base = msg;
-                v->iov_len = strlen(msg);
-        } else if (f->f_prevcount > 1) {
-                v->iov_base = repbuf;
-                v->iov_len = snprintf(repbuf, sizeof repbuf,
-                    "last message repeated %d times", f->f_prevcount);
+        /* new message formatting:
+         * instead of using iov always assemble one complete TLS-ready line
+         * with length and priority (depending on BSDOutputFormat either in
+         * BSD Syslog or syslog-protocol format)
+         * 
+         * additionally save the length of the prefixes,
+         * so UDP destinations can skip the length prefix and
+         * file/pipe/wall destinations can omit length and priority
+         */
+        if (buffer->line && buffer->linelen) {
+                /* already formatted */
         } else {
-                v->iov_base = f->f_prevline;
-                v->iov_len = f->f_prevlen;
-        }
-        ADDEV();
+                /* get required message length */
+                if (BSDOutputFormat)
+                        msglen = snprintf(NULL, 0, "<%d>%s%.15s %s %s%s%s%s: %s",
+                                     buffer->pri, fp_buf,
+                                     buffer->timestamp, buffer->host,
+                                     buffer->prog, buffer->pid ? "[" : "", 
+                                     buffer->pid ? buffer->pid : "", 
+                                     buffer->pid ? "]" : "", buffer->msg);
+                else
+                        msglen = snprintf(NULL, 0, "<%d>1 %s%s %s %s %s %s %s",
+                                     buffer->pri, fp_buf,
+                                     buffer->timestamp, buffer->host,
+                                     OUT(buffer->prog), OUT(buffer->pid),
+                                     OUT(buffer->msgid), OUT(buffer->msg));
+                /* add space for length prefix */
+                for (buffer->tlsprefixlen = 0, j = msglen+1; j; j /= 10)
+                        buffer->tlsprefixlen++;
+                /* one more for the space */
+                buffer->tlsprefixlen++;
+                
+                buffer->prilen = snprintf(NULL, 0, "<%d>", buffer->pri);
+                if (BSDOutputFormat)
+                        buffer->prilen++; /* for version char */
 
-        f->f_time = now;
-
-/* TODO: add 
- * #ifndef DISABLE_TLS
- * #endif
- * later. Currently readability is more important...
- */
-        if ((f->f_type == F_TLS || (f->f_type == F_FORW))
-          && buffer && buffer->line && buffer->linelen) {
-                /* already formatted */
-        } else if ((f->f_type == F_TLS)
-          && buffer && buffer->tlsline && buffer->tlslen) {
-                /* already formatted */
-        } else if ((f->f_type == F_FORW) || (f->f_type == F_TLS)) {
-                /* keep in sync with format below */
-                msglen = sizeof("<123>  []: ") + 15
-                        + strlen(f->f_prevhost) + iov[5].iov_len; 
-                if (!(line = malloc(msglen))) {
+                if (!(buffer->line = malloc(msglen + buffer->tlsprefixlen + 1))) {
                         logerror("Unable to allocate memory, drop message");
                         f->f_prevcount = 0;
                         /* skip the queue_add() without memory */
                         return;
                 }
-                /* TODO: we can avoid the copying for TLS by allocating
-                 *       10 bytes more in front of the message and later
-                 *       write the length into these bytes.
-                 */
-
-                /*
-                 * check for local vs remote messages
-                 * (from FreeBSD PR#bin/7055)
-                 *
-                 * TODO: were the [] around the original hostname necessary?
-                 * IMHO they broke the format and the original hostname
-                 *  should be preserved without any special formatting
-                 */
                 if (BSDOutputFormat)
-                        l = snprintf(line, msglen,
-                                     "<%d>%.15s %s %s%s%s%s: %s",
-                                     buffer->pri,
-                                     buffer->timestamp,
-                                     buffer->host,
-                                     buffer->prog, 
-                                     buffer->pid ? "[" : "", 
+                        /*
+                         * check for local vs remote messages
+                         * (from FreeBSD PR#bin/7055)
+                         *
+                         * TODO: were the [] around the original hostname necessary?
+                         * IMHO they broke the format and the original hostname
+                         *  should be preserved without any special formatting
+                         */
+                        buffer->linelen = snprintf(buffer->line,
+                                     msglen + buffer->tlsprefixlen + 1,
+                                     "%d <%d>%s%.15s %s %s%s%s%s: %s",
+                                     msglen, buffer->pri, fp_buf,
+                                     buffer->timestamp, buffer->host,
+                                     buffer->prog, buffer->pid ? "[" : "", 
                                      buffer->pid ? buffer->pid : "", 
-                                     buffer->pid ? "]" : "", 
-                                     buffer->msg);
+                                     buffer->pid ? "]" : "", buffer->msg);
                 else
-                        l = snprintf(line, msglen,
-                                     "<%d>1 %s %s %s %s %s %s",
-                                     buffer->pri,
-                                     buffer->timestamp,
-                                     OUT(buffer->host), 
-                                     OUT(buffer->prog), 
-                                     OUT(buffer->pid), 
-                                     OUT(buffer->msgid), 
-                                     OUT(buffer->msg));
-                DPRINTF(D_DATA, "formatted %d (of %d allowed) octets to: %.*s\n", l, TypeInfo[f->f_type].max_msg_length, l, line);
-                /* limith mesage length */
-                if (TypeInfo[f->f_type].max_msg_length != -1
-                 && TypeInfo[f->f_type].max_msg_length < l) {
-                        l = TypeInfo[f->f_type].max_msg_length;
-                        DPRINTF(D_DATA, "truncating oversized message to %d octets\n", l);
-                }
-                if (buffer) {
-                        buffer->linelen = l;
-                        buffer->line = line;
-                }
-                /* TODO: check syslog-protocol if we may truncate SD Elements */
-        } else {
-                /* limith mesage length for message content in iov[5]
-                 * 
-                 * Note: some destinations add a prefix (TLS) or a
-                 *       suffix (\r\n for console), so this is no
-                 *       hard limit
-                 */
-                msglen = iov[0].iov_len + iov[1].iov_len + iov[2].iov_len
-                        + iov[3].iov_len + iov[4].iov_len;
-                if (msglen + iov[5].iov_len > TypeInfo[f->f_type].max_msg_length)
-                        iov[5].iov_len = MAX (0, TypeInfo[f->f_type].max_msg_length - msglen); 
+                        buffer->linelen = snprintf(buffer->line,
+                                     msglen + buffer->tlsprefixlen + 1,
+                                     "%d <%d>1 %s%s %s %s %s %s %s",
+                                     msglen, buffer->pri, fp_buf,
+                                     buffer->timestamp, buffer->host,
+                                     OUT(buffer->prog), OUT(buffer->pid),
+                                     OUT(buffer->msgid), OUT(buffer->msg));
+                DPRINTF(D_DATA, "formatted %d (of %d allowed) "
+                        "octets to: %.*s\n", buffer->linelen,
+                        TypeInfo[f->f_type].max_msg_length,
+                        buffer->linelen, buffer->line);
         }
-        /* rule for success/failure:
-         * errors are handled inside the cases with a message_queue_add and return immediately
-         * completing the switch means successful delivery (or at least no queuing)
-         */ 
+
+        /* set start and length of buffer and/or fill iovec */
+        switch (f->f_type) {
+        case F_UNUSED:
+                /* nothing */
+                break;
+        case F_TLS:
+                /* nothing, as TLS uses whole buffer to send */
+                line = buffer->line;
+                len = buffer->linelen;
+                break;
+        case F_FORW:
+                line = buffer->line + buffer->tlsprefixlen;
+                len = buffer->linelen - buffer->tlsprefixlen;
+                break;
+        case F_PIPE:
+                line = buffer->line + buffer->tlsprefixlen + buffer->prilen;
+                len = buffer->linelen - buffer->tlsprefixlen - buffer->prilen;
+                v->iov_base = line;
+                v->iov_len = len;
+                ADDEV();
+                v->iov_base = "\n";
+                v->iov_len = 1;
+                ADDEV();
+                break;
+        case F_CONSOLE:
+        case F_TTY:
+                line = buffer->line + buffer->tlsprefixlen + buffer->prilen;
+                len = buffer->linelen - buffer->tlsprefixlen - buffer->prilen;
+                v->iov_base = line;
+                v->iov_len = len;
+                ADDEV();
+                v->iov_base = "\r\n";
+                v->iov_len = 2;
+                ADDEV();
+                break;
+        case F_FILE:
+                line = buffer->line + buffer->tlsprefixlen + buffer->prilen;
+                len = buffer->linelen - buffer->tlsprefixlen - buffer->prilen;
+                v->iov_base = line;
+                v->iov_len = len;
+                ADDEV();
+                v->iov_base = "\n";
+                v->iov_len = 1;
+                ADDEV();
+                break;
+        case F_USERS:
+        case F_WALL:
+                line = buffer->line + buffer->tlsprefixlen + buffer->prilen;
+                len = buffer->linelen - buffer->tlsprefixlen - buffer->prilen;
+                v->iov_base = greetings;
+                v->iov_len = snprintf(greetings, sizeof(greetings),
+                        "\r\n\7Message from syslogd@%s at %s ...\r\n",
+                        buffer->host, buffer->timestamp);
+                ADDEV();
+                v->iov_base = line;
+                v->iov_len = len;
+                ADDEV();
+                v->iov_base = "\n";
+                v->iov_len = 1;
+                ADDEV();
+                break;
+        }
+
+        /* assert maximum message length */
+                /* TODO: check syslog-protocol if we may truncate SD Elements 
+                 * --> no problem, we may even truncate multi-byte chars  */
+        if (TypeInfo[f->f_type].max_msg_length != -1
+         && TypeInfo[f->f_type].max_msg_length < len) {
+                len = TypeInfo[f->f_type].max_msg_length;
+                DPRINTF(D_DATA, "truncating oversized message to %d octets\n", len);
+        }
+
+        /* send */
         switch (f->f_type) {
         case F_UNUSED:
                 DPRINTF(D_MISC, "Logging to %s\n", TypeInfo[f->f_type].name);
@@ -1535,7 +1546,7 @@ fprintlog(struct filed *f, int flags, char *msg, struct buf_msg *buffer, struct 
                                             address_family_of(finet[j+1])) 
 #endif
 sendagain:
-                                        lsent = sendto(finet[j+1].fd, line, l, 0,
+                                        lsent = sendto(finet[j+1].fd, line, len, 0,
                                             r->ai_addr, r->ai_addrlen);
                                         if (lsent == -1) {
                                                 switch (errno) {
@@ -1556,11 +1567,11 @@ sendagain:
                                                         fail++;
                                                         break;
                                                 }
-                                        } else if (lsent == l) 
+                                        } else if (lsent == len) 
                                                 break;
                                 }
                         }
-                        if (lsent != l && fail) {
+                        if (lsent != len && fail) {
                                 f->f_type = F_UNUSED;
                                 logerror("sendto() failed");
                         }
@@ -1570,26 +1581,17 @@ sendagain:
 #ifndef DISABLE_TLS
         case F_TLS:
                 DPRINTF(D_MISC, "Logging to %s %s\n", TypeInfo[f->f_type].name, f->f_un.f_tls.tls_conn->hostname);
-                
-                if (!buffer) {
-                        /* TODO: handle flush messages */
-                } else {
-                        assert((buffer->line && buffer->linelen) || (buffer->tlsline && buffer->tlslen));
-                        buffer->refcount++;
-                        if (!tls_send(f, buffer) && !qentry) {
-                                        buffer->refcount++;
-                                        message_queue_add(f, buffer);
-                        }
+
+                buffer->refcount++;
+                if (!tls_send(f, buffer) && !qentry) {
+                                buffer->refcount++;
+                                message_queue_add(f, buffer);
                 }
-                free(line);
                 break;
 #endif /* !DISABLE_TLS */
 
         case F_PIPE:
                 DPRINTF(D_MISC, "Logging to %s %s\n", TypeInfo[f->f_type].name, f->f_un.f_pipe.f_pname);
-                v->iov_base = "\n";
-                v->iov_len = 1;
-                ADDEV();
                 if (f->f_un.f_pipe.f_pid == 0) {
                         /* (re-)open */
                         if ((f->f_file = p_open(f->f_un.f_pipe.f_pname,
@@ -1654,7 +1656,7 @@ sendagain:
                 break;
 
         case F_CONSOLE:
-                if (flags & IGN_CONS) {
+                if (buffer->flags & IGN_CONS) {
                         DPRINTF(D_MISC, "Logging to %s (ignored)\n", TypeInfo[f->f_type].name);
                         break;
                 }
@@ -1663,14 +1665,6 @@ sendagain:
         case F_TTY:
         case F_FILE:
                 DPRINTF(D_MISC, "Logging to %s %s\n", TypeInfo[f->f_type].name, f->f_un.f_fname);
-                if (f->f_type != F_FILE) {
-                        v->iov_base = "\r\n";
-                        v->iov_len = 2;
-                } else {
-                        v->iov_base = "\n";
-                        v->iov_len = 1;
-                }
-                ADDEV();
         again:
                 if (writev(f->f_file, iov, v - iov) < 0) {
                         int e = errno;
@@ -1707,7 +1701,7 @@ sendagain:
                         }
                 } else {
                         f->f_lasterror = 0;
-                        if ((flags & SYNC_FILE) && (f->f_flags & FFLAG_SYNC))
+                        if ((buffer->flags & SYNC_FILE) && (f->f_flags & FFLAG_SYNC))
                                 (void)fsync(f->f_file);
                 }
                 break;
@@ -1715,9 +1709,6 @@ sendagain:
         case F_USERS:
         case F_WALL:
                 DPRINTF(D_MISC, "Logging to %s\n", TypeInfo[f->f_type].name);
-                v->iov_base = "\r\n";
-                v->iov_len = 2;
-                ADDEV();
                 wallmsg(f, iov, v - iov);
                 break;
         }
@@ -1957,7 +1948,7 @@ domark(int fd, short event, void *ev)
                         DPRINTF(D_DATA, "Flush %s: repeated %d times, %d sec.\n",
                             TypeInfo[f->f_type].name, f->f_prevcount,
                             repeatinterval[f->f_repeatcount]);
-                        fprintlog(f, 0, (char *)NULL, NULL, NULL);
+                        fprintlog(f, NULL, NULL);
                         BACKOFF(f);
                 }
                 if (sweep_queues)
@@ -2091,7 +2082,7 @@ die(int fd, short event, void *ev)
                 DPRINTF(D_MEM, "die() cleaning f@%p)\n", f);
                 /* flush any pending output */
                 if (f->f_prevcount)
-                        fprintlog(f, 0, (char *)NULL, NULL, NULL);
+                        fprintlog(f, NULL, NULL);
                 send_queue(f);
                 message_queue_freeall(f);
 
@@ -2243,7 +2234,7 @@ init(int fd, short event, void *ev)
         for (f = Files; f != NULL; f = next) {
                 /* flush any pending output */
                 if (f->f_prevcount)
-                        fprintlog(f, 0, (char *)NULL, NULL, NULL);
+                        fprintlog(f, NULL, NULL);
                 send_queue(f);
                 message_queue_freeall(f);
 
@@ -3185,7 +3176,7 @@ send_queue(struct filed *f)
 
                 DPRINTF((D_DATA|D_CALL), "send_queue() calls fprintlog()\n");
                 /* TODO: check if I get invalid data by using f instead of f_tmp */
-                fprintlog(f, qentry->msg->flags, qentry->msg->msg, qentry->msg, qentry);
+                fprintlog(f, qentry->msg, qentry);
         }
 }
 

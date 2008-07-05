@@ -89,6 +89,8 @@ struct buf_msg {
         size_t       linelen;
         char        *tlsline;   /* a prefixed tls line like "41 <46>Jun 28 14:32:08 host syslogd: restart" */ 
         size_t       tlslen;
+        unsigned int tlsprefixlen; /* bytes used for the TLS length prefix */
+        unsigned int prilen;       /* bytes used for the priority and version field(s) */
 };
 
 
@@ -241,18 +243,14 @@ struct filed {
                         pid_t   f_pid;
                 } f_pipe;
         } f_un;
-        struct buf_queue_head f_qhead;          /* undelivered msgs queue */
-        unsigned int f_qelements;               /* elements in queue */
-        size_t  f_qsize;                        /* size of queue in bytes */
-        char    f_prevline[MAXSVLINE];          /* last message logged */
-        char    f_lasttime[MAX_TIMESTAMPLEN];   /* time of last occurrence */
-        char    f_prevhost[MAXHOSTNAMELEN];     /* host from which recd. */
-        int     f_prevpri;                      /* pri of f_prevline */
-        int     f_prevlen;                      /* length of f_prevline */
-        int     f_prevcount;                    /* repetition cnt of prevline */
-        int     f_repeatcount;                  /* number of "repeated" msgs */
-        int     f_lasterror;                    /* last error on writev() */
-        int     f_flags;                        /* file-specific flags */
+        struct buf_queue_head f_qhead;       /* undelivered msgs queue */
+        unsigned int          f_qelements;   /* elements in queue */
+        size_t                f_qsize;       /* size of queue in bytes */
+        struct buf_msg       *f_prevmsg;     /* last message logged */
+        int                   f_prevcount;   /* repetition cnt of prevmsg */
+        int                   f_repeatcount; /* number of "repeated" msgs */
+        int                   f_lasterror;   /* last error on writev() */
+        int                   f_flags;       /* file-specific flags */
 #define FFLAG_SYNC      0x01
 };
 

@@ -185,6 +185,9 @@ int     SyncKernel = 0;         /* write kernel messages synchronously */
 int     UniquePriority = 0;     /* only log specified priority */
 int     LogFacPri = 0;          /* put facility and priority in log messages: */
                                 /* 0=no, 1=numeric, 2=names */
+bool    BSDOutputFormat = false;/* if true emit traditional BSD Syslog lines,
+                                   otherwise new syslog-protocol lines */
+
 void    cfline(const unsigned int, char *, struct filed *, char *, char *);
 char   *cvthname(struct sockaddr_storage *);
 void    deadq_enter(pid_t, const char *);
@@ -215,7 +218,9 @@ int     main(int, char *[]);
 void    logpath_add(char ***, int *, int *, char *);
 void    logpath_fileadd(char ***, int *, int *, char *);
 char *make_timestamp(bool);
-
+void check_timestamp(struct buf_msg *);
+inline bool valid_utf8(const unsigned char *);
+        
 struct event *allocev(void);
 void schedule_event(struct event **, struct timeval *, void (*)(int, short, void *), void *);
 static void dispatch_read_klog(int fd, short event, void *ev);
@@ -290,7 +295,7 @@ main(int argc, char *argv[])
         (void)setlocale(LC_ALL, "");
 
         /* TODO: introduce TLS related options if needed */
-        while ((ch = getopt(argc, argv, "b:dnsSf:m:p:P:ru:g:t:TUv")) != -1)
+        while ((ch = getopt(argc, argv, "b:dnsSf:m:op:P:ru:g:t:TUv")) != -1)
                 switch(ch) {
                 case 'b':
                         bindhostname = optarg;
@@ -311,6 +316,9 @@ main(int argc, char *argv[])
                         break;
                 case 'n':               /* turn off DNS queries */
                         UseNameService = 0;
+                        break;
+                case 'o':               /* old-style BSD Syslog format */
+                        BSDOutputFormat = true;
                         break;
                 case 'p':               /* path */
                         logpath_add(&LogPaths, &funixsize, 
@@ -761,6 +769,33 @@ logpath_fileadd(char ***lp, int *szp, int *maxszp, char *file)
         fclose(fp);
 }
 
+/* adapted from
+ * https://www.securecoding.cert.org/confluence/display/seccode/MSC10-A.+Character+Encoding+-+UTF8+Related+Issues
+ * 
+ * Is this free to use?
+ * 
+ * returns length of valid UTF-8 codepoint
+ * or 0 if *input is invalid
+ */
+inline bool
+valid_utf8(const unsigned char *c) {
+    int nb, rc;
+
+    if (!(*c & 0x80)) nb = 1;
+    else if ((*c & 0xc0) == 0x80) return 0;
+    else if ((*c & 0xe0) == 0xc0) nb = 2;
+    else if ((*c & 0xf0) == 0xe0) nb = 3;
+    else if ((*c & 0xf8) == 0xf0) nb = 4;
+    else if ((*c & 0xfc) == 0xf8) nb = 5;
+    else if ((*c & 0xfe) == 0xfc) nb = 6;
+
+    rc = nb;
+    while (nb-- > 1)
+      if ((*(c + nb-1) & 0xc0) != 0x80) return 0;
+
+    return rc;
+}
+
 /*
  * Take a raw input line, decode the message, and print the message
  * on the appropriate log files.
@@ -769,11 +804,15 @@ void
 printline(char *hname, char *msg, int flags)
 {
 	struct buf_msg *buffer;
-        int c, pri;
+        int c, pri, i;
         char *p, *q, *start;
         size_t len;
         long n;
+        bool bsdsyslog = true;
+        int fieldcount = 0;
 
+        DPRINTF((D_CALL|D_BUFFER|D_DATA), "printline(\"%s\", \"%s\", %d)\n", hname, msg, flags);
+        
         /* test for special codes */
         pri = DEFUPRI;
         p = msg;
@@ -783,6 +822,11 @@ printline(char *hname, char *msg, int flags)
                 if (*q == '>' && n >= 0 && n < INT_MAX && errno == 0) {
                         p = q + 1;
                         pri = (int)n;
+                        if (*p == '1') { /* syslog-protocol version */
+                                p += 2;  /* skip version and space */
+                                fieldcount = 1;
+                                bsdsyslog = false;
+                        }
                 }
         }
         if (pri &~ (LOG_FACMASK|LOG_PRIMASK))
@@ -808,7 +852,30 @@ printline(char *hname, char *msg, int flags)
         start = p;
         while ((c = *p++) != '\0' &&
             q < &(buffer->msg[len - 2])) {
-                c &= 0177;
+                /* for syslog-protocol this asserts only ASCII in the header,
+                 * and valid UTF-8 in following SD and Msg.
+                 * it does not check if SD names contain UTF-8 (they must not)
+                 * or whether the Msg has a correct BOM (required for UTF-8)
+                 */
+                if (bsdsyslog || fieldcount < 6)
+                        c &= 0177;
+                else {
+                        i = valid_utf8(p);
+                        if (i == 0)
+                                *q++ = '?';
+                        if (i > 1) {
+                                /* multi byte char */
+                                while(i) {
+                                        *q++ = c;
+                                        c = *p++;
+                                        i--;
+                                }
+                                continue;
+                        }
+                        /* else i == 1 --> c \in ASCII */
+                }
+                if (c == ' ')
+                        fieldcount++;
                 if (iscntrl(c))
                         if (c == '\n')
                                 *q++ = ' ';
@@ -823,9 +890,12 @@ printline(char *hname, char *msg, int flags)
         }
         *q = '\0';
         buffer->msglen = p-start;
-        buffer->flags = flags;
         buffer->pri = pri;
         buffer->host = strdup(hname);
+        if (bsdsyslog)
+                buffer->flags = flags |= BSDSYSLOG;
+        else
+                buffer->flags = flags;
 
         logmsg(buffer);
         buf_msg_free(buffer);
@@ -856,6 +926,8 @@ printsys(char *msg)
                                 p = q + 1;
                                 buffer->pri = n;
                                 is_printf = 0;
+	                        if (*p == '1')
+       	                        	bsdsyslog = false;
                         }
                 }
                 if (is_printf) {
@@ -938,6 +1010,77 @@ logmsg_async(const int pri, const char *msg, const char *from, const int flags)
         buf_msg_free(buffer);
 }
 
+/* check and/or add the timestamp */
+void
+check_timestamp(struct buf_msg *buffer)
+{
+        char *q;
+        
+        DPRINTF((D_CALL|D_DATA), "check_timestamp(%p = \"%s\", len %d)\n", 
+                buffer, buffer->msg, buffer->msglen);
+        
+        /*
+         * Check to see if msg looks non-standard.
+         */
+        if (buffer->flags & BSDSYSLOG) {
+                if (buffer->msglen < BSD_TIMESTAMPLEN
+                 || buffer->msg[3] != ' ' || buffer->msg[6] != ' '
+                 || buffer->msg[9] != ':' || buffer->msg[12] != ':'
+                 || buffer->msg[15] != ' ')
+                        buffer->flags |= ADDDATE;
+        } else {
+                if (buffer->msglen < BSD_TIMESTAMPLEN
+                 || buffer->msg[4] != '-' || buffer->msg[7] != '-'
+                 || buffer->msg[10] != 'T' || buffer->msg[13] != ':'
+                 || buffer->msg[16] != ':')
+                        buffer->flags |= ADDDATE;
+        }
+
+        (void)time(&now);
+        if (buffer->flags & ADDDATE) {
+                buffer->timestamp = strdup(
+                        make_timestamp(!BSDOutputFormat));
+                return;
+        }
+        
+        if (BSDOutputFormat && buffer->flags & BSDSYSLOG) {
+                /* copy BSD timestamp */
+                buffer->timestamp = strndup(buffer->msg, BSD_TIMESTAMPLEN-1);
+                buffer->msglen -= BSD_TIMESTAMPLEN;
+                buffer->msg    += BSD_TIMESTAMPLEN;
+        } else if (!BSDOutputFormat && !(buffer->flags & BSDSYSLOG)) {
+                /* copy ISO timestamp */
+                if (!(q = strchr(buffer->msg, ' ')))
+                        /* can this happen? */
+                        q = buffer->msg;
+                buffer->timestamp = strndup(buffer->msg, q - buffer->msg);
+                buffer->msglen -= q - buffer->msg;
+                buffer->msg    += q - buffer->msg;
+        } else if (BSDOutputFormat && !(buffer->flags & BSDSYSLOG)) {
+                /* convert ISO->BSD */
+                DPRINTF(D_DATA, "skip ISO->BSD timestamp conversion\n");
+                /* copy first 15 chars of ISO timestamp */
+                if (!(q = strchr(buffer->msg, ' ')))
+                        /* can this happen? */
+                        q = buffer->msg;
+                buffer->timestamp = strndup(buffer->msg,
+                        MIN(q - buffer->msg, BSD_TIMESTAMPLEN));
+                buffer->msglen -= q - buffer->msg;
+                buffer->msg    += q - buffer->msg;
+                /* TODO */
+        } else if (!BSDOutputFormat && (buffer->flags & BSDSYSLOG)) {
+                /* convert BSD->ISO */
+                DPRINTF(D_DATA, "skip BSD->ISO timestamp conversion\n");
+                /* copy BSD timestamp */
+                buffer->timestamp = strndup(buffer->msg, BSD_TIMESTAMPLEN-1);
+                buffer->msglen -= BSD_TIMESTAMPLEN;
+                buffer->msg    += BSD_TIMESTAMPLEN;
+                /* TODO */
+        }
+        
+        /* return with pointer buffer->msg on the space after the timestamp */
+}
+
 /*
  * Log a message to the appropriate log files, users, etc. based on
  * the priority.
@@ -948,8 +1091,7 @@ logmsg(struct buf_msg *buffer)
         struct filed *f;
         int fac, omask, prilev, i;
         char prog[NAME_MAX + 1];
-        char *kernelmsgbuf;
-        size_t kernelmsgbuflen;
+        char *p;
 
         DPRINTF((D_CALL|D_BUFFER), "logmsg: buffer@%p, pri 0%o, flags 0x%x, "
                 "timestamp \"%s\", from \"%s\", msg \"%s\"\n",
@@ -979,22 +1121,8 @@ logmsg(struct buf_msg *buffer)
                 assert(buffer->msgorig <= buffer->msg);
         }
 
-        /*
-         * Check to see if msg looks non-standard.
-         */
-        if (buffer->msglen < TIMESTAMPLEN+1 || buffer->msg[3] != ' '
-         || buffer->msg[6] != ' ' || buffer->msg[9] != ':'
-         || buffer->msg[12] != ':' || buffer->msg[15] != ' ')
-                buffer->flags |= ADDDATE;
-
-        (void)time(&now);
-        if (buffer->flags & ADDDATE)
-                buffer->timestamp = strdup(make_timestamp(false));
-        else {
-                buffer->timestamp = strndup(buffer->msg, TIMESTAMPLEN);
-                buffer->msg    += TIMESTAMPLEN+1;
-                buffer->msglen -= TIMESTAMPLEN+1;
-        }
+        check_timestamp(buffer);
+        DPRINTF(D_DATA, "Got timestamp \"%s\"\n", buffer->timestamp);
 
         /* skip leading whitespace */
         while (isspace((unsigned char)*buffer->msg)) {
@@ -1009,28 +1137,60 @@ logmsg(struct buf_msg *buffer)
                 fac = LOG_FAC(buffer->pri);
         prilev = LOG_PRI(buffer->pri);
 
-        /* extract program name */
-        for (i = 0; i < NAME_MAX; i++) {
-                if (!isprint((unsigned char)buffer->msg[i]) ||
-                    buffer->msg[i] == ':' || buffer->msg[i] == '[')
-                        break;
-                prog[i] = buffer->msg[i];
-        }
-        prog[i] = '\0';
+        p = buffer->msg;
 
-        /* add kernel prefix for kernel messages */
+        /* extract program name */
         if (buffer->flags & ISKERNEL) {
-                kernelmsgbuflen = buffer->msglen + sizeof(_PATH_UNIX) + 1;
-                if (!(kernelmsgbuf = malloc(kernelmsgbuflen))) {
-                        logerror("Unable to allocate memory");
-                } else {
-                        snprintf(kernelmsgbuf, kernelmsgbuflen, "%s: %s",
-                            _PATH_UNIX, buffer->msg);
-                        FREEPTR(buffer->msgorig);
-                        buffer->msgorig = buffer->msg = kernelmsgbuf;
-                        buffer->msglen = buffer->msgsize = kernelmsgbuflen;
+                MALLOC(buffer->prog, sizeof(_PATH_UNIX));
+                buffer->prog = strdup(_PATH_UNIX);
+        } else {
+                for (i = 0; i < APPNAME_MAX; i++)
+                        if (!isprint((unsigned char)p[i])
+                         || p[i] == ':' || p[i] == '['
+                         || p[i] == ' ')
+                                break;
+                if (i) {
+                        MALLOC(buffer->prog, i+1);  
+                        buffer->prog = strndup(p, i);
                 }
         }
+        p += i + 1;
+        DPRINTF(D_DATA, "Got prog \"%s\"\n", buffer->prog);
+
+        /* extract process ID */
+        for (i = 0; i < PROCID_MAX; i++)
+                if (!isprint((unsigned char)p[i])
+                 || p[i] == ':' || p[i] == ']'
+                 || p[i] == ' ')
+                        break;
+        if (i) {
+                MALLOC(buffer->prog, i+1);  
+                buffer->pid = strndup(p, i);
+        }
+        p += i + 1;
+        DPRINTF(D_DATA, "Got pid \"%s\"\n", buffer->pid);
+
+        /* extract Msg ID */
+        if (buffer->flags & BSDSYSLOG) {
+                DPRINTF(D_DATA, "no msgid in BSD Syslog\n");
+        } else {
+                for (i = 0; i < MSGID_MAX; i++)
+                        if (!isprint((unsigned char)p[i])
+                         || p[i] == ' ')
+                                break;
+                if (i) {
+                        MALLOC(buffer->prog, i+1);  
+                        buffer->msgid = strndup(p, i);
+                }
+                p += i + 1;
+                DPRINTF(D_DATA, "Got msgid \"%s\"\n", buffer->msgid);
+        }
+
+        buffer->msglen -= p - buffer->msg;
+        buffer->msg = p;
+        
+        DPRINTF(D_DATA, "Got msg \"%s\" with strlen+1=%d and msglen=%d\n",
+                buffer->msg, strlen(buffer->msg)+1, buffer->msglen);
 
         /* log the message to the particular outputs */
         if (!Initialized) {
@@ -1038,7 +1198,7 @@ logmsg(struct buf_msg *buffer)
                 f->f_file = open(ctty, O_WRONLY, 0);
 
                 if (f->f_file >= 0) {
-                        (void)strncpy(f->f_lasttime, buffer->timestamp, TIMESTAMPLEN);
+                        (void)strncpy(f->f_lasttime, buffer->timestamp, BSD_TIMESTAMPLEN);
                         fprintlog(f, buffer->flags, buffer->msg, NULL, NULL);
                         (void)close(f->f_file);
                 }
@@ -1106,7 +1266,7 @@ logmsg(struct buf_msg *buffer)
                     !NoRepeat &&
                     !strcmp(buffer->msg, f->f_prevline) &&
                     !strcasecmp(buffer->host, f->f_prevhost)) {
-                        (void)strncpy(f->f_lasttime, buffer->timestamp, TIMESTAMPLEN);
+                        (void)strncpy(f->f_lasttime, buffer->timestamp, MAX_TIMESTAMPLEN);
                         f->f_prevcount++;
                         DPRINTF(D_DATA, "Msg repeated %d times, %ld sec of %d\n",
                             f->f_prevcount, (long)(now - f->f_time),
@@ -1124,25 +1284,16 @@ logmsg(struct buf_msg *buffer)
                 } else {
                         /* new line, save it */
                         if (f->f_prevcount)
-                                /* sending this old line is not buffered */
+                                /* TODO: sending this old line is not buffered */
                                 fprintlog(f, 0, (char *)NULL, NULL, NULL);
                         f->f_repeatcount = 0;
                         f->f_prevpri = buffer->pri;
-                        (void)strncpy(f->f_lasttime, buffer->timestamp, TIMESTAMPLEN);
+                        (void)strncpy(f->f_lasttime, buffer->timestamp, MAX_TIMESTAMPLEN);
                         (void)strncpy(f->f_prevhost, buffer->host,
                                         sizeof(f->f_prevhost));
-                        if (buffer->msglen < MAXSVLINE) {
-                                /* message passed as part of struct filed :-/
-                                 * TODO: remove MAXSVLINE and unify these two branches  */
-                                f->f_prevlen = buffer->msglen;
-                                (void)strlcpy(f->f_prevline, buffer->msg,
-                                    sizeof(f->f_prevline));
-                                fprintlog(f, buffer->flags, (char *)NULL, buffer, NULL);
-                        } else {
-                                f->f_prevline[0] = 0;
-                                f->f_prevlen = 0;
-                                fprintlog(f, buffer->flags, buffer->msg, buffer, NULL);
-                        }
+                        f->f_prevlen = buffer->msglen;
+                        (void)strlcpy(f->f_prevline, buffer->msg, sizeof(f->f_prevline));
+                        fprintlog(f, buffer->flags, (char *)NULL, buffer, NULL);
                 }
         }
         (void)sigsetmask(omask);
@@ -1175,6 +1326,9 @@ logmsg(struct buf_msg *buffer)
  * if qentry != NULL: a temporarily undeliverable message will not be enqueued,
  *                  but after delivery be removed from the queue
  */
+/* print syslog-protocol fields */
+#define OUT(x) ((x)?(x):"-")
+
 void
 fprintlog(struct filed *f, int flags, char *msg, struct buf_msg *buffer, struct buf_queue *qentry)
 {
@@ -1187,7 +1341,8 @@ fprintlog(struct filed *f, int flags, char *msg, struct buf_msg *buffer, struct 
         char repbuf[80], greetings[200];
 #define ADDEV() assert(++v - iov < A_CNT(iov))
 
-        DPRINTF(D_CALL, "fprintlog(%p, %d, \"%s\", %p)\n", f, flags, msg, buffer);
+        /* TODO: replace all prevhost/prevtime with buffer->host/timestamp */
+        DPRINTF(D_CALL, "fprintlog(%p, %d, \"%s\", %p, %p)\n", f, flags, msg, buffer, qentry);
         v = iov;
         if (f->f_type == F_WALL) {
                 v->iov_base = greetings;
@@ -1260,7 +1415,7 @@ fprintlog(struct filed *f, int flags, char *msg, struct buf_msg *buffer, struct 
         } else if (buffer && buffer->msg && buffer->msglen) {
                 v->iov_base = buffer->msg;
                 v->iov_len = buffer->msglen;
-        } else if (msg) {
+        } else if (msg) { /* TODO: remove msg parameter */
                 v->iov_base = msg;
                 v->iov_len = strlen(msg);
         } else if (f->f_prevcount > 1) {
@@ -1300,20 +1455,36 @@ fprintlog(struct filed *f, int flags, char *msg, struct buf_msg *buffer, struct 
                  *       10 bytes more in front of the message and later
                  *       write the length into these bytes.
                  */
+
                 /*
                  * check for local vs remote messages
                  * (from FreeBSD PR#bin/7055)
+                 *
+                 * TODO: were the [] around the original hostname necessary?
+                 * IMHO they broke the format and the original hostname
+                 *  should be preserved without any special formatting
                  */
-                if (strcasecmp(f->f_prevhost, LocalFQDN)) {
+                if (BSDOutputFormat)
                         l = snprintf(line, msglen,
-                                     "<%d>%.15s [%s]: %s",
-                                     f->f_prevpri, (char *) iov[0].iov_base,
-                                     f->f_prevhost, (char *) iov[5].iov_base);
-                } else {
-                        l = snprintf(line, msglen, "<%d>%.15s %s",
-                                     f->f_prevpri, (char *) iov[0].iov_base,
-                                     (char *) iov[5].iov_base);
-                }
+                                     "<%d>%.15s %s %s%s%s%s: %s",
+                                     buffer->pri,
+                                     buffer->timestamp,
+                                     buffer->host,
+                                     buffer->prog, 
+                                     buffer->pid ? "[" : "", 
+                                     buffer->pid ? buffer->pid : "", 
+                                     buffer->pid ? "]" : "", 
+                                     buffer->msg);
+                else
+                        l = snprintf(line, msglen,
+                                     "<%d>1 %s %s %s %s %s %s",
+                                     buffer->pri,
+                                     buffer->timestamp,
+                                     OUT(buffer->host), 
+                                     OUT(buffer->prog), 
+                                     OUT(buffer->pid), 
+                                     OUT(buffer->msgid), 
+                                     OUT(buffer->msg));
                 DPRINTF(D_DATA, "formatted %d (of %d allowed) octets to: %.*s\n", l, TypeInfo[f->f_type].max_msg_length, l, line);
                 /* limith mesage length */
                 if (TypeInfo[f->f_type].max_msg_length != -1

@@ -74,6 +74,9 @@
 struct buf_msg {
         char        *timestamp;
         char        *host;
+        char        *prog;
+        char        *pid;
+        char        *msgid;
         int          pri;
         int          flags;
         unsigned int refcount;
@@ -168,6 +171,9 @@ char *strndup(const char *str, size_t n);
                                 DPRINTF(D_TLS, "Failure in event_add()\n"); \
                         } while (0)
 
+#define MALLOC(ptr, size)  do { if (!(ptr = malloc(size))) \
+                                logerror("Unable to allocate memory"); \
+                              } while (0)
 
 #define FREEPTR(x)      if (x)     { DPRINTF(D_MEM2, "free(%s@%p)\n", #x, x); \
                                      free(x);         x = NULL; }
@@ -175,7 +181,13 @@ char *strndup(const char *str, size_t n);
 #define FREE_SSL_CTX(x) if (x)     { SSL_CTX_free(x); x = NULL; }
 
 #define MAXUNAMES       20      /* maximum number of user names */
-#define TIMESTAMPLEN    15
+#define BSD_TIMESTAMPLEN    15+1
+#define MAX_TIMESTAMPLEN    32+1
+
+/* maximum field lengths in syslog-protocol */
+#define APPNAME_MAX  48
+#define PROCID_MAX  128
+#define MSGID_MAX    32
 
 /*
  * Flags to logmsg().
@@ -186,6 +198,7 @@ char *strndup(const char *str, size_t n);
 #define ADDDATE         0x004   /* add a date to the message */
 #define MARK            0x008   /* this message is a mark */
 #define ISKERNEL        0x010   /* kernel generated message */
+#define BSDSYSLOG       0x020   /* line in traditional BSD Syslog format */
 
 /* strategies for message_queue_purge() */
 #define PURGE_OLDEST            1
@@ -232,7 +245,7 @@ struct filed {
         unsigned int f_qelements;               /* elements in queue */
         size_t  f_qsize;                        /* size of queue in bytes */
         char    f_prevline[MAXSVLINE];          /* last message logged */
-        char    f_lasttime[16];                 /* time of last occurrence */
+        char    f_lasttime[MAX_TIMESTAMPLEN];   /* time of last occurrence */
         char    f_prevhost[MAXHOSTNAMELEN];     /* host from which recd. */
         int     f_prevpri;                      /* pri of f_prevline */
         int     f_prevlen;                      /* length of f_prevline */

@@ -58,21 +58,10 @@
 
 #include <sys/resource.h>
 
-/* 
- * question: should the buffer-code be encapsulated by #ifdefs?
- * --> decided against because the changes are rather extensive,
- *     especially in fprintlog()
- */
-
-/* message buffer container used for queueing
- * 
- * many different fields because fprintlog
- * uses the different parts for formatting
- * 
- * TODO: simplify
- */
+/* message buffer container used for processing, formatting, and queueing */
 struct buf_msg {
         char        *timestamp;
+        char        *recvhost;
         char        *host;
         char        *prog;
         char        *pid;
@@ -80,17 +69,18 @@ struct buf_msg {
         int          pri;
         int          flags;
         unsigned int refcount;
-        char        *msg;       /* only a message like "syslogd: restart" */
-        char        *msgorig;   /* in case we advance *msg beyond the timestamp
+        char        *msg;       /* message content */
+        char        *msgorig;   /* in case we advance *msg beyond header fields
                                    we still want to free() the original ptr  */
-        size_t       msglen;
-        size_t       msgsize;   /* msglen is strlen(msg), msgsize is allocated memory */
-        char        *line;      /* a syslog line like "<46>Jun 28 14:32:08 host syslogd: restart" */
+        size_t       msglen;    /* strlen(msg) */
+        size_t       msgsize;   /* allocated memory size */
+        char        *line;      /* a syslog line,
+                        e.g. "123 <46>Jun 28 14:32:08 host syslogd: restart" */
         size_t       linelen;
-        char        *tlsline;   /* a prefixed tls line like "41 <46>Jun 28 14:32:08 host syslogd: restart" */ 
-        size_t       tlslen;
-        unsigned int tlsprefixlen; /* bytes used for the TLS length prefix */
-        unsigned int prilen;       /* bytes used for the priority and version field(s) */
+        unsigned int tlsprefixlen; /* bytes used for the TLS length prefix
+                                        e.g. strlen("123 ") */
+        unsigned int prilen;       /* bytes used for the priority and version
+                                field(s), e.g. strlen("<46>") */
 };
 
 
@@ -103,9 +93,7 @@ TAILQ_HEAD(buf_queue_head, buf_queue);
 #endif /* !DISABLE_TLS */
 
 
-/* argumunt struct for tls_send() 
- * TODO: merge with simplified struct buf_msg
- */
+/* argument struct for tls_send() */
 struct tls_send_msg {
         struct filed   *f;
         struct buf_msg *buffer;
@@ -161,7 +149,7 @@ char *strndup(const char *str, size_t n);
 
 /* remove first printf for short debug messages */
 #define DPRINTF(x, ...)    if (Debug & x) { \
-                                printf("%s:%s:%.4d\t", make_timestamp(true), __FILE__, __LINE__); \
+                                printf("%s:%s:%.4d\t", make_timestamp(NULL, true), __FILE__, __LINE__); \
                                 printf(__VA_ARGS__); }
 
 #define EVENT_ADD(x) do { \
@@ -182,11 +170,15 @@ char *strndup(const char *str, size_t n);
 #define FREE_SSL(x)     if (x)     { SSL_free(x);     x = NULL; }
 #define FREE_SSL_CTX(x) if (x)     { SSL_CTX_free(x); x = NULL; }
 
+/* strlen(NULL) does not work? */
+#define SAFEstrlen(x) ((x) ? strlen(x) : 0)
+
 #define MAXUNAMES       20      /* maximum number of user names */
 #define BSD_TIMESTAMPLEN    15+1
 #define MAX_TIMESTAMPLEN    32+1
 
 /* maximum field lengths in syslog-protocol */
+#define HOST_MAX    255
 #define APPNAME_MAX  48
 #define PROCID_MAX  128
 #define MSGID_MAX    32

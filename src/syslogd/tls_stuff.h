@@ -4,7 +4,6 @@
  */
 #ifndef _TLS_STUFF_H
 #define _TLS_STUFF_H
-
 #include <openssl/x509v3.h>
 #include <openssl/err.h>
 #include <openssl/rand.h>
@@ -107,6 +106,15 @@ struct tls_conn_settings {
                                 only set for incoming connections
                                 to be used for certificate authentication */
 };
+
+
+/* argument struct for tls_send() */
+struct tls_send_msg {
+        struct filed   *f;
+        struct buf_msg *buffer;
+        unsigned int    offset;    /* in case of partial writes */
+};
+
 /*
  * may be a TODO:
  * collect status information for possible SNMP MIB support
@@ -153,6 +161,7 @@ void dispatch_SSL_connect(int, short, void *);
 void tls_reconnect(int, short, void *);
 bool tls_send(struct filed *, struct buf_msg *);
 void dispatch_tls_send(int, short, void *);
+void tls_send_msg_free(struct tls_send_msg *);
 
 void dispatch_SSL_shutdown(int, short, void *);
 void free_tls_sslptr(struct tls_conn_settings *);

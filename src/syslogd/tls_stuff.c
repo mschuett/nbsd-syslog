@@ -74,14 +74,13 @@ extern void    send_queue(struct filed *);
 extern void schedule_event(struct event **, struct timeval *, void (*)(int, short, void *), void *);
 extern char *make_timestamp(time_t *, bool);
 extern struct filed *get_f_by_conninfo(struct tls_conn_settings *conn_info);
-extern void tls_send_msg_free(struct tls_send_msg *msg);
 extern bool message_queue_add(struct filed *, struct buf_msg *);
 extern void buf_msg_free(struct buf_msg *msg);
 
-inline unsigned int getVerifySetting(const char *x509verifystring);
+static inline unsigned int getVerifySetting(const char *x509verifystring);
 
 
-inline unsigned int
+static inline unsigned int
 getVerifySetting(const char *x509verifystring)
 {
         if (!x509verifystring)
@@ -1534,17 +1533,14 @@ tls_send(struct filed *f, struct buf_msg *buffer)
                         logerror("Unable to allocate memory, drop message");
                         return false;
                 }
-                sendmsg->refcount = 1;
                 sendmsg->f = f;
                 sendmsg->buffer = NEWREF(buffer);
                 DPRINTF(D_DATA, "now sending line: \"%.*s\"\n", buffer->linelen, buffer->line);
                 dispatch_tls_send(0, 0, sendmsg);
-                tls_send_msg_free(sendmsg);
-                DELREF(buffer);
                 return true;
         } else {
                 /* other socket operation active, send later  */
-                DPRINTF(D_DATA, "connection not ready, enqueue line: \"%.*s\"\n", buffer->linelen, buffer->line);
+                DPRINTF(D_DATA, "connection not ready to send line: \"%.*s\"\n", buffer->linelen, buffer->line);
                 
                 /* now the caller has to enqueue the message (if not already sending from queue) */
                 return false;
@@ -1570,10 +1566,6 @@ dispatch_tls_send(int fd, short event, void *arg)
         assert(conn_info->state == ST_TLS_EST
             || conn_info->state == ST_WRITING);
 
-        if (event & (EV_READ|EV_WRITE))
-                /* called after retry */
-                tls_send_msg_free(sendmsg);
-
         retrying = (conn_info->state == ST_WRITING);
         ST_CHANGE(conn_info->state, ST_WRITING);
         rc = SSL_write(conn_info->sslptr,
@@ -1589,18 +1581,19 @@ dispatch_tls_send(int fd, short event, void *arg)
                                 if (!retrying)
                                         event_del(conn_info->event);
                                 event_set(conn_info->retryevent, fd, EV_READ,
-                                        dispatch_tls_send, NEWREF(sendmsg));
+                                        dispatch_tls_send, sendmsg);
                                 RETRYEVENT_ADD(conn_info->retryevent);
                                 return;
                                 break;
                         case TLS_RETRY_WRITE:
                                 event_set(conn_info->retryevent, fd, EV_WRITE,
-                                        dispatch_tls_send, NEWREF(sendmsg));
+                                        dispatch_tls_send, sendmsg);
                                 RETRYEVENT_ADD(conn_info->retryevent);
                                 return;
                                 break;
                         case TLS_PERM_ERROR:
                                 /* no need to check active events */
+                                tls_send_msg_free(sendmsg);
                                 free_tls_sslptr(conn_info);
                                 schedule_event(&conn_info->event,
                                         &((struct timeval){conn_info->reconnect, 0}),
@@ -1616,16 +1609,17 @@ dispatch_tls_send(int fd, short event, void *arg)
                 /* try again */
                 if (retrying)
                         EVENT_ADD(conn_info->event);
-                dispatch_tls_send(0, 0, NEWREF(sendmsg));
-                tls_send_msg_free(sendmsg);
+                dispatch_tls_send(0, 0, sendmsg);
                 return;
         } else if (rc == (buffer->linelen - sendmsg->offset)) {
                 DPRINTF((D_TLS|D_DATA), "TLS: SSL_write() complete\n");
                 ST_CHANGE(conn_info->state, ST_TLS_EST);
+                tls_send_msg_free(sendmsg);
         } else {
                 /* should not be reached */
                 DPRINTF((D_TLS|D_DATA), "unreachable code after SSL_write()\n");
                 ST_CHANGE(conn_info->state, ST_TLS_EST);
+                tls_send_msg_free(sendmsg);
         }
         if (retrying && conn_info->event->ev_events)
                 EVENT_ADD(conn_info->event);
@@ -1649,6 +1643,10 @@ free_tls_conn(struct tls_conn_settings *conn_info)
         FREEPTR(conn_info->hostname);
         FREEPTR(conn_info->certfile);
         FREEPTR(conn_info->fingerprint);
+        if (conn_info->event)
+                event_del(conn_info->event);
+        if (conn_info->retryevent)
+                event_del(conn_info->retryevent);
         FREEPTR(conn_info->event);
         FREEPTR(conn_info->retryevent);
         FREEPTR(conn_info);
@@ -1724,8 +1722,17 @@ void dispatch_SSL_shutdown(int fd, short event, void *arg)
                 }
         }
         if ((conn_info->state != ST_TLS_EST)
+         && (conn_info->state != ST_NONE)
          && (conn_info->state != ST_CLOSING0)
          && (conn_info->state != ST_CLOSING1)) {
+                int sock = SSL_get_fd(conn_info->sslptr);
+                
+                ST_CHANGE(conn_info->state, conn_info->state);
+                
+                if (shutdown(sock, SHUT_RDWR) == -1)
+                        logerror("Cannot shutdown socket");
+                if (close(sock) == -1)
+                        logerror("Cannot close socket");
                 ST_CHANGE(conn_info->state, ST_NONE);
                 FREE_SSL(conn_info->sslptr);                
          }
@@ -1862,4 +1869,18 @@ mk_x509_cert(X509 **x509p, EVP_PKEY **pkeyp, int bits, int serial, int days)
     *x509p = x;
     *pkeyp = pk;
     return true;
+}
+
+void
+tls_send_msg_free(struct tls_send_msg *msg)
+{
+        if (!msg) {
+                DPRINTF((D_DATA), "invalid tls_send_msg_free(NULL)\n");
+                return;
+        } else
+                DPRINTF((D_DATA), "tls_send_msg_free(%p)\n", msg);
+
+        DELREF(msg->buffer);
+        FREEPTR(msg);
+        DPRINTF((D_DATA), "return from tls_send_msg_free()\n");
 }

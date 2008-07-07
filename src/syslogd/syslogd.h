@@ -92,15 +92,6 @@ struct buf_queue {
 TAILQ_HEAD(buf_queue_head, buf_queue);
 #endif /* !DISABLE_TLS */
 
-
-/* argument struct for tls_send() */
-struct tls_send_msg {
-        struct filed   *f;
-        struct buf_msg *buffer;
-        unsigned int    offset;    /* in case of partial writes */
-        unsigned int    refcount;
-};
-
 /* keeps track of UDP sockets and event objects */
 struct socketEvent {
         int fd;

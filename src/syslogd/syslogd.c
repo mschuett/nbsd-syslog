@@ -228,8 +228,9 @@ void    logpath_add(char ***, int *, int *, char *);
 void    logpath_fileadd(char ***, int *, int *, char *);
 char *make_timestamp(time_t *, bool);
 void check_timestamp(struct buf_msg *);
-inline bool valid_utf8(const unsigned char *);
-inline void check_headers(struct buf_msg *);
+static inline bool valid_utf8(const char *);
+static inline void check_headers(struct buf_msg *);
+static inline void free_incoming_tls_sockets(void);
 
 struct event *allocev(void);
 void schedule_event(struct event **, struct timeval *, void (*)(int, short, void *), void *);
@@ -243,7 +244,6 @@ void free_cred_SLIST(struct peer_cred_head *);
 static struct buf_queue *find_qentry_to_delete(const struct buf_queue_head *, const int, const bool);
 struct buf_msg *buf_msg_new(const size_t);
 void buf_msg_free(struct buf_msg *msg);
-void tls_send_msg_free(struct tls_send_msg *msg);
 
 bool message_queue_remove(struct filed *, struct buf_queue *);
 bool message_queue_add(struct filed *, struct buf_msg *);
@@ -782,16 +782,12 @@ logpath_fileadd(char ***lp, int *szp, int *maxszp, char *file)
         fclose(fp);
 }
 
-/* adapted from
- * https://www.securecoding.cert.org/confluence/display/seccode/MSC10-A.+Character+Encoding+-+UTF8+Related+Issues
- * 
- * Is this free to use?
- * 
- * returns length of valid UTF-8 codepoint
- * or 0 if *input is invalid
+/* 
+ * checks UTF-8 codepoint
+ * returns either its length in bytes or 0 if *input is invalid
  */
-inline bool
-valid_utf8(const unsigned char *c) {
+static inline bool
+valid_utf8(const char *c) {
     int nb, rc;
 
     if (!(*c & 0x80)) nb = 1;
@@ -1132,7 +1128,7 @@ check_timestamp(struct buf_msg *buffer)
 
 /* TODO: there are so many tests for BSDSYSLOG that it
  * would be better to have two versions of this functions */
-inline void
+static inline void
 check_headers(struct buf_msg *buffer)
 {
         int i;
@@ -1142,7 +1138,14 @@ check_headers(struct buf_msg *buffer)
         check_timestamp(buffer);
         DPRINTF(D_DATA, "Got timestamp \"%s\"\n", buffer->timestamp);
 
-        /* skip whitespace */
+        if (!isspace((unsigned char)*buffer->msg))
+                DPRINTF(D_DATA, "Missing whitespace after timestamp\n");
+        else {
+                buffer->msg++;
+                buffer->msglen--;
+        }
+
+        /* skip additional whitespace? */
         while (isspace((unsigned char)*buffer->msg)) {
                 DPRINTF(D_DATA, "Unexpected whitespace in message\n");
                 buffer->msg++;
@@ -1453,8 +1456,7 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
                         buffer->host = LocalHostName;
                         buffer->prog = strdup("syslogd");
                 } else {
-                        NEWREF(buffer);
-                        buffer = f->f_prevmsg;
+                        buffer = NEWREF(f->f_prevmsg);
                 }
         }
 
@@ -1700,8 +1702,7 @@ sendagain:
                 DPRINTF(D_MISC, "Logging to %s %s\n", TypeInfo[f->f_type].name, f->f_un.f_tls.tls_conn->hostname);
                 if (!tls_send(f, buffer) && !qentry) {
                                 message_queue_add(f, NEWREF(buffer));
-                } else if (qentry) /* msg was queued but now sent */
-                        DELREF(qentry->msg);
+                }
                 break;
 #endif /* !DISABLE_TLS */
 
@@ -1856,6 +1857,8 @@ wallmsg(struct filed *f, struct iovec *iov, size_t iovcnt)
         if (reenter++)
                 return;
 
+        /* TODO: dh found a memory allocation bug in the utmp functions
+         *       --> check sometime sater if it got fixed.            */
         (void)getutentries(NULL, &ep);
         if (ep != ohead) {
                 freeutentries(ohead);
@@ -2193,26 +2196,24 @@ loginfo(const char *fmt, ...)
                 printf("%s\n", buf);
 }
 
-void
-die(int fd, short event, void *ev)
+/* used in init() and die() */
+static inline void
+free_incoming_tls_sockets(void)
 {
-        struct filed *f, *next;
-        char **p;
-#ifndef DISABLE_TLS
         struct TLS_Incoming_Conn *tls_in;
         int i;
-#endif /* !DISABLE_TLS */
-
-        ShuttingDown = 1;       /* Don't log SIGCHLDs. */
-
-#ifndef DISABLE_TLS
+        
         /* 
          * close all listening and connected TLS sockets
          */
         if (TLS_Listen_Set)
-                for (i = 0; i < TLS_Listen_Set->fd; i++)
+                for (i = 0; i < TLS_Listen_Set->fd; i++) {
                         if (close(TLS_Listen_Set[i+1].fd) == -1)
                                 logerror("close() failed");
+                        if (event_del(TLS_Listen_Set[i+1].ev) == -1)
+                                logerror("event_del() failed");
+                        FREEPTR(TLS_Listen_Set[i+1].ev);
+                }
         /* close/free incoming TLS connections */
         while (!SLIST_EMPTY(&TLS_Incoming_Head)) {
                 tls_in = SLIST_FIRST(&TLS_Incoming_Head);
@@ -2221,9 +2222,23 @@ die(int fd, short event, void *ev)
                 free_tls_conn(tls_in->tls_conn);
                 free(tls_in);
         }
+}
 
+void
+die(int fd, short event, void *ev)
+{
+        struct filed *f, *next;
+        char **p;
+
+        ShuttingDown = 1;       /* Don't log SIGCHLDs. */
+
+#ifndef DISABLE_TLS
+        free_incoming_tls_sockets();
 #endif /* !DISABLE_TLS */
 
+        /*
+         *  Close all open log files.
+         */
         for (f = Files; f != NULL; f = next) {
                 DPRINTF(D_MEM, "die() cleaning f@%p)\n", f);
                 /* flush any pending output */
@@ -2232,15 +2247,30 @@ die(int fd, short event, void *ev)
                 send_queue(f);
                 message_queue_freeall(f);
 
-                if (f->f_type == F_PIPE && f->f_un.f_pipe.f_pid > 0) {
-                        (void) close(f->f_file);
+                switch (f->f_type) {
+                case F_FILE:
+                case F_TTY:
+                case F_CONSOLE:
+                        (void)close(f->f_file);
+                        break;
+                case F_PIPE:
+                        if (f->f_un.f_pipe.f_pid > 0) {
+                                (void)close(f->f_file);
+                        }
                         f->f_un.f_pipe.f_pid = 0;
-                }
+                        break;
+                case F_FORW:
+                        if (f->f_un.f_forw.f_addr)
+                                freeaddrinfo(f->f_un.f_forw.f_addr);
+                        break;
 #ifndef DISABLE_TLS
-                if (f->f_type == F_TLS)
+                case F_TLS:
                         free_tls_conn(f->f_un.f_tls.tls_conn);
+                        break;
 #endif /* !DISABLE_TLS */
+                }
                 next = f->f_next;
+                DELREF(f->f_prevmsg);
                 FREEPTR(f->f_program);
                 FREEPTR(f->f_host);
                 free((char *)f);
@@ -2251,6 +2281,11 @@ die(int fd, short event, void *ev)
         FREEPTR(tls_opt.CAfile);
         FREEPTR(tls_opt.keyfile);
         FREEPTR(tls_opt.certfile);
+        FREEPTR(tls_opt.x509verify);
+        FREEPTR(tls_opt.bindhost);
+        FREEPTR(tls_opt.bindport);
+        FREEPTR(tls_opt.server);
+        FREEPTR(tls_opt.gen_cert);
         free_cred_SLIST(&tls_opt.cert_head);
         free_cred_SLIST(&tls_opt.fprint_head);
         FREE_SSL_CTX(tls_opt.global_TLS_CTX);
@@ -2282,7 +2317,6 @@ init(int fd, short event, void *ev)
         unsigned int linenum;
         bool found_keyword;
 #ifndef DISABLE_TLS
-        struct TLS_Incoming_Conn *tls_in;
         struct peer_cred *cred = NULL;
         struct peer_cred_head *credhead = NULL;
         char *tmp_buf = NULL;
@@ -2332,31 +2366,9 @@ init(int fd, short event, void *ev)
         LocalDomainLen = strlen(LocalDomain);
 
         Initialized = 0;
+
 #ifndef DISABLE_TLS
-        /* 
-         * close all listening and connected TLS sockets
-         */
-        if (TLS_Listen_Set)
-                for (i = 0; i < TLS_Listen_Set->fd; i++) {
-                        if (close(TLS_Listen_Set[i+1].fd) == -1)
-                                logerror("close() failed");
-                                /* what do we do now? */
-                        if (event_del(TLS_Listen_Set[i+1].ev) == -1)
-                                logerror("event_del() failed");
-                                /* what do we do now? */
-                        else
-                                FREEPTR(TLS_Listen_Set[i+1].ev);
-                }
-
-        /* close/free incoming TLS connections */
-        while (!SLIST_EMPTY(&TLS_Incoming_Head)) {
-                tls_in = SLIST_FIRST(&TLS_Incoming_Head);
-                SLIST_REMOVE_HEAD(&TLS_Incoming_Head, entries);
-                FREEPTR(tls_in->inbuf);
-                free_tls_conn(tls_in->tls_conn);
-                free(tls_in);
-        }
-
+        free_incoming_tls_sockets();
         /* TODO: I wonder whether TLS connections should
          * use a multi-step shutdown:
          * 1. send close notify to incoming connections
@@ -2409,6 +2421,7 @@ init(int fd, short event, void *ev)
 #endif /* !DISABLE_TLS */
                 }
                 next = f->f_next;
+                DELREF(f->f_prevmsg);
                 FREEPTR(f->f_program);
                 FREEPTR(f->f_host);
                 free((char *)f);
@@ -3315,12 +3328,10 @@ send_queue(struct filed *f)
 {
         struct buf_queue *qentry;
         
-        DPRINTF((D_DATA|D_CALL), "send_queue(f@%p with %d msgs and head %s)\n",
-                f, f->f_qelements, TAILQ_EMPTY(&f->f_qhead) ? "valid" : "NULL");
-        while (!TAILQ_EMPTY(&f->f_qhead)) {
-                qentry = TAILQ_FIRST(&f->f_qhead);
+        DPRINTF((D_DATA|D_CALL), "send_queue(f@%p with %d msgs)\n",
+                f, f->f_qelements);
+        TAILQ_FOREACH(qentry, &f->f_qhead, entries) {
                 DPRINTF((D_DATA|D_CALL), "send_queue() calls fprintlog()\n");
-                /* TODO: where is the free() for qentry and qentry->msg ??? */
                 fprintlog(f, qentry->msg, qentry);
         }
 }
@@ -3359,7 +3370,7 @@ find_qentry_to_delete(const struct buf_queue_head *head, const int strategy, con
                 }
                 /* nothing found in while loop --> next pri */
                 if (--pri)
-                        return find_qentry_to_delete(head, strategy, 0);
+                        return find_qentry_to_delete(head, strategy, false);
                 else
                         return NULL;
         } else /* strategy == PURGE_OLDEST or other value */ {
@@ -3397,7 +3408,7 @@ message_queue_purge(struct filed *f, const unsigned int del_entries, const int s
                 f, del_entries, strategy,
                 f->f_qelements, f->f_qsize);
 
-        (void)find_qentry_to_delete(&f->f_qhead, strategy, 1);
+        (void)find_qentry_to_delete(&f->f_qhead, strategy, true);
 
         while (removed < del_entries
           || (TypeInfo[f->f_type].queue_length != -1
@@ -3413,23 +3424,6 @@ message_queue_purge(struct filed *f, const unsigned int del_entries, const int s
 
         DPRINTF(D_BUFFER, "removed %d entries\n", removed);
         return removed;
-}
-
-void
-tls_send_msg_free(struct tls_send_msg *msg)
-{
-        if (!msg) {
-                DPRINTF((D_DATA), "invalid tls_send_msg_free(NULL)\n");
-                return;
-        } else
-                DPRINTF((D_DATA), "tls_send_msg_free(%p, refs=%d)\n", msg, msg->refcount);
-
-        msg->refcount--;
-        if (!msg->refcount) {
-                DELREF(msg->buffer);
-                FREEPTR(msg);
-        }
-        DPRINTF((D_DATA), "return from tls_send_msg_free()\n");
 }
 
 struct buf_msg *
@@ -3452,13 +3446,8 @@ buf_msg_new(const size_t len)
 void
 buf_msg_free(struct buf_msg *buf)
 {
-        if (!buf) {
-                //DPRINTF((D_DATA), "invalid buf_msg_free(NULL)\n");
+        if (!buf)
                 return;
-        } else {
-                //DPRINTF((D_DATA), "buf_msg_free(%p, refs=%d-->%d)\n",
-                //        buf, buf->refcount, buf->refcount - 1);
-        }
 
         buf->refcount--;
         if (!buf->refcount) {
@@ -3473,7 +3462,6 @@ buf_msg_free(struct buf_msg *buf)
                 FREEPTR(buf->line);
                 FREEPTR(buf);
         }
-        DPRINTF((D_DATA), "return from buf_msg_free()\n");
 }
 
 bool
@@ -3610,13 +3598,7 @@ make_timestamp(time_t *in_now, bool iso)
 
         ltime = localtime(&mytime);
         len += strftime(timestamp, TIMESTAMPBUFSIZE, "%FT%T", ltime);
-        /* if used with input parameter we have a 1-second-resolution input
-         * (from a BSD Syslog timestamp)
-         * should we output a wrong subsecond part
-         * or should we output a 1-second-resolution ISO timestamp,
-         * which will lead to different timestamp and line lengths
-         * ?
-         */
+
         if (tvptr) {
                 snprintf(&(timestamp[len]), frac_digits+2, ".%.*ld", frac_digits, tvptr->tv_usec);
                 len += frac_digits+1;

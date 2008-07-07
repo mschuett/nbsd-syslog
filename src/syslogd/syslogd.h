@@ -148,10 +148,12 @@ char *strndup(const char *str, size_t n);
 /*#define D_ALL   4095  */
 
 /* remove first printf for short debug messages */
-#define DPRINTF(x, ...)    if (Debug & x) { \
-                                printf("%s:%s:%.4d\t", make_timestamp(NULL, true), __FILE__, __LINE__); \
-                                printf(__VA_ARGS__); }
+#define DPRINTF(x, ...) ((Debug & x) \
+                         ? (printf("%s:%s:%.4d\t", make_timestamp(NULL, true), \
+                                __FILE__, __LINE__), printf(__VA_ARGS__)) \
+                         : 0)
 
+/* shortcuts for libevent */
 #define EVENT_ADD(x) do { \
                         if (event_add(x, NULL) == -1) \
                                 DPRINTF(D_TLS, "Failure in event_add()\n"); \
@@ -161,14 +163,34 @@ char *strndup(const char *str, size_t n);
                                 DPRINTF(D_TLS, "Failure in event_add()\n"); \
                         } while (0)
 
-#define MALLOC(ptr, size)  do { if (!(ptr = malloc(size))) \
-                                logerror("Unable to allocate memory"); \
-                              } while (0)
-
 #define FREEPTR(x)      if (x)     { DPRINTF(D_MEM2, "free(%s@%p)\n", #x, x); \
                                      free(x);         x = NULL; }
 #define FREE_SSL(x)     if (x)     { SSL_free(x);     x = NULL; }
 #define FREE_SSL_CTX(x) if (x)     { SSL_CTX_free(x); x = NULL; }
+
+/* generic for all structs with refcount */ 
+#define NEWREF(x) ((x) ? (DPRINTF(D_BUFFER, "inc refcount of " #x \
+                        " @ %p: %d --> %d\n", (x), (x)->refcount, \
+                        (x)->refcount + 1), (x)->refcount++, (x))\
+                       : (DPRINTF(D_BUFFER, "inc refcount of NULL!\n"), NULL))
+/* only for struct msg_buf() because of buf_msg_free(x) */
+#define DELREF(x) ((x) ? (DPRINTF(D_BUFFER, "dec refcount of " #x \
+                        " @ %p: %d --> %d\n", (x), (x)->refcount, \
+                        (x)->refcount - 1), buf_msg_free(x), NULL) \
+                       : (DPRINTF(D_BUFFER, "dec refcount of NULL!\n"), NULL) )
+
+/* assumption: once init() has set up all global variables etc.
+ * the bulk of available memory is used for buffer and can be freed
+ * if necessary */
+#define MALLOC(ptr, size) while(!(ptr = malloc(size))) { \
+                                struct filed *f; \
+                                DPRINTF(D_MEM, "Unable to allocate memory"); \
+                                for (f = Files; f; f = f->f_next) \
+                                        message_queue_purge(f, \
+                                                f->f_qelements/10, \
+                                                PURGE_BY_PRIORITY); \
+                          }
+
 
 /* strlen(NULL) does not work? */
 #define SAFEstrlen(x) ((x) ? strlen(x) : 0)

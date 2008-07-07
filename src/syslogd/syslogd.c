@@ -210,7 +210,7 @@ struct socketEvent* socksetup(int, const char *);
 void    init(int fd, short event, void *ev);  /* SIGHUP kevent dispatch routine */
 void    logerror(const char *, ...);
 void    loginfo(const char *, ...);
-void    logmsg_async(const int, const char *, const char *, const int);
+void    logmsg_async(const int, const char *, const int);
 void    logmsg(struct buf_msg *);
 void    log_deadchild(pid_t, int, const char *);
 int     matches_spec(const char *, const char *,
@@ -305,8 +305,7 @@ main(int argc, char *argv[])
 	/* should we set LC_TIME="C" to ensure correct timestamps&parsing? */
         (void)setlocale(LC_ALL, "");
 
-        /* TODO: introduce TLS related options if needed */
-        while ((ch = getopt(argc, argv, "b:cdnsSf:m:op:P:ru:g:t:TUv")) != -1)
+        while ((ch = getopt(argc, argv, "b:dnsSf:m:op:P:ru:g:t:TUv")) != -1)
                 switch(ch) {
                 case 'b':
                         bindhostname = optarg;
@@ -912,7 +911,7 @@ printline(char *hname, char *msg, int flags)
                 buffer->flags = flags;
 
         logmsg(buffer);
-        buf_msg_free(buffer);
+        DELREF(buffer);
 }
 
 /*
@@ -963,7 +962,7 @@ printsys(char *msg)
                 buffer->msglen = strlcpy(buffer->msg, p, cplen);
                 buffer->recvhost = LocalFQDN;
                 logmsg(buffer);
-                buf_msg_free(buffer);
+                DELREF(buffer);
                 p = q;
         }
 }
@@ -1008,7 +1007,7 @@ matches_spec(const char *name, const char *spec,
  * keeps calling code shorter and hides buffer allocation
  */
 void
-logmsg_async(const int pri, const char *msg, const char *from, const int flags)
+logmsg_async(const int pri, const char *msg, const int flags)
 {
         struct buf_msg *buffer;
         size_t msglen;
@@ -1017,11 +1016,11 @@ logmsg_async(const int pri, const char *msg, const char *from, const int flags)
         buffer = buf_msg_new(msglen);
         
         buffer->pri = pri;
-        buffer->msglen = strlcpy(buffer->msg, msg, msglen);
-        buffer->recvhost = strdup(from);
+        buffer->msglen = strlcpy(buffer->msg, msg, msglen) + 1;
+        buffer->recvhost = LocalHostName;
         buffer->flags = flags;
         logmsg(buffer);
-        buf_msg_free(buffer);
+        DELREF(buffer);
 }
 
 /* check and/or add the timestamp */
@@ -1247,6 +1246,7 @@ check_headers(struct buf_msg *buffer)
         DPRINTF(D_DATA, "Got msg \"%s\" with strlen+1=%d and msglen=%d\n",
                 buffer->msg, strlen(buffer->msg)+1, buffer->msglen);
 }
+
 /*
  * Log a message to the appropriate log files, users, etc. based on
  * the priority.
@@ -1268,7 +1268,7 @@ logmsg(struct buf_msg *buffer)
         if (Debug) {
                 if (buffer->refcount != 1)
                         DPRINTF(D_BUFFER,
-                                "msgbuf->refcount != 1 -- memory leak?\n");
+                                "buffer->refcount != 1 -- memory leak?\n");
                 if (buffer->msglen != strlen(buffer->msg)+1)
                         DPRINTF((D_BUFFER|D_DATA),
                                 "buffer->msglen = %d != %d = "
@@ -1301,10 +1301,10 @@ logmsg(struct buf_msg *buffer)
                 f->f_file = open(ctty, O_WRONLY, 0);
 
                 if (f->f_file >= 0) {
-                        buf_msg_free(f->f_prevmsg);
-                        buffer->refcount++;
-                        f->f_prevmsg = buffer;
-                        fprintlog(f, buffer, NULL);
+                        DELREF(f->f_prevmsg);
+                        f->f_prevmsg = NEWREF(buffer);
+                        fprintlog(f, NEWREF(buffer), NULL);
+                        DELREF(buffer);
                         (void)close(f->f_file);
                 }
                 (void)sigsetmask(omask);
@@ -1386,7 +1386,8 @@ logmsg(struct buf_msg *buffer)
                          * in the future.
                          */
                         if (now > REPEATTIME(f)) {
-                                fprintlog(f, buffer, NULL);
+                                fprintlog(f, NEWREF(buffer), NULL);
+                                DELREF(buffer);
                                 BACKOFF(f);
                         }
                 } else {
@@ -1394,10 +1395,10 @@ logmsg(struct buf_msg *buffer)
                         if (f->f_prevcount)
                                 fprintlog(f, NULL, NULL);
                         f->f_repeatcount = 0;
-                        buf_msg_free(f->f_prevmsg);
-                        buffer->refcount++;
-                        f->f_prevmsg = buffer;
-                        fprintlog(f, buffer, NULL);
+                        DELREF(f->f_prevmsg);
+                        f->f_prevmsg = NEWREF(buffer);
+                        fprintlog(f, NEWREF(buffer), NULL);
+                        DELREF(buffer);
                 }
         }
         (void)sigsetmask(omask);
@@ -1434,18 +1435,27 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
 
         f->f_time = now;
 
-        if (!buffer) {
-                /* ad-hoc buffer to format repeat message */
+        /* increase refcount here and lower again at return.
+         * this enables the buffer in the else branch to be freed
+         * --> every branch needs one NEWREF() or buf_msg_new()! */ 
+        if (buffer) {
+                NEWREF(buffer);
+        } else {
+                /* ad-hoc buffer to format repeat message,
+                 * problem: when is this freed? */
                 if (f->f_prevcount > 1) {
                         buffer = buf_msg_new(REPBUFSIZE);
                         buffer->msglen = snprintf(buffer->msg, REPBUFSIZE,
                             "last message repeated %d times", f->f_prevcount);
-                        buffer->timestamp = strdup(f->f_prevmsg->timestamp);
+                        buffer->timestamp =
+                                make_timestamp(NULL, !BSDOutputFormat);
                         buffer->pri = f->f_prevmsg->pri;
-                        buffer->host = strdup(f->f_prevmsg->host);
+                        buffer->host = LocalHostName;
                         buffer->prog = strdup("syslogd");
-                } else
+                } else {
+                        NEWREF(buffer);
                         buffer = f->f_prevmsg;
+                }
         }
 
         /* TODO: has to become a per-destination option later
@@ -1514,7 +1524,7 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
                         buffer->tlsprefixlen++;
                 /* one more for the space */
                 buffer->tlsprefixlen++;
-                
+
                 buffer->prilen = snprintf(NULL, 0, "<%d>", buffer->pri);
                 if (!BSDOutputFormat)
                         buffer->prilen += 2; /* version char and space */
@@ -1523,6 +1533,7 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
                         logerror("Unable to allocate memory, drop message");
                         f->f_prevcount = 0;
                         /* skip the queue_add() without memory */
+                        DELREF(buffer);
                         return;
                 }
                 if (BSDOutputFormat)
@@ -1687,12 +1698,10 @@ sendagain:
 #ifndef DISABLE_TLS
         case F_TLS:
                 DPRINTF(D_MISC, "Logging to %s %s\n", TypeInfo[f->f_type].name, f->f_un.f_tls.tls_conn->hostname);
-
-                buffer->refcount++;
                 if (!tls_send(f, buffer) && !qentry) {
-                                buffer->refcount++;
-                                message_queue_add(f, buffer);
-                }
+                                message_queue_add(f, NEWREF(buffer));
+                } else if (qentry) /* msg was queued but now sent */
+                        DELREF(qentry->msg);
                 break;
 #endif /* !DISABLE_TLS */
 
@@ -1704,8 +1713,9 @@ sendagain:
                                                 &f->f_un.f_pipe.f_pid)) < 0) {
                                 f->f_type = F_UNUSED;
                                 logerror(f->f_un.f_pipe.f_pname);
-                                if (buffer && !qentry)
-                                        message_queue_add(f, buffer);
+                                if (buffer && !qentry) {
+                                        message_queue_add(f, NEWREF(buffer));
+                                }
                                 break;
                         }
                         else
@@ -1748,8 +1758,10 @@ sendagain:
                                         }
                                         f->f_un.f_pipe.f_pid = 0;
                                         f->f_prevcount = 0;
-                                        if (buffer && !qentry)
-                                                message_queue_add(f, buffer);
+                                        if (buffer && !qentry) {
+                                                message_queue_add(f, NEWREF(buffer));
+                                        }
+                                        DELREF(buffer);
                                         return;
                                 } else
                                         e = 0;
@@ -1781,8 +1793,10 @@ sendagain:
                                         logerror(f->f_un.f_fname);
                                 /* TODO: can we get an event when file is writeable again? */
                                 f->f_prevcount = 0;
-                                if (buffer && !qentry)
-                                        message_queue_add(f, buffer);
+                                if (buffer && !qentry) {
+                                        message_queue_add(f, NEWREF(buffer));
+                                }
+                                DELREF(buffer);
                                 return;
                         }
                         (void)close(f->f_file);
@@ -1819,8 +1833,8 @@ sendagain:
                 break;
         }
         f->f_prevcount = 0;
-        if (buffer && qentry)
-                message_queue_remove(f, qentry);
+        /* this belongs to the ad-hoc buffer at the first if(buffer) */
+        DELREF(buffer);
 }
 
 /*
@@ -2072,7 +2086,7 @@ domark(int fd, short event, void *ev)
         now = time((time_t *)NULL);
         MarkSeq += TIMERINTVL;
         if (MarkSeq >= MarkInterval) {
-                logmsg_async(LOG_INFO, markline, LocalFQDN, ADDDATE|MARK);
+                logmsg_async(LOG_INFO, markline, ADDDATE|MARK);
                 MarkSeq = 0;
         }
 
@@ -2136,7 +2150,6 @@ logerror(const char *fmt, ...)
                 return;
         logerror_running = 1;
 
-
         va_start(ap, fmt);
         (void)vsnprintf(tmpbuf, sizeof(tmpbuf), fmt, ap);
         va_end(ap);
@@ -2148,7 +2161,7 @@ logerror(const char *fmt, ...)
                 (void)snprintf(buf, sizeof(buf), "syslogd: %s", tmpbuf);
 
         if (daemonized) 
-                logmsg_async(LOG_SYSLOG|LOG_ERR, buf, LocalFQDN, ADDDATE);
+                logmsg_async(LOG_SYSLOG|LOG_ERR, buf, ADDDATE);
         if (!daemonized && Debug)
                 DPRINTF(D_MISC, "%s\n", buf);
         if (!daemonized && !Debug)
@@ -2173,7 +2186,7 @@ loginfo(const char *fmt, ...)
         (void)snprintf(buf, sizeof(buf), "syslogd: %s", tmpbuf);
 
         if (daemonized) 
-                logmsg_async(LOG_SYSLOG|LOG_INFO, buf, LocalFQDN, ADDDATE);
+                logmsg_async(LOG_SYSLOG|LOG_INFO, buf, ADDDATE);
         if (!daemonized && Debug)
                 DPRINTF(D_MISC, "%s\n", buf);
         if (!daemonized && !Debug)
@@ -3306,9 +3319,8 @@ send_queue(struct filed *f)
                 f, f->f_qelements, TAILQ_EMPTY(&f->f_qhead) ? "valid" : "NULL");
         while (!TAILQ_EMPTY(&f->f_qhead)) {
                 qentry = TAILQ_FIRST(&f->f_qhead);
-
                 DPRINTF((D_DATA|D_CALL), "send_queue() calls fprintlog()\n");
-                /* TODO: check if I get invalid data by using f instead of f_tmp */
+                /* TODO: where is the free() for qentry and qentry->msg ??? */
                 fprintlog(f, qentry->msg, qentry);
         }
 }
@@ -3414,7 +3426,7 @@ tls_send_msg_free(struct tls_send_msg *msg)
 
         msg->refcount--;
         if (!msg->refcount) {
-                buf_msg_free(msg->buffer);
+                DELREF(msg->buffer);
                 FREEPTR(msg);
         }
         DPRINTF((D_DATA), "return from tls_send_msg_free()\n");
@@ -3434,20 +3446,20 @@ buf_msg_new(const size_t len)
         }
         newbuf->msgorig = newbuf->msg;
         newbuf->msgsize = len;
-        newbuf->refcount = 1;
-
-        return newbuf;
+        return NEWREF(newbuf);
 }
-        
+
 void
 buf_msg_free(struct buf_msg *buf)
 {
         if (!buf) {
-                DPRINTF((D_DATA), "invalid buf_msg_free(NULL)\n");
+                //DPRINTF((D_DATA), "invalid buf_msg_free(NULL)\n");
                 return;
-        } else
-                DPRINTF((D_DATA), "buf_msg_free(%p, refs=%d)\n", buf, buf->refcount);
-        
+        } else {
+                //DPRINTF((D_DATA), "buf_msg_free(%p, refs=%d-->%d)\n",
+                //        buf, buf->refcount, buf->refcount - 1);
+        }
+
         buf->refcount--;
         if (!buf->refcount) {
                 /* small optimization: the host/recvhost may point to the
@@ -3477,12 +3489,18 @@ message_queue_remove(struct filed *f, struct buf_queue *qentry)
                       + qentry->msg->msgsize
                       + qentry->msg->linelen
                       + SAFEstrlen(qentry->msg->timestamp)
-                      + SAFEstrlen(qentry->msg->recvhost)
-                      + SAFEstrlen(qentry->msg->host)
                       + SAFEstrlen(qentry->msg->prog)
                       + SAFEstrlen(qentry->msg->pid)
                       + SAFEstrlen(qentry->msg->msgid);
-        buf_msg_free(qentry->msg);
+        if (qentry->msg->recvhost
+         && qentry->msg->recvhost != LocalHostName
+         && qentry->msg->recvhost != LocalFQDN)
+                f->f_qsize -= strlen(qentry->msg->recvhost);
+        if (qentry->msg->host
+         && qentry->msg->host != LocalHostName
+         && qentry->msg->host != LocalFQDN)
+                f->f_qsize -= strlen(qentry->msg->host);
+        DELREF(qentry->msg);
         FREEPTR(qentry);
         return true;
 }
@@ -3501,18 +3519,23 @@ message_queue_add(struct filed *f, struct buf_msg *buffer)
                 return false;
         } else {
                 qentry->msg = buffer;
-                buffer->refcount++;
                 f->f_qelements++;
                 f->f_qsize += sizeof(*qentry)
                               + sizeof(*qentry->msg)
                               + qentry->msg->msgsize
                               + qentry->msg->linelen
                               + SAFEstrlen(qentry->msg->timestamp)
-                              + SAFEstrlen(qentry->msg->recvhost)
-                              + SAFEstrlen(qentry->msg->host)
                               + SAFEstrlen(qentry->msg->prog)
                               + SAFEstrlen(qentry->msg->pid)
                               + SAFEstrlen(qentry->msg->msgid);
+                if (qentry->msg->recvhost
+                 && qentry->msg->recvhost != LocalHostName
+                 && qentry->msg->recvhost != LocalFQDN)
+                        f->f_qsize += strlen(qentry->msg->recvhost);
+                if (qentry->msg->host
+                 && qentry->msg->host != LocalHostName
+                 && qentry->msg->host != LocalFQDN)
+                        f->f_qsize += strlen(qentry->msg->host);
                 TAILQ_INSERT_TAIL(&f->f_qhead, qentry, entries);
                 DPRINTF(D_BUFFER, "msg queued\n");
                 return true;
@@ -3530,7 +3553,7 @@ message_queue_freeall(struct filed *f)
         while (!TAILQ_EMPTY(&f->f_qhead)) {
                 qentry = TAILQ_FIRST(&f->f_qhead);
                 TAILQ_REMOVE(&f->f_qhead, qentry, entries);
-                buf_msg_free(qentry->msg);
+                DELREF(qentry->msg);
                 FREEPTR(qentry);                
         }
 

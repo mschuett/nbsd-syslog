@@ -76,6 +76,7 @@ extern char *make_timestamp(time_t *, bool);
 extern struct filed *get_f_by_conninfo(struct tls_conn_settings *conn_info);
 extern void tls_send_msg_free(struct tls_send_msg *msg);
 extern bool message_queue_add(struct filed *, struct buf_msg *);
+extern void buf_msg_free(struct buf_msg *msg);
 
 inline unsigned int getVerifySetting(const char *x509verifystring);
 
@@ -1553,10 +1554,11 @@ tls_send(struct filed *f, struct buf_msg *buffer)
                 }
                 sendmsg->refcount = 1;
                 sendmsg->f = f;
-                sendmsg->buffer = buffer;
-                buffer->refcount++;
+                sendmsg->buffer = NEWREF(buffer);
                 DPRINTF(D_DATA, "now sending line: \"%.*s\"\n", buffer->linelen, buffer->line);
                 dispatch_tls_send(0, 0, sendmsg);
+                tls_send_msg_free(sendmsg);
+                DELREF(buffer);
                 return true;
         } else {
                 /* other socket operation active, send later  */
@@ -1586,6 +1588,10 @@ dispatch_tls_send(int fd, short event, void *arg)
         assert(conn_info->state == ST_TLS_EST
             || conn_info->state == ST_WRITING);
 
+        if (event & (EV_READ|EV_WRITE))
+                /* called after retry */
+                tls_send_msg_free(sendmsg);
+
         retrying = (conn_info->state == ST_WRITING);
         ST_CHANGE(conn_info->state, ST_WRITING);
         rc = SSL_write(conn_info->sslptr,
@@ -1601,14 +1607,15 @@ dispatch_tls_send(int fd, short event, void *arg)
                                 if (!retrying)
                                         event_del(conn_info->event);
                                 event_set(conn_info->retryevent, fd, EV_READ,
-                                        dispatch_tls_send, arg);
+                                        dispatch_tls_send, NEWREF(sendmsg));
                                 RETRYEVENT_ADD(conn_info->retryevent);
                                 return;
                                 break;
                         case TLS_RETRY_WRITE:
                                 event_set(conn_info->retryevent, fd, EV_WRITE,
-                                        dispatch_tls_send, arg);
+                                        dispatch_tls_send, NEWREF(sendmsg));
                                 RETRYEVENT_ADD(conn_info->retryevent);
+                                return;
                                 break;
                         case TLS_PERM_ERROR:
                                 /* no need to check active events */
@@ -1627,13 +1634,12 @@ dispatch_tls_send(int fd, short event, void *arg)
                 /* try again */
                 if (retrying)
                         EVENT_ADD(conn_info->event);
-                buffer->refcount++;
-                dispatch_tls_send(0, 0, sendmsg);
+                dispatch_tls_send(0, 0, NEWREF(sendmsg));
+                tls_send_msg_free(sendmsg);
                 return;
         } else if (rc == (buffer->linelen - sendmsg->offset)) {
                 DPRINTF((D_TLS|D_DATA), "TLS: SSL_write() complete\n");
                 ST_CHANGE(conn_info->state, ST_TLS_EST);
-                tls_send_msg_free(sendmsg);
         } else {
                 /* should not be reached */
                 DPRINTF((D_TLS|D_DATA), "unreachable code after SSL_write()\n");

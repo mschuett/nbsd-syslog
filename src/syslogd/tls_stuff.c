@@ -1165,7 +1165,7 @@ dispatch_accept_tls(int fd, short event, void *arg)
         tls_in->inbuflen = TLS_MIN_LINELENGTH;
         SLIST_INSERT_HEAD(&TLS_Incoming_Head, tls_in, entries);
 
-        event_set(conn_info->event, tls_in->socket, EV_READ | EV_PERSIST, dispatch_read_tls, conn_info->event);
+        event_set(conn_info->event, tls_in->socket, EV_READ | EV_PERSIST, dispatch_read_tls, tls_in);
         EVENT_ADD(conn_info->event);
 
         loginfo("established TLS connection from %s with certificate "
@@ -1306,35 +1306,18 @@ dispatch_eof_tls(int fd, short event, void *arg)
  * NB: This gets called when the TCP socket has data available, thus
  *     we can call SSL_read() on it. But that does not mean the SSL buffer
  *     holds a complete record and SSL_read() lets us read any data now.
- * Question: we get the socket fd and have to look up the tls_conn object.
- *     IMHO we always have <100 connections and a list traversal is
- *     fast enough. A possible optimization would be keeping track of
- *     message counts and moving busy sources to the front of the list.
  */
 /* uses the fd as passed with ev */
 void
-dispatch_read_tls(int fd_lib, short event, void *ev)
+dispatch_read_tls(int fd_lib, short event, void *arg)
 {
+        struct TLS_Incoming_Conn *c = (struct TLS_Incoming_Conn *) arg;
+        int fd = c->socket;
         int error;
         int_fast16_t rc;
-        struct TLS_Incoming_Conn *c;
-        int fd = EVENT_FD(((struct event *)ev));
         bool retrying;
 
         DPRINTF((D_TLS|D_EVENT|D_CALL), "active TLS socket %d\n", fd);
-
-        /* first: find the TLS_Incoming_Conn this socket belongs to */
-        SLIST_FOREACH(c, &TLS_Incoming_Head, entries) {
-                DPRINTF(D_TLS, "look at tls_in@%p with fd %d\n", c, c->socket);
-                if (c->socket == fd)
-                        break;
-        }
-        if (!c) {
-                logerror("lost TLS socket fd %d, closing", fd);
-                close(fd);
-                return;
-        }
-
         DPRINTF(D_TLS, "calling SSL_read(%p, %p, %d)\n", c->ssl,
                 &(c->inbuf[c->read_pos]), c->inbuflen - c->read_pos);
         retrying = (c->tls_conn->state == ST_READING);
@@ -1350,8 +1333,7 @@ dispatch_read_tls(int fd_lib, short event, void *ev)
                                 if (!retrying)
                                         event_del(c->tls_conn->event);
                                 event_set(c->tls_conn->retryevent, fd,
-                                        EV_WRITE, dispatch_read_tls,
-                                        &c->tls_conn);
+                                        EV_WRITE, dispatch_read_tls, c);
                                 EVENT_ADD(c->tls_conn->retryevent);
                                 return;
                                 break;

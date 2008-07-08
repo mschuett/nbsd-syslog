@@ -2925,7 +2925,7 @@ cfline(const unsigned int linenum, char *line, struct filed *f, char *prog, char
                 hints.ai_family = AF_UNSPEC;
                 hints.ai_socktype = SOCK_DGRAM;
                 hints.ai_protocol = 0;
-                error = getaddrinfo(f->f_un.f_forw.f_hname, SERVICENAME, &hints,
+                error = getaddrinfo(f->f_un.f_forw.f_hname, "syslog", &hints,
                     &res);
                 if (error) {
                         logerror(gai_strerror(error));
@@ -3071,7 +3071,7 @@ socksetup(int af, const char *hostname)
         hints.ai_flags = AI_PASSIVE;
         hints.ai_family = af;
         hints.ai_socktype = SOCK_DGRAM;
-        error = getaddrinfo(hostname, SERVICENAME, &hints, &res);
+        error = getaddrinfo(hostname, "syslog", &hints, &res);
         if (error) {
                 logerror(gai_strerror(error));
                 errno = 0;

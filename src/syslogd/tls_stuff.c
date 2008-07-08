@@ -50,8 +50,8 @@ const char *TLS_CONN_STATES[] = {
         "ST_CLOSING2"};
 
 #define ST_CHANGE(x, y) do { if ((x) != (y)) { \
-                DPRINTF(D_TLS, "Change state %p: %s --> %s\n", \
-                        &(x), TLS_CONN_STATES[x], TLS_CONN_STATES[y]); \
+                DPRINTF(D_TLS, "Change state: %s --> %s\n", \
+                        TLS_CONN_STATES[x], TLS_CONN_STATES[y]); \
                 (x) = (y); } } while (0)
 
 /* definitions in syslogd.c */
@@ -569,7 +569,7 @@ check_peer_cert(int preverify_ok, X509_STORE_CTX *ctx)
          *   false: no valid and trusted certificate chain
          * - conn_info->incoming:
          *   true:  we are the server, means we authenticate against all
-         *          allowed attributes in conn_info->tls_opt
+         *          allowed attributes in tls_opt
          *   false: otherwise we are client and conn_info has all attributes to check
          * - conn_info->fingerprint (only if !conn_info->incoming)
          *   NULL:  no fingerprint configured, only check certificate chain
@@ -591,7 +591,7 @@ check_peer_cert(int preverify_ok, X509_STORE_CTX *ctx)
         if (conn_info->incoming) {
                 /* is preverify_ok important here? */
                 /* now check allowed client fingerprints/certs */
-                SLIST_FOREACH(cred, &conn_info->tls_opt->fprint_head, entries) {
+                SLIST_FOREACH(cred, &tls_opt.fprint_head, entries) {
                         conn_info->fingerprint = cred->data;
                         if (match_fingerprint(cur_cert, conn_info->fingerprint)) {
                                 return accept_cert("matching fingerprint",
@@ -599,7 +599,7 @@ check_peer_cert(int preverify_ok, X509_STORE_CTX *ctx)
                         }
                         conn_info->fingerprint = NULL;
                 }
-                SLIST_FOREACH_SAFE(cred, &conn_info->tls_opt->cert_head, entries, tmp_cred) {
+                SLIST_FOREACH_SAFE(cred, &tls_opt.cert_head, entries, tmp_cred) {
                         if (match_certfile(cur_cert, cred->data))
                                 return accept_cert("matching certfile", conn_info,
                                         cur_fingerprint, cur_subjectline);
@@ -659,7 +659,7 @@ socksetup_tls(const int af, const char *bindhostname, const char *port)
         hints.ai_family = af;
         hints.ai_socktype = SOCK_STREAM;
         
-        error = getaddrinfo(bindhostname, (port ? port : SERVICENAME), &hints, &res);
+        error = getaddrinfo(bindhostname, (port ? port : "syslog"), &hints, &res);
         if (error) {
                 logerror(gai_strerror(error));
                 errno = 0;
@@ -700,7 +700,7 @@ socksetup_tls(const int af, const char *bindhostname, const char *port)
                         continue;
                 }
                 s->ev = allocev();
-                event_set(s->ev, s->fd, EV_READ | EV_PERSIST, dispatch_accept_socket, s->ev);
+                event_set(s->ev, s->fd, EV_READ | EV_PERSIST, dispatch_socket_accept, s->ev);
                 EVENT_ADD(s->ev);
 
                 socks->fd = socks->fd + 1;  /* num counter */
@@ -770,7 +770,7 @@ dispatch_SSL_connect(int fd, short event, void *arg)
         /* else */
         ST_CHANGE(conn_info->state, ST_TLS_EST);
         conn_info->reconnect = TLS_RECONNECT_SEC;
-        event_set(conn_info->event, fd, EV_READ, dispatch_eof_tls, conn_info);
+        event_set(conn_info->event, fd, EV_READ, dispatch_tls_eof, conn_info);
         EVENT_ADD(conn_info->event);
         
         DPRINTF(D_TLS, "TLS connection established.\n");
@@ -806,7 +806,7 @@ tls_connect(struct tls_conn_settings *conn_info)
         hints.ai_socktype = SOCK_STREAM;
         hints.ai_protocol = 0;
         hints.ai_flags = AI_CANONNAME;
-        error = getaddrinfo(conn_info->hostname, (conn_info->port ? conn_info->port : SERVICENAME), &hints, &res);
+        error = getaddrinfo(conn_info->hostname, (conn_info->port ? conn_info->port : "syslog"), &hints, &res);
         if (error) {
                 logerror(gai_strerror(error));
                 return false;
@@ -1118,7 +1118,7 @@ tls_reconnect(int fd, short event, void *arg)
  * so we can continue a slow handshake.
  */
 void
-dispatch_accept_tls(int fd, short event, void *arg)
+dispatch_tls_accept(int fd, short event, void *arg)
 {
         struct tls_conn_settings *conn_info = (struct tls_conn_settings *) arg;
         int rc, error;
@@ -1134,12 +1134,12 @@ dispatch_accept_tls(int fd, short event, void *arg)
                 switch (error) {
                         case TLS_RETRY_READ:
                                 event_set(conn_info->retryevent, fd, EV_READ,
-                                        dispatch_accept_tls, conn_info);
+                                        dispatch_tls_accept, conn_info);
                                 EVENT_ADD(conn_info->retryevent);
                                 break;
                         case TLS_RETRY_WRITE:
                                 event_set(conn_info->retryevent, fd, EV_WRITE,
-                                        dispatch_accept_tls, conn_info);
+                                        dispatch_tls_accept, conn_info);
                                 EVENT_ADD(conn_info->retryevent);
                                 break;
                         default: /* should not happen */
@@ -1164,7 +1164,7 @@ dispatch_accept_tls(int fd, short event, void *arg)
         tls_in->inbuflen = TLS_MIN_LINELENGTH;
         SLIST_INSERT_HEAD(&TLS_Incoming_Head, tls_in, entries);
 
-        event_set(conn_info->event, tls_in->socket, EV_READ | EV_PERSIST, dispatch_read_tls, tls_in);
+        event_set(conn_info->event, tls_in->socket, EV_READ | EV_PERSIST, dispatch_tls_read, tls_in);
         EVENT_ADD(conn_info->event);
 
         loginfo("established TLS connection from %s with certificate "
@@ -1182,7 +1182,7 @@ dispatch_accept_tls(int fd, short event, void *arg)
  * the tls_conn_settings object for a following SSL_accept().
  */
 void
-dispatch_accept_socket(int fd, short event, void *ev)
+dispatch_socket_accept(int fd, short event, void *ev)
 {
 #ifdef LIBWRAP
         struct request_info req;
@@ -1258,7 +1258,6 @@ dispatch_accept_socket(int fd, short event, void *ev)
          * cert and immediately match against hostname */
         conn_info->hostname = peername;
         conn_info->sslptr = ssl;
-        conn_info->tls_opt = &tls_opt;
         conn_info->x509verify = getVerifySetting(tls_opt.x509verify);
         conn_info->incoming = true;
         conn_info->event = allocev();
@@ -1269,7 +1268,7 @@ dispatch_accept_socket(int fd, short event, void *ev)
         ST_CHANGE(conn_info->state, ST_TCP_EST);
         DPRINTF(D_TLS, "socket connection from %s accept()ed with fd %d, " \
                 "calling SSL_accept()...\n",  peername, newsock);
-        dispatch_accept_tls(newsock, 0, conn_info);
+        dispatch_tls_accept(newsock, 0, conn_info);
 }
 
 /*
@@ -1282,7 +1281,7 @@ dispatch_accept_socket(int fd, short event, void *ev)
  * side or because the peer broke the protocol by sending us stuff  ;-)
  */
 void
-dispatch_eof_tls(int fd, short event, void *arg)
+dispatch_tls_eof(int fd, short event, void *arg)
 {
         struct tls_conn_settings *conn_info = (struct tls_conn_settings *) arg;
 
@@ -1308,7 +1307,7 @@ dispatch_eof_tls(int fd, short event, void *arg)
  */
 /* uses the fd as passed with ev */
 void
-dispatch_read_tls(int fd_lib, short event, void *arg)
+dispatch_tls_read(int fd_lib, short event, void *arg)
 {
         struct TLS_Incoming_Conn *c = (struct TLS_Incoming_Conn *) arg;
         int fd = c->socket;
@@ -1332,7 +1331,7 @@ dispatch_read_tls(int fd_lib, short event, void *arg)
                                 if (!retrying)
                                         event_del(c->tls_conn->event);
                                 event_set(c->tls_conn->retryevent, fd,
-                                        EV_WRITE, dispatch_read_tls, c);
+                                        EV_WRITE, dispatch_tls_read, c);
                                 EVENT_ADD(c->tls_conn->retryevent);
                                 return;
                                 break;
@@ -1593,7 +1592,7 @@ dispatch_tls_send(int fd, short event, void *arg)
                                 break;
                         case TLS_PERM_ERROR:
                                 /* no need to check active events */
-                                tls_send_msg_free(sendmsg);
+                                free_tls_send_msg(sendmsg);
                                 free_tls_sslptr(conn_info);
                                 schedule_event(&conn_info->event,
                                         &((struct timeval){conn_info->reconnect, 0}),
@@ -1614,12 +1613,12 @@ dispatch_tls_send(int fd, short event, void *arg)
         } else if (rc == (buffer->linelen - sendmsg->offset)) {
                 DPRINTF((D_TLS|D_DATA), "TLS: SSL_write() complete\n");
                 ST_CHANGE(conn_info->state, ST_TLS_EST);
-                tls_send_msg_free(sendmsg);
+                free_tls_send_msg(sendmsg);
         } else {
                 /* should not be reached */
                 DPRINTF((D_TLS|D_DATA), "unreachable code after SSL_write()\n");
                 ST_CHANGE(conn_info->state, ST_TLS_EST);
-                tls_send_msg_free(sendmsg);
+                free_tls_send_msg(sendmsg);
         }
         if (retrying && conn_info->event->ev_events)
                 EVENT_ADD(conn_info->event);
@@ -1872,7 +1871,7 @@ mk_x509_cert(X509 **x509p, EVP_PKEY **pkeyp, int bits, int serial, int days)
 }
 
 void
-tls_send_msg_free(struct tls_send_msg *msg)
+free_tls_send_msg(struct tls_send_msg *msg)
 {
         if (!msg) {
                 DPRINTF((D_DATA), "invalid tls_send_msg_free(NULL)\n");

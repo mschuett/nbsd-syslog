@@ -53,9 +53,10 @@
 
 #ifndef DISABLE_TLS
 #include <netinet/tcp.h>
-#include <sys/stdint.h>
 #include <openssl/ssl.h>
+#endif /* !DISABLE_TLS */
 
+#include <sys/stdint.h>
 #include <sys/resource.h>
 
 /* message buffer container used for processing, formatting, and queueing */
@@ -73,16 +74,12 @@ struct buf_msg {
         char        *msgorig;   /* in case we advance *msg beyond header fields
                                    we still want to free() the original ptr  */
         size_t       msglen;    /* strlen(msg) */
-        size_t       msgsize;   /* allocated memory size */
-        char        *line;      /* a syslog line,
-                        e.g. "123 <46>Jun 28 14:32:08 host syslogd: restart" */
+        size_t       msgsize;   /* allocated memory size   */
+        char        *line;      /* a formatted syslog line */
         size_t       linelen;
-        unsigned int tlsprefixlen; /* bytes used for the TLS length prefix
-                                        e.g. strlen("123 ") */
-        unsigned int prilen;       /* bytes used for the priority and version
-                                field(s), e.g. strlen("<46>") */
+        unsigned int tlsprefixlen; /* bytes for the TLS length prefix */
+        unsigned int prilen;       /* bytes for priority and version  */
 };
-
 
 /* queue of messages */
 struct buf_queue {
@@ -90,7 +87,6 @@ struct buf_queue {
         TAILQ_ENTRY(buf_queue) entries;
 };
 TAILQ_HEAD(buf_queue_head, buf_queue);
-#endif /* !DISABLE_TLS */
 
 /* keeps track of UDP sockets and event objects */
 struct socketEvent {
@@ -182,7 +178,6 @@ char *strndup(const char *str, size_t n);
                                                 PURGE_BY_PRIORITY); \
                           }
 
-
 /* strlen(NULL) does not work? */
 #define SAFEstrlen(x) ((x) ? strlen(x) : 0)
 
@@ -263,9 +258,6 @@ struct filed {
 
 /* linked list for allowed peer credentials
  * (one for fingerprint, one for cert-files)
- * 
- * Question: should I keep the certificates in memory so they do not
- * have to be read again or every incoming connection? 
  */
 SLIST_HEAD(peer_cred_head, peer_cred);
 struct peer_cred {
@@ -277,15 +269,15 @@ struct peer_cred {
 struct tls_global_options_t {
         SSL_CTX *global_TLS_CTX;
         struct peer_cred_head fprint_head;  /* trusted client fingerprints */
-        struct peer_cred_head cert_head;    /* trusted client cert files */
-        char *keyfile;      /* file with private key */
+        struct peer_cred_head cert_head;    /* trusted client cert files   */
+        char *keyfile;      /* file with private key     */
         char *certfile;     /* file with own certificate */
-        char *CAfile;       /* file with CA certificate */
+        char *CAfile;       /* file with CA certificate  */
         char *CAdir;        /* alternative: path to directory with CA certs */
-        char *x509verify;    /* level of peer verification */
-        char *bindhost;     /* hostname/IP to bind to */ 
-        char *bindport;     /* port/service to bind to */
-        char *server;  /* if !NULL: do not listen to incoming TLS */
+        char *x509verify;   /* level of peer verification */
+        char *bindhost;     /* hostname/IP to bind to     */ 
+        char *bindport;     /* port/service to bind to    */
+        char *server;       /* if !NULL: do not listen to incoming TLS    */
         char *gen_cert;     /* if !NULL: generate self-signed certificate */
 };
 

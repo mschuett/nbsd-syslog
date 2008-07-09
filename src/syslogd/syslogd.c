@@ -804,6 +804,13 @@ valid_utf8(const char *c) {
     return rc;
 }
 
+/* note previous versions transscribe
+ * control characters, e.g. \007 --> "^G"
+ * did anyone rely on that?
+ * 
+ * this new version works on only one buffer and
+ * replaces control characters with a space
+ */ 
 #define REPL_CNTRL(c) do { if (iscntrl(c)) { \
                                 if ((c) == '\t') {/* no change */} \
                                 else (c) = ' '; \
@@ -1273,7 +1280,7 @@ check_timestamp(char *from_buf, char **to_buf, const bool from_iso, const bool t
          * Check to see if msg looks non-standard.
          * looks at every char because we do not have a msg length yet
          */
-
+        /* detailed checking adapted from Albert Mietus' sl_timestamp.c */
         if (from_iso) {
                 if (from_buf[4] == '-' && from_buf[7] == '-'
                  && from_buf[10] == 'T' && from_buf[13] == ':'
@@ -1554,12 +1561,13 @@ void
 fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentry)
 {
         struct buf_msg *buffer = passedbuffer;
-        struct iovec iov[3];
+        struct iovec iov[4];
         struct iovec *v = iov;
         struct addrinfo *r;
         int j, lsent, fail, retry, len = 0;
         size_t msglen;
         char *line = NULL;
+        char *q, *p;
 #define REPBUFSIZE 80
 #define FPBUFSIZE 30
         char greetings[200];
@@ -1723,8 +1731,18 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
                 break;
         case F_CONSOLE:
         case F_TTY:
-                line = buffer->line + buffer->tlsprefixlen + buffer->prilen;
                 len = buffer->linelen - buffer->tlsprefixlen - buffer->prilen;
+                MALLOC(line, len);
+                /* filter non-ASCII */
+                q = line;
+                p = buffer->line + buffer->tlsprefixlen + buffer->prilen;
+                while (*p) {
+                        if (iscntrl(*p) && *p != '\t') {
+                                *q++ = '?';
+                                *p += 1;
+                        } else
+                                *q++ = *p++;
+                }
                 v->iov_base = line;
                 v->iov_len = len;
                 ADDEV();
@@ -1744,8 +1762,19 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
                 break;
         case F_USERS:
         case F_WALL:
-                line = buffer->line + buffer->tlsprefixlen + buffer->prilen;
                 len = buffer->linelen - buffer->tlsprefixlen - buffer->prilen;
+                MALLOC(line, len);
+                /* filter non-ASCII */
+                q = line;
+                p = buffer->line + buffer->tlsprefixlen + buffer->prilen;
+                while (*p) {
+                        if (iscntrl(*p) && *p != '\t') {
+                                *q++ = '?';
+                                *p += 1;
+                        } else
+                                *q++ = *p++;
+                }
+                
                 v->iov_base = greetings;
                 v->iov_len = snprintf(greetings, sizeof(greetings),
                         "\r\n\7Message from syslogd@%s at %s ...\r\n",
@@ -1762,8 +1791,6 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
         }
 
         /* assert maximum message length */
-                /* TODO: check syslog-protocol if we may truncate SD Elements 
-                 * --> no problem, we may even truncate multi-byte chars  */
         if (TypeInfo[f->f_type].max_msg_length != -1
          && TypeInfo[f->f_type].max_msg_length < len) {
                 len = TypeInfo[f->f_type].max_msg_length;
@@ -1799,6 +1826,9 @@ sendagain:
                                                 switch (errno) {
                                                 case ENOBUFS:
                                                         /* wait/retry/drop */
+                                                        /* TODO: use event for
+                                                         * this. problem:
+                                                         * how to test?  */ 
                                                         if (++retry < 5) {
                                                                 usleep(1000);
                                                                 goto sendagain;
@@ -1972,8 +2002,6 @@ sendagain:
  *      Write the specified message to either the entire
  *      world, or a list of approved users.
  */
-/* TODO: can ttymsg() handle UTF-8 strings?
- *       I should add a second filter to make sure it gets only ASCII */
 void
 wallmsg(struct filed *f, struct iovec *iov, size_t iovcnt)
 {

@@ -589,8 +589,11 @@ check_peer_cert(int preverify_ok, X509_STORE_CTX *ctx)
 
         /* implicit: (cur_depth == 0) && (conn_info->x509verify != X509VERIFY_NONE) */
         if (conn_info->incoming) {
-                /* is preverify_ok important here? */
-                /* now check allowed client fingerprints/certs */
+                if (preverify_ok)
+                        return accept_cert("valid certificate chain",
+                                conn_info, cur_fingerprint, cur_subjectline);
+
+                /* else: now check allowed client fingerprints/certs */
                 SLIST_FOREACH(cred, &tls_opt.fprint_head, entries) {
                         conn_info->fingerprint = cred->data;
                         if (match_fingerprint(cur_cert, conn_info->fingerprint)) {
@@ -622,9 +625,6 @@ check_peer_cert(int preverify_ok, X509_STORE_CTX *ctx)
                                         cur_fingerprint, cur_subjectline);
                 else if (match_certfile(cur_cert, conn_info->certfile))
                         return accept_cert("matching certfile", conn_info,
-                                        cur_fingerprint, cur_subjectline);
-                else if (match_hostnames(cur_cert, conn_info->hostname, conn_info->subject))
-                        return accept_cert("matching hostname/subject", conn_info,
                                         cur_fingerprint, cur_subjectline);
                 else
                         return deny_cert(conn_info, cur_fingerprint, cur_subjectline);

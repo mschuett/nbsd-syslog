@@ -61,15 +61,16 @@
 
 /* message buffer container used for processing, formatting, and queueing */
 struct buf_msg {
+        unsigned int refcount;
+        int          pri;
+        int          flags;
         char        *timestamp;
         char        *recvhost;
         char        *host;
         char        *prog;
         char        *pid;
         char        *msgid;
-        int          pri;
-        int          flags;
-        unsigned int refcount;
+        char        *sd;        /* structured data */
         char        *msg;       /* message content */
         char        *msgorig;   /* in case we advance *msg beyond header fields
                                    we still want to free() the original ptr  */
@@ -131,7 +132,7 @@ char *strndup(const char *str, size_t n);
 #define D_MEM    256    /* malloc/free */
 #define D_MEM2  1024    /* every single malloc/free */
 #define D_MISC  2048    /* everything else */
-#define D_ALL   3071    /* without D_MEM2 */ 
+#define D_ALL   (D_CALL | D_DATA | D_NET | D_FILE | D_TLS | D_EVENT | D_BUFFER) 
 /*#define D_ALL   4095  */
 
 /* remove first printf for short debug messages */
@@ -182,8 +183,8 @@ char *strndup(const char *str, size_t n);
 #define SAFEstrlen(x) ((x) ? strlen(x) : 0)
 
 #define MAXUNAMES       20      /* maximum number of user names */
-#define BSD_TIMESTAMPLEN    15+1
-#define MAX_TIMESTAMPLEN    32+1
+#define BSD_TIMESTAMPLEN    14+1
+#define MAX_TIMESTAMPLEN    31+1
 
 /* maximum field lengths in syslog-protocol */
 #define HOST_MAX    255

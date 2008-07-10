@@ -2,8 +2,7 @@
  * tls_stuff.c TLS related code for syslogd
  *
  * implements the TLS init and handshake callbacks with all required
- * checks from http://tools.ietf.org/html/draft-ietf-syslog-transport-tls-12
- * (without hostname wildcards)
+ * checks from http://tools.ietf.org/html/draft-ietf-syslog-transport-tls-13
  *
  * Martin Schütte
  */
@@ -77,10 +76,10 @@ extern struct filed *get_f_by_conninfo(struct tls_conn_settings *conn_info);
 extern bool message_queue_add(struct filed *, struct buf_msg *);
 extern void buf_msg_free(struct buf_msg *msg);
 
-static inline unsigned int getVerifySetting(const char *x509verifystring);
+static unsigned int getVerifySetting(const char *x509verifystring);
 
 
-static inline unsigned int
+static unsigned int
 getVerifySetting(const char *x509verifystring)
 {
         if (!x509verifystring)
@@ -603,6 +602,7 @@ check_peer_cert(int preverify_ok, X509_STORE_CTX *ctx)
                         conn_info->fingerprint = NULL;
                 }
                 SLIST_FOREACH_SAFE(cred, &tls_opt.cert_head, entries, tmp_cred) {
+                        /* error: will never be executed ?? */
                         if (match_certfile(cur_cert, cred->data))
                                 return accept_cert("matching certfile", conn_info,
                                         cur_fingerprint, cur_subjectline);
@@ -629,6 +629,9 @@ check_peer_cert(int preverify_ok, X509_STORE_CTX *ctx)
                 else
                         return deny_cert(conn_info, cur_fingerprint, cur_subjectline);
         }
+
+        FREEPTR(cur_fingerprint);
+        FREEPTR(cur_subjectline);
         return 0;
 }
 
@@ -645,7 +648,7 @@ socksetup_tls(const int af, const char *bindhostname, const char *port)
         const int on = 1;
         struct socketEvent *s, *socks;
 
-        if(tls_opt.server)
+        if(!tls_opt.server)
                 return(NULL);
 
         if (!tls_opt.global_TLS_CTX)
@@ -1159,7 +1162,6 @@ dispatch_tls_accept(int fd, short event, void *arg)
         }        
         tls_in->tls_conn = conn_info;
         tls_in->socket = SSL_get_fd(conn_info->sslptr);
-        tls_in->ssl = conn_info->sslptr;
         tls_in->inbuf[0] = '\0';
         tls_in->inbuflen = TLS_MIN_LINELENGTH;
         SLIST_INSERT_HEAD(&TLS_Incoming_Head, tls_in, entries);
@@ -1316,13 +1318,15 @@ dispatch_tls_read(int fd_lib, short event, void *arg)
         bool retrying;
 
         DPRINTF((D_TLS|D_EVENT|D_CALL), "active TLS socket %d\n", fd);
-        DPRINTF(D_TLS, "calling SSL_read(%p, %p, %d)\n", c->ssl,
+        DPRINTF(D_TLS, "calling SSL_read(%p, %p, %d)\n", c->tls_conn->sslptr,
                 &(c->inbuf[c->read_pos]), c->inbuflen - c->read_pos);
         retrying = (c->tls_conn->state == ST_READING);
         ST_CHANGE(c->tls_conn->state, ST_READING);
-        rc = SSL_read(c->ssl, &(c->inbuf[c->read_pos]), c->inbuflen - c->read_pos);
+        rc = SSL_read(c->tls_conn->sslptr, &(c->inbuf[c->read_pos]),
+                c->inbuflen - c->read_pos);
         if (rc <= 0) {
-                error = tls_examine_error("SSL_read()", c->ssl, c->tls_conn, rc);
+                error = tls_examine_error("SSL_read()", c->tls_conn->sslptr,
+                        c->tls_conn, rc);
                 switch (error) {
                         case TLS_RETRY_READ:
                                 /* normal event loop will call us again */
@@ -1726,8 +1730,6 @@ void dispatch_SSL_shutdown(int fd, short event, void *arg)
          && (conn_info->state != ST_CLOSING1)) {
                 int sock = SSL_get_fd(conn_info->sslptr);
                 
-                ST_CHANGE(conn_info->state, conn_info->state);
-                
                 if (shutdown(sock, SHUT_RDWR) == -1)
                         logerror("Cannot shutdown socket");
                 if (close(sock) == -1)
@@ -1876,10 +1878,8 @@ free_tls_send_msg(struct tls_send_msg *msg)
         if (!msg) {
                 DPRINTF((D_DATA), "invalid tls_send_msg_free(NULL)\n");
                 return;
-        } else
-                DPRINTF((D_DATA), "tls_send_msg_free(%p)\n", msg);
+        }
 
         DELREF(msg->buffer);
         FREEPTR(msg);
-        DPRINTF((D_DATA), "return from tls_send_msg_free()\n");
 }

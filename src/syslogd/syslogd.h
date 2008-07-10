@@ -40,16 +40,17 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdbool.h>
-#ifndef _NO_NETBSD_USR_SRC_
+#include <utmp.h>
+#ifdef __NetBSD_Version__
 #include <util.h>
 #include "utmpentry.h"
-#else
+#endif /* __NetBSD_Version__ */
+#ifdef __FreeBSD_version
 #include <libutil.h>
-#include <utmp.h>
 #include <sys/stat.h>
 #include <sys/uio.h>
 #include <limits.h>
-#endif /* !_NO_NETBSD_USR_SRC_ */
+#endif /* __FreeBSD_version */
 
 #ifndef DISABLE_TLS
 #include <netinet/tcp.h>
@@ -105,6 +106,10 @@ struct socketEvent {
 #define HAVE_STRNDUP 0
 #endif /* __FreeBSD_version */
 
+#ifdef __NetBSD_version
+#define HAVE_STRNDUP 1
+#endif /* __NetBSD_version */
+
 #ifndef HAVE_DEHUMANIZE_NUMBER  /* not in my 4.0-STABLE yet */
 extern int dehumanize_number(const char *str, int64_t *size);
 #endif /* !HAVE_DEHUMANIZE_NUMBER */
@@ -132,7 +137,7 @@ char *strndup(const char *str, size_t n);
 #define D_MEM    256    /* malloc/free */
 #define D_MEM2  1024    /* every single malloc/free */
 #define D_MISC  2048    /* everything else */
-#define D_ALL   (D_CALL | D_DATA | D_NET | D_FILE | D_TLS | D_EVENT | D_BUFFER) 
+#define D_ALL   (D_CALL | D_DATA | D_NET | D_FILE | D_TLS | D_EVENT | D_MISC) 
 /*#define D_ALL   4095  */
 
 /* remove first printf for short debug messages */
@@ -292,13 +297,11 @@ struct tls_global_options_t {
 SLIST_HEAD(TLS_Incoming, TLS_Incoming_Conn);
  
 struct TLS_Incoming_Conn {
-        /* char inbuf[2*MAXLINE]; */
-        char *inbuf;                    /* input buffer */
-        size_t inbuflen;
         SLIST_ENTRY(TLS_Incoming_Conn) entries;
         struct tls_conn_settings *tls_conn;
-        SSL *ssl;
         int socket;
+        char *inbuf;                    /* input buffer */
+        size_t inbuflen;
         unsigned int cur_msg_len;       /* length of current msg */
         unsigned int cur_msg_start;     /* beginning of current msg */
         unsigned int read_pos;          /* ring buffer position to write to */

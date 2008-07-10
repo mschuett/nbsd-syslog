@@ -67,6 +67,7 @@ __RCSID("$NetBSD: syslogd.c,v 1.84 2006/11/13 20:24:00 christos Exp $");
  *   by Peter da Silva.
  * -U and -v by Harlan Stenn.
  * Priority comparison code by Harlan Stenn.
+ * TLS and syslog-protocol by Martin Schuette.
  */
 #define SYSLOG_NAMES
 #include "syslogd.h"
@@ -121,10 +122,7 @@ int     repeatinterval[] = { 30, 120, 600 };    /* # of secs before flush */
 #define F_USERS         5               /* list of users */
 #define F_WALL          6               /* everyone logged on */
 #define F_PIPE          7               /* pipe to program */
-/* FIXME: should this also be wrapped in an #ifndef DISABLE_TLS ?
- * it does not result in additionally compiled code  */
-#define F_TLS       8 
-
+#define F_TLS           8 
 
 struct TypeInfo {
         char *name;
@@ -168,6 +166,7 @@ char    oldLocalHostName[MAXHOSTNAMELEN];/* previous hostname */
 char    *LocalDomain;           /* our local domain name */
 size_t  LocalDomainLen;         /* length of LocalDomain */
 struct socketEvent *finet;      /* Internet datagram sockets and events */
+int   *funix;                   /* Unix domain datagram sockets */
 #ifndef DISABLE_TLS
 struct socketEvent *TLS_Listen_Set; /* TLS/TCP sockets and events */
 #endif /* !DISABLE_TLS */
@@ -227,7 +226,7 @@ int     main(int, char *[]);
 void    logpath_add(char ***, int *, int *, char *);
 void    logpath_fileadd(char ***, int *, int *, char *);
 char *make_timestamp(time_t *, bool);
-unsigned check_timestamp(char *, char **, const bool, const bool);
+unsigned check_timestamp(unsigned char *, char **, const bool, const bool);
 static inline bool valid_utf8(const char *);
 static inline void free_incoming_tls_sockets(void);
 
@@ -286,7 +285,7 @@ struct filed *get_f_by_conninfo(struct tls_conn_settings *conn_info);
 int
 main(int argc, char *argv[])
 {
-        int ch, *funix, j, fklog;
+        int ch, j, fklog;
         int funixsize = 0, funixmaxsize = 0;
         struct sockaddr_un sunx;
         char **pp;
@@ -385,7 +384,7 @@ main(int argc, char *argv[])
                         if (errno || *endp != '\0')
                                 goto getuser;
                         uid = (uid_t)l;
-                        if (uid != l) {
+                        if (uid != l) {/* TODO: never executed */
                                 errno = 0;
                                 logerror("UID out of range");
                                 die(0, 0, NULL);
@@ -410,7 +409,7 @@ getuser:
                         if (errno || *endp != '\0')
                                 goto getgroup;
                         gid = (gid_t)l;
-                        if (gid != l) {
+                        if (gid != l) {/* TODO: never executed */
                                 errno = 0;
                                 logerror("GID out of range");
                                 die(0, 0, NULL);
@@ -474,18 +473,11 @@ getgroup:
                 DPRINTF(D_NET, "Listening on unix dgram socket `%s'\n", *pp);
         }
 
-#ifndef _NO_NETBSD_USR_SRC_ 
-        /* I am having problems with /dev/klog on FreeBSD.
-         * will look at that later..., currently I just ignore
-         * it since it works on NetBSD  */
         if ((fklog = open(_PATH_KLOG, O_RDONLY, 0)) < 0) {
                 DPRINTF(D_FILE, "Can't open `%s' (%d)\n", _PATH_KLOG, errno);
         } else {
                 DPRINTF(D_FILE, "Listening on kernel log `%s' with fd %d\n", _PATH_KLOG, fklog);
         }
-#else
-        fklog = -1;
-#endif /* !_NO_NETBSD_USR_SRC_ */
 
 #ifndef DISABLE_TLS
         /* OpenSSL PRNG needs /dev/urandom, thus initialize before chroot() */
@@ -524,9 +516,9 @@ getgroup:
                 (void)daemon(0, 0);
                 daemonized = 1;
                 /* tuck my process id away, if i'm not in debug mode */
-#ifndef _NO_NETBSD_USR_SRC_
+#ifdef __NetBSD_Version__
                 pidfile(NULL);
-#endif /* !_NO_NETBSD_USR_SRC_ */
+#endif /* __NetBSD_Version__ */
         }
 
         /*
@@ -787,7 +779,7 @@ logpath_fileadd(char ***lp, int *szp, int *maxszp, char *file)
  */
 static inline bool
 valid_utf8(const char *c) {
-    int nb, rc;
+    int rc, nb = 0;
 
     if (!(*c & 0x80)) nb = 1;
     else if ((*c & 0xc0) == 0x80) return 0;
@@ -811,7 +803,7 @@ valid_utf8(const char *c) {
  * this new version works on only one buffer and
  * replaces control characters with a space
  */ 
-#define REPL_CNTRL(c) do { if (iscntrl(c)) { \
+#define REPL_CNTRL(c) do { if (iscntrl((unsigned char)c)) { \
                                 if ((c) == '\t') {/* no change */} \
                                 else (c) = ' '; \
                       } } while (0)
@@ -858,7 +850,8 @@ printline(char *hname, char *msg, int flags)
                 pri = LOG_MAKEPRI(LOG_USER, LOG_PRI(pri));
 
         buffer = buf_msg_new(0);
-        start = p += check_timestamp(p, &buffer->timestamp, !bsdsyslog, !BSDOutputFormat);
+        start = p += check_timestamp((unsigned char*) p,
+                &buffer->timestamp, !bsdsyslog, !BSDOutputFormat);
         DPRINTF(D_DATA, "Got timestamp \"%s\"\n", buffer->timestamp);
         
         if (bsdsyslog) {
@@ -1102,7 +1095,9 @@ all_bsd_msg:
 all_syslog_msg:
                 p = start;
                 /* check for UTF-8-BOM */
-                if (*p == 0xEF && *(p+1) == 0xBB && *(p+2) == 0xBF) {
+                if (*p == (char) 0xEF
+                 && *(p+1) == (char) 0xBB
+                 && *(p+2) == (char) 0xBF) {
                         utf8allowed = true;
                         start = p = p+3;
                 }
@@ -1266,9 +1261,9 @@ logmsg_async(const int pri, const char *msg, const int flags)
  * returns length of timestamp found in from_buf (= number of bytes consumed)
  */
 unsigned
-check_timestamp(char *from_buf, char **to_buf, const bool from_iso, const bool to_iso)
+check_timestamp(unsigned char *from_buf, char **to_buf, const bool from_iso, const bool to_iso)
 {
-        char *q;
+        unsigned char *q;
         int p;
         bool found_ts = false;
         
@@ -1327,14 +1322,14 @@ check_timestamp(char *from_buf, char **to_buf, const bool from_iso, const bool t
         if (!from_iso && !to_iso) {
                 /* copy BSD timestamp */
                 DPRINTF(D_CALL, "check_timestamp(): copy BSD timestamp\n");
-                *to_buf = strndup(from_buf, BSD_TIMESTAMPLEN-1);
+                *to_buf = strndup((char *)from_buf, BSD_TIMESTAMPLEN-1);
                 return BSD_TIMESTAMPLEN-1;
         } else if (from_iso && to_iso) {
                 /* copy ISO timestamp */
                 DPRINTF(D_CALL, "check_timestamp(): copy ISO timestamp\n");
-                if (!(q = strchr(from_buf, ' ')))
-                        q = from_buf + strlen(from_buf);
-                *to_buf = strndup(from_buf, q - from_buf);
+                if (!(q = (unsigned char *) strchr((char *)from_buf, ' ')))
+                        q = from_buf + strlen((char *)from_buf);
+                *to_buf = strndup((char *)from_buf, q - from_buf);
                 return q - from_buf;
         } else if (from_iso && !to_iso) {
                 /* convert ISO->BSD */
@@ -1372,7 +1367,7 @@ check_timestamp(char *from_buf, char **to_buf, const bool from_iso, const bool t
                 char *rc;
 
                 DPRINTF(D_CALL, "check_timestamp(): convert BSD->ISO\n");
-                rc = strptime(from_buf, "%b %d %T", &parsed);
+                rc = strptime((char *)from_buf, "%b %d %T", &parsed);
                 current = gmtime(&now);
 
                 /* use current year and timezone */
@@ -1737,7 +1732,7 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
                 q = line;
                 p = buffer->line + buffer->tlsprefixlen + buffer->prilen;
                 while (*p) {
-                        if (iscntrl(*p) && *p != '\t') {
+                        if (iscntrl((unsigned char)*p) && *p != '\t') {
                                 *q++ = '?';
                                 *p += 1;
                         } else
@@ -1768,7 +1763,7 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
                 q = line;
                 p = buffer->line + buffer->tlsprefixlen + buffer->prilen;
                 while (*p) {
-                        if (iscntrl(*p) && *p != '\t') {
+                        if (iscntrl((unsigned char)*p) && *p != '\t') {
                                 *q++ = '?';
                                 *p += 1;
                         } else
@@ -2203,7 +2198,7 @@ trim_anydomain(char *host)
         for (i = 0; host[i]; i++) {
                 if (host[i] == '.' && !onlydigits)
                         host[i] = '\0';
-                else if (!isdigit(host[i]) && host[i] != '.')
+                else if (!isdigit((unsigned char)host[i]) && host[i] != '.')
                         onlydigits = false;
         }
 }
@@ -2449,6 +2444,7 @@ die(int fd, short event, void *ev)
         FREE_SSL_CTX(tls_opt.global_TLS_CTX);
 #endif /* !DISABLE_TLS */
 
+        FREEPTR(funix);
         errno = 0;
         if (ev != NULL)
                 logerror("Exiting on signal %d", fd);
@@ -3173,7 +3169,7 @@ decode(const char *name, CODE *codetab)
 int
 getmsgbufsize(void)
 {
-#ifndef _NO_NETBSD_USR_SRC_
+#ifdef __NetBSD_Version__
         int msgbufsize, mib[2];
         size_t size;
 
@@ -3187,7 +3183,7 @@ getmsgbufsize(void)
         return (msgbufsize);
 #else
         return 16368;  /* value on my NetBSD/i386 */
-#endif /* !_NO_NETBSD_USR_SRC_ */
+#endif /* __NetBSD_Version__ */
 }
 
 /*

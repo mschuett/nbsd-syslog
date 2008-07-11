@@ -306,7 +306,24 @@ A hostname (preceded by an at
 sign).
 Selected messages are forwarded to the
 .Xr syslogd 8
-program on the named host.
+program on the named host with UDP.
+.It
+A hostname preceded by an at
+.Pq Sq @
+Sign and enclosed in brackets
+.Pq Sq []
+.
+Selected messages are forwarded with TLS to the
+.Xr syslogd 8
+program on the named host. After the closing bracket a colon
+.Pq Sq :
+And a port or service name may be appended. Additional options
+are configured in parantheses in the form of key="value".
+Recognized keywords are
+.Em subject ,
+.Em fingerprint ,
+.Em cert , and
+.Em verify .
 .It
 A comma separated list of users.
 Selected messages are written to those users
@@ -365,6 +382,62 @@ process, normally the superuser.
 Blank lines and lines whose first non-blank character is a hash
 .Pq Sq #
 character are ignored.
+.Sh TLS OPTIONS
+Some additional options are necessary to use TLS connections in
+.Xr syslogd 8 .
+These are:
+.Bl -ohang
+.It Em tls_server
+Enables TLS server mode.
+.It Em tls_gen_cert
+Automatically generate a private key and certificate.
+.It Em tls_key
+File with private key. Default is
+.Sq /etc/openssl/default.key
+.It Em tls_cert
+File with certificate to use. Default is
+.Sq /etc/openssl/default.crt
+.It Em tls_ca
+File with CA certificate to use.
+.It Em tls_cadir
+Directory containing CA certificates.
+.It Em tls_verify
+If set to
+.Sq off
+then certificate authentication is skipped.
+.It Em tls_bindport
+Service name or port number to bind to. Default is
+.Sq syslog ,
+but as long as no official port is assigned this has to be configured.
+.It Em tls_bindhost
+Hostname/IP to bind to.
+.It Em tls_allow_fingerprints
+List of fingerprints of trusted client certificates.
+.It Em tls_allow_clientcerts
+List of filenames with trusted client certificates.
+.El
+.Sh BUFFERING
+.Xr syslogd 8
+is able to buffer temporary not writeable messages in memory.
+To limit the memory consumed for this buffering the following optons may be
+given:
+.Bl -ohang
+.It Em mem_size_limit
+Limits the total memory usage to this value.
+.It Em tls_queue_length file_queue_length pipe_queue_length
+The maximum number of messages buffered for one destination of type tls, file,
+or pipe respectively. Defaults are
+.Sq 1024 ,
+.Sq 1024 , and 
+.Sq -1
+(no limit).
+.It Em tls_queue_size file_queue_size pipe_queue_size
+The maximum memory usage in bytes of messages buffered for one destination.
+Defaults are
+.Sq 1M
+.Sq 1M
+.Sq 16M .
+.El
 .Sh FILES
 .Bl -tag -width /etc/syslog.conf -compact
 .It Pa /etc/syslog.conf
@@ -398,6 +471,11 @@ mail.*					/var/log/maillog
 # machine.
 *.emerg					*
 *.emerg					@arpa.berkeley.edu
+
+# Log all messages of level info or higher to another
+# machine using TLS with an alternative portname and a
+# fingerprint for athentication
+*.info					@[logserver]:1234(fingerprint="SHA1:01:02:...")
 
 # Root and Eric get alert and higher messages.
 *.alert					root,eric

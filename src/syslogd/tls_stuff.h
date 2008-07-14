@@ -85,6 +85,8 @@ struct tls_conn_settings {
 struct tls_send_msg {
         struct filed   *f;
         struct buf_msg *buffer;
+        char           *line;      /* formatted message */
+        size_t          linelen;
         unsigned int    offset;    /* in case of partial writes */
 };
 
@@ -139,7 +141,7 @@ void dispatch_SSL_shutdown(int, short, void *);
 
 bool tls_connect(struct tls_conn_settings *);
 void tls_reconnect(int, short, void *);
-bool tls_send(struct filed *, struct buf_msg *);
+bool tls_send(struct filed *, struct buf_msg *, char *, size_t);
 void tls_split_messages(struct TLS_Incoming_Conn *);
 
 void free_tls_conn(struct tls_conn_settings *);

@@ -77,8 +77,6 @@ struct buf_msg {
                                    we still want to free() the original ptr  */
         size_t       msglen;    /* strlen(msg) */
         size_t       msgsize;   /* allocated memory size   */
-        char        *line;      /* a formatted syslog line */
-        size_t       linelen;
         unsigned int tlsprefixlen; /* bytes for the TLS length prefix */
         unsigned int prilen;       /* bytes for priority and version  */
 };

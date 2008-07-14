@@ -1448,10 +1448,8 @@ tls_split_messages(struct TLS_Incoming_Conn *c)
                  */
                 logerror("Unable to handle TLS length prefix. " \
                         "Protocol error? Closing connection now.");
-                c->read_pos = 0;
-                free_tls_conn(c->tls_conn);
-                SLIST_REMOVE(&TLS_Incoming_Head, c, TLS_Incoming_Conn, entries);
-                free(c);
+                /* only set flag -- caller has to close then */
+                c->closenow = true;
                 return;
         } 
         /* read one syslog message */        
@@ -1512,17 +1510,12 @@ tls_split_messages(struct TLS_Incoming_Conn *c)
  *      caller is responsible to enqueue it
  * returns true if message passed to dispatch_tls_send()
  *      delivery is not garantueed, but likely
- * 
- * TODO: try different algorithm: always remove current message
- *       from buffer and re-add it on failure 
  */
 #define DEBUG_LINELENGTH 40
 bool
-tls_send(struct filed *f, struct buf_msg *buffer)
+tls_send(struct filed *f, struct buf_msg *buffer, char *line, size_t len)
 {
         struct tls_send_msg *sendmsg;
-        char *line = buffer->line;
-        size_t len = buffer->linelen;
 
         DPRINTF((D_TLS|D_CALL), "tls_send(f=%p, buffer=%p, line=\"%.*s%s\", "
                 "len=%d) to %sconnected dest.\n", f, buffer,
@@ -1538,14 +1531,19 @@ tls_send(struct filed *f, struct buf_msg *buffer)
                 }
                 sendmsg->f = f;
                 sendmsg->buffer = NEWREF(buffer);
-                DPRINTF(D_DATA, "now sending line: \"%.*s\"\n", buffer->linelen, buffer->line);
+                sendmsg->line = line;
+                sendmsg->linelen = len;
+                DPRINTF(D_DATA, "now sending line: \"%.*s\"\n",
+                        sendmsg->linelen, sendmsg->line);
                 dispatch_tls_send(0, 0, sendmsg);
                 return true;
         } else {
                 /* other socket operation active, send later  */
-                DPRINTF(D_DATA, "connection not ready to send line: \"%.*s\"\n", buffer->linelen, buffer->line);
+                DPRINTF(D_DATA, "connection not ready to send: \"%.*s\"\n",
+                        len, line);
                 
-                /* now the caller has to enqueue the message (if not already sending from queue) */
+                /* now the caller has to enqueue the message
+                 * (if not already sending from queue) */
                 return false;
         }
 }
@@ -1555,16 +1553,13 @@ dispatch_tls_send(int fd, short event, void *arg)
 {
         struct tls_send_msg *sendmsg = (struct tls_send_msg *) arg;
         struct tls_conn_settings *conn_info = sendmsg->f->f_un.f_tls.tls_conn;
-        struct buf_msg *buffer = sendmsg->buffer;
         int rc, error;
         bool retrying;
         
         DPRINTF((D_TLS|D_CALL), "dispatch_tls_send(f=%p, buffer=%p, "
-                "line=\"%.*s%s\", len=%d, offset=%d) to %sconnected dest.\n",
-                sendmsg->f, sendmsg->buffer,
-                (buffer->linelen > DEBUG_LINELENGTH ? DEBUG_LINELENGTH : buffer->linelen),
-                buffer->line, (buffer->linelen > DEBUG_LINELENGTH ? "..." : ""),
-                buffer->linelen, sendmsg->offset,
+                "line@%p, len=%d, offset=%d) to %sconnected dest.\n",
+                sendmsg->f, sendmsg->buffer, sendmsg->line,
+                sendmsg->linelen, sendmsg->offset,
                 conn_info->sslptr ? "" : "un");
         assert(conn_info->state == ST_TLS_EST
             || conn_info->state == ST_WRITING);
@@ -1572,13 +1567,21 @@ dispatch_tls_send(int fd, short event, void *arg)
         retrying = (conn_info->state == ST_WRITING);
         ST_CHANGE(conn_info->state, ST_WRITING);
         rc = SSL_write(conn_info->sslptr,
-                (buffer->line + sendmsg->offset),
-                (buffer->linelen - sendmsg->offset));
+                (sendmsg->line + sendmsg->offset),
+                (sendmsg->linelen - sendmsg->offset));
         if (0 >= rc) {
                 error = tls_examine_error("SSL_write()",
                         conn_info->sslptr,
                         conn_info, rc);
                 switch (error) {
+                	/* TODO: undelivered messages are retried but
+                	 * never put back on queue.
+                	 * a) Is the assumption that the connection becomes
+                	 * available again valid?
+                	 * b) Is there a better way to do this?
+                	 * c) if a message is retried and a reconnect
+                	 * occurs, then this message should be send
+                	 * over the new connection */
                         case TLS_RETRY_READ:
                                 /* collides with eof event */
                                 if (!retrying)
@@ -1605,16 +1608,16 @@ dispatch_tls_send(int fd, short event, void *arg)
                                 break;
                         default:break;
                 }
-        } else if (rc < buffer->linelen) {
-                DPRINTF((D_TLS|D_DATA), "TLS: SSL_write() wrote %d out of "
-                        "%d bytes\n", rc, (buffer->linelen - sendmsg->offset));
+        } else if (rc < sendmsg->linelen) {
+                DPRINTF((D_TLS|D_DATA), "TLS: SSL_write() wrote %d out of %d "
+                        "bytes\n", rc, (sendmsg->linelen - sendmsg->offset));
                 sendmsg->offset += rc;
                 /* try again */
                 if (retrying)
                         EVENT_ADD(conn_info->event);
                 dispatch_tls_send(0, 0, sendmsg);
                 return;
-        } else if (rc == (buffer->linelen - sendmsg->offset)) {
+        } else if (rc == (sendmsg->linelen - sendmsg->offset)) {
                 DPRINTF((D_TLS|D_DATA), "TLS: SSL_write() complete\n");
                 ST_CHANGE(conn_info->state, ST_TLS_EST);
                 free_tls_send_msg(sendmsg);
@@ -1732,6 +1735,13 @@ void dispatch_SSL_shutdown(int fd, short event, void *arg)
                 
                 if (shutdown(sock, SHUT_RDWR) == -1)
                         logerror("Cannot shutdown socket");
+                if (conn_info->event)
+                        event_del(conn_info->event);
+                if (conn_info->retryevent)
+                        event_del(conn_info->retryevent);
+                FREEPTR(conn_info->event);
+                FREEPTR(conn_info->retryevent);
+
                 if (close(sock) == -1)
                         logerror("Cannot close socket");
                 ST_CHANGE(conn_info->state, ST_NONE);
@@ -1881,5 +1891,6 @@ free_tls_send_msg(struct tls_send_msg *msg)
         }
 
         DELREF(msg->buffer);
+        FREEPTR(msg->line);
         FREEPTR(msg);
 }

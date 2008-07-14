@@ -76,21 +76,21 @@ __weak_alias(vsyslog_ss,_vsyslog_ss)
 #endif
 
 static struct syslog_data sdata = SYSLOG_DATA_INIT;
-static char hostname[MAXHOSTNAMELEN];
-
 static void	openlog_unlocked_r(const char *, int, int,
     struct syslog_data *);
 static void	disconnectlog_r(struct syslog_data *);
 static void	connectlog_r(struct syslog_data *);
 
-static unsigned check_sd(const char*);
-static unsigned check_msgid(char *);
-
 #define LOG_SIGNAL_SAFE	(int)0x80000000
  
-
 #ifdef _REENTRANT
 static mutex_t	syslog_mutex = MUTEX_INITIALIZER;
+#endif
+
+#ifndef BSDSYSLOG
+static char hostname[MAXHOSTNAMELEN];
+static unsigned check_sd(const char*);
+static unsigned check_msgid(char *);
 #endif
 
 /*
@@ -235,25 +235,25 @@ vsyslog_r(int pri, struct syslog_data *data, const char *fmt, va_list ap)
 		DEC();
 #else /* ISO timestamp & local hostname */
                 {
-                        struct timeval tv;
+                struct timeval tv;
 
-                        prlen = strftime(p, tbuf_left, "%FT%T", &tmnow);
+                prlen = strftime(p, tbuf_left, "%FT%T", &tmnow);
+                DEC();
+                if (gettimeofday(&tv, NULL) != -1) {
+                        prlen = snprintf(p, tbuf_left, ".%06ld",
+                            tv.tv_usec);
                         DEC();
-                        if (gettimeofday(&tv, NULL) != -1) {
-                                prlen = snprintf(p, tbuf_left, ".%6ld",
-                                    tv.tv_usec);
-                                DEC();
-                        }
-                        prlen = strftime(p, tbuf_left-1, "%z", &tmnow);
-                        /* strftime gives eg. "+0200", but we need "+02:00" */
-                        if (prlen == 5) {
-                                p[prlen+1] = p[prlen];
-                                p[prlen]   = p[prlen-1];
-                                p[prlen-1] = p[prlen-2];
-                                p[prlen-2] = ':';
-                                prlen += 1;
-                        }
-                        DEC();
+                }
+                prlen = strftime(p, tbuf_left-1, "%z", &tmnow);
+                /* strftime gives eg. "+0200", but we need "+02:00" */
+                if (prlen == 5) {
+                        p[prlen+1] = p[prlen];
+                        p[prlen]   = p[prlen-1];
+                        p[prlen-1] = p[prlen-2];
+                        p[prlen-2] = ':';
+                        prlen += 1;
+                }
+                DEC();
                 }
                 prlen = snprintf_ss(p, tbuf_left, " %s ", hostname);
                 DEC();
@@ -375,7 +375,7 @@ vsyslog_r(int pri, struct syslog_data *data, const char *fmt, va_list ap)
                         prlen = MIN(sizeof("- - ")-1, tbuf_left-1);
                         (void)strncat(p, "- - ", prlen);
                         DEC();
-                        prlen = MIN(sdlen, tbuf_left-1);
+                        prlen = MIN(msglen, tbuf_left-1);
                         (void)strncat(p, msgbuf, prlen);
                         DEC();
                 }
@@ -542,6 +542,8 @@ setlogmask_r(int pmask, struct syslog_data *data)
 		data->log_mask = pmask;
 	return omask;
 }
+
+#ifndef BSDSYSLOG
 /* following syslog-protocol */
 #define MSGID_MAX    32
 #define printusascii(ch) (ch >= 33 && ch <= 126)
@@ -617,3 +619,4 @@ check_sd(const char* p)
                 }
         }
 }
+#endif

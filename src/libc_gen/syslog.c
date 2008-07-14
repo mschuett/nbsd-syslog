@@ -84,6 +84,7 @@ static void	disconnectlog_r(struct syslog_data *);
 static void	connectlog_r(struct syslog_data *);
 
 static unsigned check_sd(const char*);
+static unsigned check_msgid(char *);
 
 #define LOG_SIGNAL_SAFE	(int)0x80000000
  
@@ -242,7 +243,7 @@ vsyslog_r(int pri, struct syslog_data *data, const char *fmt, va_list ap)
                                 prlen = snprintf(p, tbuf_left, ".%6ld",
                                     tv.tv_usec);
                                 DEC();
-	}
+                        }
                         prlen = strftime(p, tbuf_left-1, "%z", &tmnow);
                         /* strftime gives eg. "+0200", but we need "+02:00" */
                         if (prlen == 5) {
@@ -289,11 +290,10 @@ vsyslog_r(int pri, struct syslog_data *data, const char *fmt, va_list ap)
             data->log_tag ? data->log_tag : "-");
         DEC();
 
-        /* with empty MsgID */
         if (data->log_stat & LOG_PID)
-                prlen = snprintf_ss(p, tbuf_left, "%d - ", getpid());
+                prlen = snprintf_ss(p, tbuf_left, "%d ", getpid());
         else
-                prlen = snprintf_ss(p, tbuf_left, "- - ");
+                prlen = snprintf_ss(p, tbuf_left, "- ");
         DEC();
 
 #endif /* BSDSYSLOG */
@@ -342,19 +342,28 @@ vsyslog_r(int pri, struct syslog_data *data, const char *fmt, va_list ap)
 #else
         {
         char msgbuf[TBUF_LEN];
-        size_t sdlen;
+        size_t msgidlen = 0, sdlen = 0;
 
         if (signal_safe)
                 (void)vsnprintf_ss(msgbuf, TBUF_LEN, fmt_cpy, ap);
         else
                 (void)vsnprintf(msgbuf, TBUF_LEN, fmt_cpy, ap);
 
-        sdlen = check_sd(msgbuf);
-        if (sdlen)
-                prlen = snprintf_ss(p, tbuf_left, "%.*s%s",
-                    sdlen, msgbuf, msgbuf+sdlen);
-        else
-                prlen = snprintf_ss(p, tbuf_left, "- %s", msgbuf);
+        msgidlen = check_msgid(msgbuf);
+        if (msgidlen) /* check for SD in 2nd field */
+                sdlen = check_sd(msgbuf+msgidlen+1);
+        if (msgidlen && sdlen) {
+                /* do nothing -- just append to header */
+                prlen = snprintf_ss(p, tbuf_left, "%s", msgbuf);
+        } else {
+                /* no MSGID+SD, still check for SD */
+                sdlen = check_sd(msgbuf);
+                if (sdlen)
+                        prlen = snprintf_ss(p, tbuf_left, "- %.*s%s",
+                                sdlen, msgbuf, msgbuf+sdlen);
+                else
+                        prlen = snprintf_ss(p, tbuf_left, "- - %s", msgbuf);
+        }
         }
 #endif /* BSDSYSLOG */
 	DEC();
@@ -519,8 +528,36 @@ setlogmask_r(int pmask, struct syslog_data *data)
 	return omask;
 }
 /* following syslog-protocol */
+#define MSGID_MAX    32
 #define printusascii(ch) (ch >= 33 && ch <= 126)
 #define sdname(ch) (ch != '=' && ch != ' ' && ch != ']' && ch != '"' && printusascii(ch))
+
+/* checks whether the first word of string p can be interpreted as
+ * a syslog-protocol MSGID and if so returns its length.
+ * 
+ * otherwise returns 0
+ */
+static unsigned
+check_msgid(char *p)
+{
+        char *q = p;
+        
+        /* consider the NILVALUE to be valid */
+        if (*q == '-' && *(q+1) == ' ')
+                return 1;
+
+        while (/*CONSTCOND*/1) {
+                if (*q == ' ')
+                        return q - p;
+                else if (*q == '\0'
+                      || !printusascii(*q)
+                      || q - p >= MSGID_MAX)
+                        return 0;
+                else
+                        q++;
+        }
+}
+
 /*
  * returns number of chars found in SD at beginning of string p
  * thus returns 0 if no valid SD is found

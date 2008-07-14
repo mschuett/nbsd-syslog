@@ -229,7 +229,7 @@ char *make_timestamp(time_t *, bool);
 unsigned check_timestamp(unsigned char *, char **, const bool, const bool);
 static inline unsigned valid_utf8(const char *);
 static unsigned check_sd(char*, const bool);
-
+static unsigned check_msgid(char *);
 static inline void free_incoming_tls_sockets(void);
 
 struct event *allocev(void);
@@ -823,20 +823,55 @@ valid_utf8(const char *c) {
                                 goto all_syslog_msg;                    \
                        }
 /* following syslog-protocol */
-#define sdname(ch) (ch != '=' && ch != ' ' && ch != ']' && ch != '"' && ch >= 33 && ch <= 126)
+#define printusascii(ch) (ch >= 33 && ch <= 126)
+#define sdname(ch) (ch != '=' && ch != ' ' && ch != ']' && ch != '"' && printusascii(ch))
+
+/* checks whether the first word of string p can be interpreted as
+ * a syslog-protocol MSGID and if so returns its length.
+ * 
+ * otherwise returns 0
+ */
+static unsigned
+check_msgid(char *p)
+{
+        char *q = p;
+        
+        /* consider the NILVALUE to be valid */
+        if (*q == '-' && *(q+1) == ' ')
+                return 1;
+
+        while (/*CONSTCOND*/1) {
+                if (*q == ' ')
+                        return q - p;
+                else if (*q == '\0'
+                      || !printusascii(*q)
+                      || q - p >= MSGID_MAX)
+                        return 0;
+                else
+                        q++;
+        }
+}
+
 /* 
  * returns number of chars found in SD at beginning of string p
  * thus returns 0 if no valid SD is found
  * 
  * if ascii == true then substitute all non-ASCII chars
  * otherwise use syslog-protocol rules to allow UTF-8 in values
- * note: 
+ * note: one pass for filtering and scanning, so a found SD
+ * is always filtered, but an invalid one could be partially
+ * filtered up to the format error.
  */
 static unsigned
 check_sd(char* p, const bool ascii)
 {
         char *q = p;
         bool esc = false;
+
+        /* consider the NILVALUE to be valid */
+        if (*q == '-' && (*(q+1) == ' ' || *(q+1) == '\0'))
+                return 1;
+
         while (/*CONSTCOND*/1) { /* SD-ELEMENT */
                 if (*q++ != '[') return 0;
                 /* SD-ID */
@@ -849,7 +884,7 @@ check_sd(char* p, const bool ascii)
                 while (/*CONSTCOND*/1) { /* SD-PARAM */
                         if (*q == ']') {
                                 q++;
-                                if (*q == ' ' || *q == '\0') return q-p;
+                                if (*q == ' ' || *q == '\0') return q - p;
                                 else if (*q == '[') break;
                         } else if (*q++ != ' ') return 0;
 
@@ -914,7 +949,7 @@ printline(char *hname, char *msg, int flags)
         char *p, *q, *start;
         long n;
         bool bsdsyslog = true;
-        unsigned sdlen;
+        unsigned msgidlen = 0, sdlen = 0;
 
         DPRINTF((D_CALL|D_BUFFER|D_DATA), "printline(\"%s\", \"%s\", %d)\n", hname, msg, flags);
         
@@ -1019,21 +1054,77 @@ printline(char *hname, char *msg, int flags)
                 if (*p == ':') p++;
                 if (*p == ' ') p++;
                 
-                /* p @ opening [ of SD or first byte of message */
-                /* special case: if message starts with [
-                 * then try to treat like structured data,
-                 * but without UTF-8 support */
+                /* p @ msgid, @ opening [ of SD or @ first byte of message
+                 * accept either case and try to detect MSGID and SD fields
+                 *
+                 * only limitation: we do not accept UTF-8 data in
+                 * BSD Syslog messages -- so all SD values are ASCII-filtered
+                 * 
+                 * I have found one scenario with 'unexpected' behaviour:
+                 * if there is only a SD intended, but a) it is short enough
+                 * to be a MSGID and b) the first word of the message can also
+                 * be parsed as an SD.
+                 * example:
+                 * "<35>Jul  6 12:39:08 tag[123]: [exampleSDID@0] - hello"
+                 * --> parsed as
+                 *     MSGID = "[exampleSDID@0]"
+                 *     SD    = "-"
+                 *     MSG   = "hello"
+                 */
                 start = p;
-                p += check_sd(p, true);
-                if (p - start)
-                        buffer->sd = strndup(start, p - start);
-                DPRINTF(D_DATA, "Got SD \"%s\"\n", buffer->sd);
+                msgidlen = check_msgid(p);
+                if (msgidlen) /* check for SD in 2nd field */
+                        sdlen = check_sd(p+msgidlen+1, true);
+                        
+                if (msgidlen && sdlen) {
+                        /* MSGID in 1st and SD in 2nd field
+                         * now check for NILVALUEs and copy */
+                        if (msgidlen == 1 && *p == '-') {
+                                p++; /* - */
+                                p++; /* SP */
+                                DPRINTF(D_DATA, "Got MSGID \"-\"\n");
+                        } else {
+                                buffer->msgid = strndup(p, msgidlen);
+                                p += msgidlen;
+                                p++; /* SP */
+                                DPRINTF(D_DATA, "Got MSGID \"%s\"\n",
+                                        buffer->msgid);
+                        }
+                        if (sdlen == 1 && *p == '-') {
+                                p++;
+                                DPRINTF(D_DATA, "Got SD \"-\"\n");
+                        } else if (sdlen > 1) {
+                                buffer->sd = strndup(p, sdlen);
+                                p += sdlen;
+                                DPRINTF(D_DATA, "Got SD \"%s\"\n",
+                                        buffer->sd);
+                        } else {
+                                DPRINTF(D_DATA, "Error\n");
+                        }
+                } else {
+                        /* either no msgid or no SD in 2nd field
+                         * --> check 1st field for SD */
+                        DPRINTF(D_DATA, "No MSGID\n");
+                        sdlen = check_sd(p, true);
+                        if (sdlen > 1) {
+                                buffer->sd = strndup(p, sdlen);
+                                p += sdlen;
+                                DPRINTF(D_DATA, "Got SD \"%s\"\n",
+                                        buffer->sd);
+                        } else if (sdlen == 1 && *p == '-') {
+                                p++;
+                                DPRINTF(D_DATA, "Got SD \"-\"\n");
+                        } else {
+                                DPRINTF(D_DATA, "No SD\n");
+                        }
+                }
 
                 if (*p == ' ') p++;
                 start = p;
                 /* and now the message itself 
-                 * note: do not reset start, because we might have found a [
-                 * and be inside an invalid SD field --> that is part of msg
+                 * note: do not reset start, because we might come here
+                 * by goto and want to have the incomplete field as part
+                 * of the msg
                  */
 all_bsd_msg:
                 for (;; p++) {
@@ -1119,6 +1210,14 @@ all_bsd_msg:
                                 start = p+1;
                                 break;
                         } else {
+                                /* question: if we find a non-ASCII char here
+                                 * -- should we filter it but still read it as
+                                 * a MSGID?
+                                 * or should we bail out with a format error,
+                                 * thus not parsing the wrong MSGID and a
+                                 * following SD
+                                 * (so they end up in the MSG field)?
+                                 */ 
                                 *p &= 0177;
                                 REPL_CNTRL(*p);
                         }
@@ -1131,12 +1230,12 @@ all_bsd_msg:
                 sdlen = check_sd(p, false);
                 DPRINTF(D_DATA, "check_sd(\"%s\") returned %d\n", buffer->msgid, sdlen);
                 
-                if (sdlen) {
-                        buffer->sd = strndup(p, sdlen);
-                        p += sdlen;
-                } else if (*p == '-') {
+                if (sdlen == 1 && *p == '-') {
                         /* NILVALUE */
                         p++;
+                } else if (sdlen > 1) {
+                        buffer->sd = strndup(p, sdlen);
+                        p += sdlen;
                 } else {
                         DPRINTF(D_DATA, "format error\n");
                 }

@@ -46,6 +46,7 @@ __RCSID("$NetBSD: syslog.c,v 1.39 2006/11/22 17:23:25 christos Exp $");
 #include <sys/un.h>
 #include <netdb.h>
 
+#include <sys/param.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <paths.h>
@@ -75,11 +76,14 @@ __weak_alias(vsyslog_ss,_vsyslog_ss)
 #endif
 
 static struct syslog_data sdata = SYSLOG_DATA_INIT;
+static char hostname[MAXHOSTNAMELEN];
 
 static void	openlog_unlocked_r(const char *, int, int,
     struct syslog_data *);
 static void	disconnectlog_r(struct syslog_data *);
 static void	connectlog_r(struct syslog_data *);
+
+static unsigned check_sd(const char*);
 
 #define LOG_SIGNAL_SAFE	(int)0x80000000
  
@@ -214,21 +218,53 @@ vsyslog_r(int pri, struct syslog_data *data, const char *fmt, va_list ap)
 		tbuf_left -= prlen;				\
 	} while (/*CONSTCOND*/0)
 
+#ifdef BSDSYSLOG
 	prlen = snprintf_ss(p, tbuf_left, "<%d>", pri);
+#else
+        prlen = snprintf_ss(p, tbuf_left, "<%d>1 ", pri);
+#endif /* BSDSYSLOG */
 	DEC();
 
 	if (!signal_safe) {
 		/* strftime() implies tzset(), localtime_r() doesn't. */
 		tzset();
-		prlen = strftime(p, tbuf_left, "%h %e %T ",
-		    localtime_r(&now, &tmnow));
+                localtime_r(&now, &tmnow);
+#ifdef BSDSYSLOG
+                prlen = strftime(p, tbuf_left, "%h %e %T ", &tmnow);
 		DEC();
+#else /* ISO timestamp & local hostname */
+                {
+                        struct timeval tv;
+
+                        prlen = strftime(p, tbuf_left, "%FT%T", &tmnow);
+                        DEC();
+                        if (gettimeofday(&tv, NULL) != -1) {
+                                prlen = snprintf(p, tbuf_left, ".%6ld",
+                                    tv.tv_usec);
+                                DEC();
 	}
+                        prlen = strftime(p, tbuf_left-1, "%z", &tmnow);
+                        /* strftime gives eg. "+0200", but we need "+02:00" */
+                        if (prlen == 5) {
+                                p[prlen+1] = p[prlen];
+                                p[prlen]   = p[prlen-1];
+                                p[prlen-1] = p[prlen-2];
+                                p[prlen-2] = ':';
+                                prlen += 1;
+                        }
+                        DEC();
+                }
+                prlen = snprintf_ss(p, tbuf_left, " %s ", hostname);
+                DEC();
+#endif /* BSDSYSLOG */
+        }
 
 	if (data->log_stat & LOG_PERROR)
 		stdp = p;
 	if (data->log_tag == NULL)
 		data->log_tag = getprogname();
+
+#ifdef BSDSYSLOG
 	if (data->log_tag != NULL) {
 		prlen = snprintf_ss(p, tbuf_left, "%s", data->log_tag);
 		DEC();
@@ -248,6 +284,19 @@ vsyslog_r(int pri, struct syslog_data *data, const char *fmt, va_list ap)
 		}
 	}
 
+#else
+        prlen = snprintf_ss(p, tbuf_left, "%s ",
+            data->log_tag ? data->log_tag : "-");
+        DEC();
+
+        /* with empty MsgID */
+        if (data->log_stat & LOG_PID)
+                prlen = snprintf_ss(p, tbuf_left, "%d - ", getpid());
+        else
+                prlen = snprintf_ss(p, tbuf_left, "- - ");
+        DEC();
+
+#endif /* BSDSYSLOG */
 	/* 
 	 * We wouldn't need this mess if printf handled %m, or if 
 	 * strerror() had been invented before syslog().
@@ -280,10 +329,34 @@ vsyslog_r(int pri, struct syslog_data *data, const char *fmt, va_list ap)
 	}
 	*t = '\0';
 
+        /* problem with syslog-protocol: applications should be able to log
+         * structured data. -- so we need to detect that and put it into the
+         * right field. thus let vsnprintf write into 2nd buffer, check for SD,
+         * and only then cat together
+         */
+#ifdef BSDSYSLOG
 	if (signal_safe)
 		prlen = vsnprintf_ss(p, tbuf_left, fmt_cpy, ap);
 	else
 		prlen = vsnprintf(p, tbuf_left, fmt_cpy, ap);
+#else
+        {
+        char msgbuf[TBUF_LEN];
+        size_t sdlen;
+
+        if (signal_safe)
+                (void)vsnprintf_ss(msgbuf, TBUF_LEN, fmt_cpy, ap);
+        else
+                (void)vsnprintf(msgbuf, TBUF_LEN, fmt_cpy, ap);
+
+        sdlen = check_sd(msgbuf);
+        if (sdlen)
+                prlen = snprintf_ss(p, tbuf_left, "%.*s%s",
+                    sdlen, msgbuf, msgbuf+sdlen);
+        else
+                prlen = snprintf_ss(p, tbuf_left, "- %s", msgbuf);
+        }
+#endif /* BSDSYSLOG */
 	DEC();
 	cnt = p - tbuf;
 
@@ -402,6 +475,14 @@ openlog_unlocked_r(const char *ident, int logstat, int logfac,
 
 	if (data->log_stat & LOG_NDELAY)	/* open immediately */
 		connectlog_r(data);
+#ifndef BSDSYSLOG
+        if (gethostname(hostname, sizeof(hostname)) == -1
+                        || hostname[0] == '\0') {
+                /* can this really happen? */
+                hostname[0] = '-';
+                hostname[1] = '\0';
+}
+#endif /* BSDSYSLOG */
 }
 
 void
@@ -436,4 +517,51 @@ setlogmask_r(int pmask, struct syslog_data *data)
 	if (pmask != 0)
 		data->log_mask = pmask;
 	return omask;
+}
+/* following syslog-protocol */
+#define printusascii(ch) (ch >= 33 && ch <= 126)
+#define sdname(ch) (ch != '=' && ch != ' ' && ch != ']' && ch != '"' && printusascii(ch))
+/*
+ * returns number of chars found in SD at beginning of string p
+ * thus returns 0 if no valid SD is found
+ */
+static unsigned
+check_sd(const char* p)
+{
+        const char *q = p;
+        while (/*CONSTCOND*/1) { /* SD-ELEMENT */
+                if (*q++ != '[') return 0;
+                /* SD-ID */
+                if (!sdname(*q)) return 0;
+                while (sdname(*q)) q++;
+                while (/*CONSTCOND*/1) { /* SD-PARAM */
+                        if (*q == ']') {
+                                q++;
+                                if (*q == ' ' || *q == '\0') return q-p;
+                                else if (*q == '[') break;
+                        } else if (*q++ != ' ') return 0;
+
+                        /* PARAM-NAME */
+                        if (!sdname(*q)) return 0;
+                        while (sdname(*q)) q++;
+
+                        if (*q++ != '=') return 0;
+                        if (*q++ != '"') return 0;
+
+                        /* PARAM-VALUE */
+                        while (*q != '"'
+                           || (*(q-1) == '\\' && *(q-2) != '\\')) {
+                                if (*q++ == '\0') return 0;
+                                if (*q == ']'
+                                && (*(q-1) != '\\' || *(q-2) == '\\'))
+                                        return 0;
+                                /* *(q+1) is safe because there
+                                 * is still a \0 at the end */
+                                if (*q == '\\' && *(q+1) != '\\'
+                                && *(q+1) != '"' && *(q+1) != ']')
+                                        return 0;
+                        }
+                        q++;
+                }
+        }
 }

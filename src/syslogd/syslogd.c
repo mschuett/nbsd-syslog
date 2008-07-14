@@ -922,7 +922,7 @@ check_sd(char* p, const bool ascii)
                                         } else {
                                                 int i;
                                                 i = valid_utf8(p);
-                                                if (i) while(i) { /* multi byte char */
+                                                if (i) while(--i) { /* multi byte char */
                                                         q++; i--;
                                                        } 
                                                 else
@@ -1228,7 +1228,7 @@ all_bsd_msg:
                 NEXTFIELD(p);
                 start = p;
                 sdlen = check_sd(p, false);
-                DPRINTF(D_DATA, "check_sd(\"%s\") returned %d\n", buffer->msgid, sdlen);
+                DPRINTF(D_DATA, "check_sd(\"%s\") returned %d\n", p, sdlen);
                 
                 if (sdlen == 1 && *p == '-') {
                         /* NILVALUE */
@@ -1239,7 +1239,8 @@ all_bsd_msg:
                 } else {
                         DPRINTF(D_DATA, "format error\n");
                 }
-                if (*p == ' ') start = ++p; /* SP */
+                if (*p == '\0')     start = p;
+                else if (*p == ' ') start = ++p; /* SP */
                 DPRINTF(D_DATA, "Got SD \"%s\"\n", buffer->sd);
 
                 /* and now the message itself 

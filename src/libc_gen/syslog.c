@@ -505,7 +505,23 @@ openlog_unlocked_r(const char *ident, int logstat, int logfac,
                 /* can this really happen? */
                 hostname[0] = '-';
                 hostname[1] = '\0';
-}
+                return;
+        }
+        if (!strchr(hostname, '.')) { /* no FQDN */
+                struct addrinfo *res;
+                struct addrinfo hints = {
+                        .ai_family = PF_UNSPEC,
+                        .ai_socktype = 0,
+                        .ai_protocol = 0,
+                        .ai_flags = AI_CANONNAME,
+                };
+                if (getaddrinfo(hostname, NULL, &hints, &res))
+                        return;
+                /* try to resolve back to hostname */
+                (void)getnameinfo(res->ai_addr, (socklen_t)res->ai_addr->sa_len,
+                        hostname, sizeof(hostname), NULL, 0, 0);
+                freeaddrinfo(res);
+        }
 #endif /* BSDSYSLOG */
 }
 
@@ -583,12 +599,12 @@ static unsigned
 check_sd(const char* p)
 {
         const char *q = p;
-        while (/*CONSTCOND*/1) { /* SD-ELEMENT */
+        for (;;) { /* SD-ELEMENT */
                 if (*q++ != '[') return 0;
                 /* SD-ID */
                 if (!sdname(*q)) return 0;
                 while (sdname(*q)) q++;
-                while (/*CONSTCOND*/1) { /* SD-PARAM */
+                for (;;) { /* SD-PARAM */
                         if (*q == ']') {
                                 q++;
                                 if (*q == ' ' || *q == '\0') return q-p;

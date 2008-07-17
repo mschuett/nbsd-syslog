@@ -691,6 +691,9 @@ socksetup_tls(const int af, const char *bindhostname, const char *port)
                         close(s->fd);
                         continue;
                 }
+                if (setsockopt(s->fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on)) == -1) {
+                        DPRINTF(D_NET, "Unable to setsockopt(): %s\n", strerror(errno));
+                }
                 if ((error = bind(s->fd, r->ai_addr, r->ai_addrlen)) == -1) {
                         logerror("bind() failed: %s", strerror(errno));
                         /* is there a better way to handle a EADDRINUSE? */

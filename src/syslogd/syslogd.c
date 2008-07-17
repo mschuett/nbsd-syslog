@@ -2600,7 +2600,7 @@ init(int fd, short event, void *ev)
 {
         size_t i;
         FILE *cf;
-        struct filed *f, *next, **nextp;
+        struct filed *f, *newf, **nextp;
         char *p;
         char cline[LINE_MAX];
         char prog[NAME_MAX + 1];
@@ -2643,8 +2643,6 @@ init(int fd, short event, void *ev)
         DPRINTF((D_EVENT|D_CALL), "init\n");
 
         /* get FQDN and hostname/domain */
-        if (LocalFQDN)
-                (void)strlcpy(oldLocalHostName, LocalFQDN, sizeof(oldLocalHostName));
         FREEPTR(LocalFQDN);
         LocalFQDN = getLocalFQDN();
         if ((p = strchr(LocalFQDN, '.')) != NULL) {
@@ -2655,7 +2653,7 @@ init(int fd, short event, void *ev)
                 (void)strlcpy(LocalHostName, LocalFQDN, sizeof(LocalHostName));
         }
         LocalDomainLen = strlen(LocalDomain);
-
+        (void)strlcpy(oldLocalHostName, LocalFQDN, sizeof(oldLocalHostName));
         Initialized = 0;
 
 #ifndef DISABLE_TLS
@@ -2680,12 +2678,11 @@ init(int fd, short event, void *ev)
         /*
          *  Close all open log files.
          */
-        for (f = Files; f != NULL; f = next) {
+        for (f = Files; f != NULL; f = f->f_next) {
                 /* flush any pending output */
                 if (f->f_prevcount)
                         fprintlog(f, NULL, NULL);
                 send_queue(f);
-                message_queue_freeall(f);
 
                 switch (f->f_type) {
                 case F_FILE:
@@ -2707,23 +2704,18 @@ init(int fd, short event, void *ev)
                         break;
 #ifndef DISABLE_TLS
                 case F_TLS:
-                        free_tls_conn(f->f_un.f_tls.tls_conn);
+                        free_tls_sslptr(f->f_un.f_tls.tls_conn);
                         break;
 #endif /* !DISABLE_TLS */
                 }
-                next = f->f_next;
-                DELREF(f->f_prevmsg);
-                FREEPTR(f->f_program);
-                FREEPTR(f->f_host);
-                free((char *)f);
         }
-        Files = NULL;
-        nextp = &Files;
+        /* new destination list to replace Files */
+        newf = NULL;
+        nextp = &newf;
 
         /*
          *  Close all open UDP sockets
          */
-
         if (finet) {
                 for (i = 0; i < finet->fd; i++) {
                         if (close(finet[i+1].fd) < 0) {
@@ -2743,7 +2735,7 @@ init(int fd, short event, void *ev)
          */
 
         NumForwards=0;
-
+        
         /* open the configuration file */
         if ((cf = fopen(ConfFile, "r")) == NULL) {
                 DPRINTF(D_FILE, "Cannot open `%s'\n", ConfFile);
@@ -2917,7 +2909,7 @@ init(int fd, short event, void *ev)
                 for (p = strchr(cline, '\0'); isspace((unsigned char)*--p);)
                         continue;
                 *++p = '\0';
-                f = (struct filed *)calloc(1, sizeof(*f));
+                f = (struct filed *)calloc(1, sizeof(*newf));
                 *nextp = f;
                 nextp = &f->f_next;
                 cfline(linenum, cline, f, prog, host);
@@ -2925,6 +2917,40 @@ init(int fd, short event, void *ev)
 
         /* close the configuration file */
         (void)fclose(cf);
+        
+#define MOVE_QUEUE(x, y) do {   (void)memcpy(&y->f_qhead, &x->f_qhead,  \
+                                                sizeof(x->f_qhead));    \
+                                TAILQ_INIT(&x->f_qhead);                \
+                                y->f_qsize = x->f_qsize;                \
+                                x->f_qsize = 0;                         \
+                                y->f_qelements = x->f_qelements;        \
+                                x->f_qelements = 0;                     \
+                        } while (0)
+        /*
+         *  Free old log files.
+         */
+        for (f = Files; f != NULL; f = f->f_next) {
+                /* check if a new logfile is equal, if so pass the queue */
+                for (struct filed *f2 = newf; f2 != NULL; f2 = f2->f_next) {
+                        if (f->f_type == f2->f_type
+                         && (f->f_type == F_PIPE && !strcmp(f->f_un.f_pipe.f_pname, f2->f_un.f_pipe.f_pname))
+#ifndef DISABLE_TLS
+                         && (f->f_type == F_TLS  && !strcmp(f->f_un.f_tls.tls_conn->hostname, f2->f_un.f_tls.tls_conn->hostname))
+#endif /* !DISABLE_TLS */
+                         && (f->f_type == F_FORW && !strcmp(f->f_un.f_forw.f_hname, f2->f_un.f_forw.f_hname))) {
+                                DPRINTF(D_BUFFER, "move queue from f@%p to p@%p", f, f2);
+                                MOVE_QUEUE(f, f2);
+                         }
+                }
+                message_queue_freeall(f);
+                DELREF(f->f_prevmsg);
+                if (f->f_type == F_TLS)
+                        free_tls_conn(f->f_un.f_tls.tls_conn);
+                FREEPTR(f->f_program);
+                FREEPTR(f->f_host);
+                free((char *)f);
+        }
+        Files = newf;
 
         Initialized = 1;
 

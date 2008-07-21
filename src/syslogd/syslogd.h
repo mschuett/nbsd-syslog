@@ -134,9 +134,9 @@ char *strndup(const char *str, size_t n);
 #define D_BUFFER 128    /* message queues */
 #define D_MEM    256    /* malloc/free */
 #define D_MEM2  1024    /* every single malloc/free */
-#define D_MISC  2048    /* everything else */
-#define D_ALL   (D_CALL | D_DATA | D_NET | D_FILE | D_TLS | D_EVENT | D_MISC) 
-/*#define D_ALL   4095  */
+#define D_SIGN  2048    /* -sign */
+#define D_MISC  4096    /* everything else */
+#define D_ALL   (D_CALL | D_DATA | D_NET | D_FILE | D_TLS | D_EVENT | D_SIGN | D_MISC) 
 
 /* remove first printf for short debug messages */
 #define DPRINTF(x, ...) ((Debug & x) \
@@ -283,6 +283,10 @@ struct tls_global_options_t {
         char *bindport;     /* port/service to bind to    */
         char *server;       /* if !NULL: do not listen to incoming TLS    */
         char *gen_cert;     /* if !NULL: generate self-signed certificate */
+        char *reconnect_giveup_str;
+        char *reconnect_interval_str;
+        int64_t reconnect_giveup;    /* in seconds or 0 for none */
+        int64_t reconnect_interval;  /* in seconds */
 };
 
 /* TLS needs three sets of sockets:

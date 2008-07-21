@@ -35,6 +35,11 @@
 
 /* reconnect to lost server after n sec (initial value) */
 #define TLS_RECONNECT_SEC 2
+/* backoff connection attempts */
+#define RECONNECT_BACKOFF_FACTOR 15/10
+#define RECONNECT_BACKOFF(x)     (x) = (x) * RECONNECT_BACKOFF_FACTOR
+/* abandon connection attempts after n sec */
+#define RECONNECT_GIVEUP         60*60*24  /* 1d */
 
 /* default algorithm for certificate fingerprints */
 #define DEFAULT_FINGERPRINT_ALG "SHA1"
@@ -138,6 +143,7 @@ void dispatch_tls_send(int, short, void *);
 void dispatch_tls_eof(int, short, void *);
 void dispatch_SSL_connect(int, short, void *);
 void dispatch_SSL_shutdown(int, short, void *);
+void dispatch_force_tls_reconnect(int, short, void *);
 
 bool tls_connect(struct tls_conn_settings *);
 void tls_reconnect(int, short, void *);

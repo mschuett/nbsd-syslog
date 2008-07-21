@@ -75,9 +75,9 @@ extern char *make_timestamp(time_t *, bool);
 extern struct filed *get_f_by_conninfo(struct tls_conn_settings *conn_info);
 extern bool message_queue_add(struct filed *, struct buf_msg *);
 extern void buf_msg_free(struct buf_msg *msg);
+extern void message_queue_freeall(struct filed *);
 
 static unsigned int getVerifySetting(const char *x509verifystring);
-
 
 static unsigned int
 getVerifySetting(const char *x509verifystring)
@@ -764,7 +764,7 @@ dispatch_SSL_connect(int fd, short event, void *arg)
                                         "to \"%s\" -- wrong certificate "
                                         "configured?", conn_info->hostname);
                                 ST_CHANGE(conn_info->state, ST_NONE);
-                                conn_info->reconnect = 5*TLS_RECONNECT_SEC;
+                                conn_info->reconnect = 5*tls_opt.reconnect_interval;
                                 schedule_event(&conn_info->event,
                                         &((struct timeval)
                                         {conn_info->reconnect, 0}),
@@ -775,7 +775,7 @@ dispatch_SSL_connect(int fd, short event, void *arg)
         }
         /* else */
         ST_CHANGE(conn_info->state, ST_TLS_EST);
-        conn_info->reconnect = TLS_RECONNECT_SEC;
+        conn_info->reconnect = tls_opt.reconnect_interval;
         event_set(conn_info->event, fd, EV_READ, dispatch_tls_eof, conn_info);
         EVENT_ADD(conn_info->event);
         
@@ -1035,7 +1035,7 @@ parse_tls_destination(char *p, struct filed *f)
         }
         /* default values */
         f->f_un.f_tls.tls_conn->x509verify = X509VERIFY_ALWAYS;
-        f->f_un.f_tls.tls_conn->reconnect = TLS_RECONNECT_SEC;
+        f->f_un.f_tls.tls_conn->reconnect = tls_opt.reconnect_interval;
 
         if (!(copy_string(&(f->f_un.f_tls.tls_conn->hostname), p, q)))
                 return false;
@@ -1091,8 +1091,6 @@ parse_tls_destination(char *p, struct filed *f)
 /*
  * Dispatch routine (triggered by timer) to reconnect to a lost TLS server
  */
-#define RECONNECT_BACKOFF_FACTOR 15/10
-#define RECONNECT_BACKOFF(x)     (x) = (x) * RECONNECT_BACKOFF_FACTOR
 void
 tls_reconnect(int fd, short event, void *arg)
 {
@@ -1105,13 +1103,24 @@ tls_reconnect(int fd, short event, void *arg)
         FREEPTR(conn_info->retryevent);
 
         if (!tls_connect(conn_info)) {
-                logerror("Unable to connect to TLS server %s, "
-                        "try again in %d sec", conn_info->hostname,
-                        conn_info->reconnect);
-                schedule_event(&conn_info->event,
-                        &((struct timeval){conn_info->reconnect, 0}),
-                        tls_reconnect, conn_info);
-                RECONNECT_BACKOFF(conn_info->reconnect);
+                if (conn_info->reconnect > tls_opt.reconnect_giveup) {
+                        logerror("Unable to connect to TLS server %s, "
+                                "giving up now", conn_info->hostname);
+                        message_queue_freeall(get_f_by_conninfo(conn_info));
+                        /* free the message queue; but do not free the
+                         * tls_conn_settings nor change the f_type to F_UNUSED.
+                         * that way one can still trigger a reconnect
+                         * with a SIGUSR1
+                         */
+                } else {
+                        logerror("Unable to connect to TLS server %s, "
+                                "try again in %d sec", conn_info->hostname,
+                                conn_info->reconnect);
+                        schedule_event(&conn_info->event,
+                                &((struct timeval){conn_info->reconnect, 0}),
+                                tls_reconnect, conn_info);
+                        RECONNECT_BACKOFF(conn_info->reconnect);
+                }
         } else {
                 assert(conn_info->state == ST_TLS_EST
                     || conn_info->state == ST_CONNECTING

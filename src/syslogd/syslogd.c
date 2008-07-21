@@ -577,6 +577,10 @@ getgroup:
         signal_set(ev, SIGHUP, init, ev);
         EVENT_ADD(ev);
 
+        ev = allocev();
+        signal_set(ev, SIGUSR1, dispatch_force_tls_reconnect, ev);
+        EVENT_ADD(ev);
+
         if (fklog >= 0) {
                 ev = allocev();
                 DPRINTF(D_EVENT, "register klog for fd %d with ev@%p\n", fklog, ev);
@@ -2627,6 +2631,8 @@ init(int fd, short event, void *ev)
                 {"tls_bindhost",          &tls_opt.bindhost},
                 {"tls_server",            &tls_opt.server},
                 {"tls_gen_cert",          &tls_opt.gen_cert},
+                {"tls_reconnect_interval",&tls_opt.reconnect_interval_str},
+                {"tls_reconnect_timeout", &tls_opt.reconnect_giveup_str},
                 /* special cases in parsing */
                 {"tls_allow_fingerprints",&tmp_buf},
                 {"tls_allow_clientcerts", &tmp_buf},
@@ -2826,6 +2832,16 @@ init(int fd, short event, void *ev)
                  || dehumanize_number(TypeInfo[i].queue_size_string, &TypeInfo[i].queue_size) == -1)
                         TypeInfo[i].queue_size = strtol(TypeInfo[i].default_size_string, NULL, 10);
         }
+        /* either convert or set default values */
+        if (!tls_opt.reconnect_interval_str
+         || dehumanize_number(tls_opt.reconnect_interval_str, &tls_opt.reconnect_interval)) {
+                tls_opt.reconnect_interval = TLS_RECONNECT_SEC;
+        }
+        if (!tls_opt.reconnect_giveup_str
+         || dehumanize_number(tls_opt.reconnect_giveup_str, &tls_opt.reconnect_giveup)) {
+                tls_opt.reconnect_giveup = RECONNECT_GIVEUP;
+        }
+        
         rewind(cf);
         linenum = 0;
 #endif /* !DISABLE_TLS */
@@ -3931,4 +3947,19 @@ make_timestamp(time_t *in_now, bool iso)
                 timestamp[len-2] = ':';
         }
         return timestamp;
+}
+
+/*
+ * Called on signal.
+ * Lets the admin reconnect without waiting for the reconnect timer expires.
+ */
+void
+dispatch_force_tls_reconnect(int fd, short event, void *ev)
+{
+        DPRINTF((D_TLS|D_CALL|D_EVENT), "dispatch_force_tls_reconnect()\n");
+        for (struct filed *f = Files; f; f = f->f_next) {
+                if (f->f_type == F_TLS
+                 && f->f_un.f_tls.tls_conn->state == 0) /* ST_NONE */
+                        tls_reconnect(fd, event, f->f_un.f_tls.tls_conn);
+        }
 }

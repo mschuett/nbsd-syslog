@@ -246,7 +246,7 @@ struct buf_msg *buf_msg_new(const size_t);
 void buf_msg_free(struct buf_msg *msg);
 
 bool message_queue_remove(struct filed *, struct buf_queue *);
-bool message_queue_add(struct filed *, struct buf_msg *);
+struct buf_queue *message_queue_add(struct filed *, struct buf_msg *);
 void message_queue_freeall(struct filed *);
 
 /* for make_timestamp() */
@@ -1989,9 +1989,7 @@ sendagain:
 #ifndef DISABLE_TLS
         case F_TLS:
                 DPRINTF(D_MISC, "Logging to %s %s\n", TypeInfo[f->f_type].name, f->f_un.f_tls.tls_conn->hostname);
-                if (!tls_send(f, buffer, lineptr, len) && !qentry) {
-                                message_queue_add(f, NEWREF(buffer));
-                }
+                (void)tls_send(f, buffer, lineptr, len, qentry);
                 break;
 #endif /* !DISABLE_TLS */
 
@@ -3827,7 +3825,10 @@ message_queue_remove(struct filed *f, struct buf_queue *qentry)
         return true;
 }
 
-bool
+/*
+ * returns *qentry on success and NULL on error
+ */
+struct buf_queue *
 message_queue_add(struct filed *f, struct buf_msg *buffer)
 {
         struct buf_queue *qentry;
@@ -3838,7 +3839,7 @@ message_queue_add(struct filed *f, struct buf_msg *buffer)
         if (!qentry) {
                 logerror("Unable to allocate memory");
                 DPRINTF(D_BUFFER, "queue empty, no memory, msg dropped\n");
-                return false;
+                return NULL;
         } else {
                 qentry->msg = buffer;
                 f->f_qelements++;
@@ -3859,7 +3860,7 @@ message_queue_add(struct filed *f, struct buf_msg *buffer)
                         f->f_qsize += strlen(qentry->msg->host);
                 TAILQ_INSERT_TAIL(&f->f_qhead, qentry, entries);
                 DPRINTF(D_BUFFER, "msg queued\n");
-                return true;
+                return qentry;
         }
 }
 

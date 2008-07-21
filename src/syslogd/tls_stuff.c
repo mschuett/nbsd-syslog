@@ -73,7 +73,8 @@ extern void    send_queue(struct filed *);
 extern void schedule_event(struct event **, struct timeval *, void (*)(int, short, void *), void *);
 extern char *make_timestamp(time_t *, bool);
 extern struct filed *get_f_by_conninfo(struct tls_conn_settings *conn_info);
-extern bool message_queue_add(struct filed *, struct buf_msg *);
+extern bool message_queue_remove(struct filed *, struct buf_queue *);
+extern struct buf_queue *message_queue_add(struct filed *, struct buf_msg *);
 extern void buf_msg_free(struct buf_msg *msg);
 extern void message_queue_freeall(struct filed *);
 
@@ -1525,7 +1526,7 @@ tls_split_messages(struct TLS_Incoming_Conn *c)
  */
 #define DEBUG_LINELENGTH 40
 bool
-tls_send(struct filed *f, struct buf_msg *buffer, char *line, size_t len)
+tls_send(struct filed *f, struct buf_msg *buffer, char *line, size_t len, struct buf_queue *qentry)
 {
         struct tls_send_msg *sendmsg;
 
@@ -1534,6 +1535,11 @@ tls_send(struct filed *f, struct buf_msg *buffer, char *line, size_t len)
                 (len > DEBUG_LINELENGTH ? DEBUG_LINELENGTH : len),
                 line, (len > DEBUG_LINELENGTH ? "..." : ""),
                 len, f->f_un.f_tls.tls_conn->sslptr ? "" : "un");
+
+        /* make sure every message gets queued once
+         * it will be removed when sendmsg is sent and free()d */
+        if (!qentry)
+                qentry = message_queue_add(f, buffer);
 
         if(f->f_un.f_tls.tls_conn->state == ST_TLS_EST) {
                 /* send now */
@@ -1545,6 +1551,7 @@ tls_send(struct filed *f, struct buf_msg *buffer, char *line, size_t len)
                 sendmsg->buffer = NEWREF(buffer);
                 sendmsg->line = line;
                 sendmsg->linelen = len;
+                sendmsg->qentry = qentry;
                 DPRINTF(D_DATA, "now sending line: \"%.*s\"\n",
                         sendmsg->linelen, sendmsg->line);
                 dispatch_tls_send(0, 0, sendmsg);
@@ -1553,9 +1560,6 @@ tls_send(struct filed *f, struct buf_msg *buffer, char *line, size_t len)
                 /* other socket operation active, send later  */
                 DPRINTF(D_DATA, "connection not ready to send: \"%.*s\"\n",
                         len, line);
-                
-                /* now the caller has to enqueue the message
-                 * (if not already sending from queue) */
                 return false;
         }
 }
@@ -1901,7 +1905,7 @@ free_tls_send_msg(struct tls_send_msg *msg)
                 DPRINTF((D_DATA), "invalid tls_send_msg_free(NULL)\n");
                 return;
         }
-
+        (void)message_queue_remove(msg->f, msg->qentry);
         DELREF(msg->buffer);
         FREEPTR(msg->line);
         FREEPTR(msg);

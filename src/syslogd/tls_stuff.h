@@ -28,6 +28,10 @@
     for ((var) = SLIST_FIRST((head));               \
         (var) && ((tvar) = SLIST_NEXT((var), field), 1);        \
         (var) = (tvar))
+#define TAILQ_FOREACH_SAFE(var, head, field, tvar)          \
+    for ((var) = TAILQ_FIRST((head));               \
+        (var) && ((tvar) = TAILQ_NEXT((var), field), 1);        \
+        (var) = (tvar))
 #endif /* !SLIST_FOREACH_SAFE */
 
 /* timeout to call non-blocking TLS operations again */
@@ -57,6 +61,19 @@
 #define TLS_GENCERT_BITS  1024
 #define TLS_GENCERT_SERIAL   1
 #define TLS_GENCERT_DAYS   365
+
+/* TLS connection states */
+#define ST_NONE       0
+#define ST_TLS_EST    1
+#define ST_TCP_EST    2
+#define ST_CONNECTING 3
+#define ST_ACCEPTING  4  
+#define ST_READING    5
+#define ST_WRITING    6
+#define ST_EOF        7
+#define ST_CLOSING0   8
+#define ST_CLOSING1   9
+#define ST_CLOSING2  10
 
 /*
  * holds TLS related settings for one connection to be

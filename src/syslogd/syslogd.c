@@ -577,9 +577,11 @@ getgroup:
         signal_set(ev, SIGHUP, init, ev);
         EVENT_ADD(ev);
 
+#ifndef DISABLE_TLS
         ev = allocev();
         signal_set(ev, SIGUSR1, dispatch_force_tls_reconnect, ev);
         EVENT_ADD(ev);
+#endif /* !DISABLE_TLS */
 
         if (fklog >= 0) {
                 ev = allocev();
@@ -1311,9 +1313,10 @@ printsys(char *msg)
         for (p = msg; *p != '\0'; ) {
                 buffer = buf_msg_new(0);
                 /* always assume BSDSYSLOG.
-                 * even _if_ the kernel would output syslog-protocol
-                 * then this whole loop could be changed and would not
-                 * have to check every single line for its version byte */
+                 * 
+                 * TODO: remove this assumption or at least add more parsing
+                 *  -- we eventually want the kernel to log structured data
+                 */
                 buffer->flags = ISKERNEL | ADDDATE | BSDSYSLOG;
                 if (SyncKernel)
                         buffer->flags |= SYNC_FILE;
@@ -1989,6 +1992,10 @@ sendagain:
 #ifndef DISABLE_TLS
         case F_TLS:
                 DPRINTF(D_MISC, "Logging to %s %s\n", TypeInfo[f->f_type].name, f->f_un.f_tls.tls_conn->hostname);
+                /* make sure every message gets queued once
+                 * it will be removed when sendmsg is sent and free()d */
+                if (!qentry)
+                        qentry = message_queue_add(f, NEWREF(buffer));
                 (void)tls_send(f, buffer, lineptr, len, qentry);
                 break;
 #endif /* !DISABLE_TLS */
@@ -3657,11 +3664,21 @@ free_cred_SLIST(struct peer_cred_head *head)
 void
 send_queue(struct filed *f)
 {
-        struct buf_queue *qentry;
+        struct buf_queue *qentry, *tqentry;
         
         DPRINTF((D_DATA|D_CALL), "send_queue(f@%p with %d msgs)\n",
                 f, f->f_qelements);
-        TAILQ_FOREACH(qentry, &f->f_qhead, entries) {
+
+#ifndef DISABLE_TLS
+        /* in init() or die() send_queue() might be called with an
+         * unconnected destination and all calls to fprintlog() will fail.
+         * this check is a shortcut to skip these unnecessary calls */
+        if (f->f_type == F_TLS
+         && f->f_un.f_tls.tls_conn->state != ST_TLS_EST)
+                return;
+#endif /* !DISABLE_TLS */
+        
+        TAILQ_FOREACH_SAFE(qentry, &f->f_qhead, entries, tqentry) {
                 DPRINTF((D_DATA|D_CALL), "send_queue() calls fprintlog()\n");
                 fprintlog(f, qentry->msg, qentry);
         }
@@ -3800,7 +3817,7 @@ buf_msg_free(struct buf_msg *buf)
 bool
 message_queue_remove(struct filed *f, struct buf_queue *qentry)
 {
-        if (!f || !qentry)
+        if (!f || !qentry || !qentry->msg)
                 return false;
 
         TAILQ_REMOVE(&f->f_qhead, qentry, entries);
@@ -3820,6 +3837,8 @@ message_queue_remove(struct filed *f, struct buf_queue *qentry)
          && qentry->msg->host != LocalHostName
          && qentry->msg->host != LocalFQDN)
                 f->f_qsize -= strlen(qentry->msg->host);
+        DPRINTF(D_BUFFER, "msg @%p removed from queue @%p, new qlen = %d\n",
+                qentry->msg, f, f->f_qelements);
         DELREF(qentry->msg);
         FREEPTR(qentry);
         return true;
@@ -3859,7 +3878,8 @@ message_queue_add(struct filed *f, struct buf_msg *buffer)
                  && qentry->msg->host != LocalFQDN)
                         f->f_qsize += strlen(qentry->msg->host);
                 TAILQ_INSERT_TAIL(&f->f_qhead, qentry, entries);
-                DPRINTF(D_BUFFER, "msg queued\n");
+                DPRINTF(D_BUFFER, "msg @%p queued @%p, qlen = %d\n",
+                        buffer, f, f->f_qelements);
                 return qentry;
         }
 }
@@ -3897,6 +3917,21 @@ get_f_by_conninfo(struct tls_conn_settings *conn_info)
         }
         DPRINTF(D_TLS, "get_f_by_conninfo() called on invalid conn_info\n");
         return NULL;
+}
+
+/*
+ * Called on signal.
+ * Lets the admin reconnect without waiting for the reconnect timer expires.
+ */
+void
+dispatch_force_tls_reconnect(int fd, short event, void *ev)
+{
+        DPRINTF((D_TLS|D_CALL|D_EVENT), "dispatch_force_tls_reconnect()\n");
+        for (struct filed *f = Files; f; f = f->f_next) {
+                if (f->f_type == F_TLS
+                 && f->f_un.f_tls.tls_conn->state == ST_NONE)
+                        tls_reconnect(fd, event, f->f_un.f_tls.tls_conn);
+        }
 }
 #endif /* !DISABLE_TLS */
 
@@ -3948,19 +3983,4 @@ make_timestamp(time_t *in_now, bool iso)
                 timestamp[len-2] = ':';
         }
         return timestamp;
-}
-
-/*
- * Called on signal.
- * Lets the admin reconnect without waiting for the reconnect timer expires.
- */
-void
-dispatch_force_tls_reconnect(int fd, short event, void *ev)
-{
-        DPRINTF((D_TLS|D_CALL|D_EVENT), "dispatch_force_tls_reconnect()\n");
-        for (struct filed *f = Files; f; f = f->f_next) {
-                if (f->f_type == F_TLS
-                 && f->f_un.f_tls.tls_conn->state == 0) /* ST_NONE */
-                        tls_reconnect(fd, event, f->f_un.f_tls.tls_conn);
-        }
 }

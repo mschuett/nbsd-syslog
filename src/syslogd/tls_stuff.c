@@ -21,20 +21,7 @@ const char *SSL_ERRCODE[] = {
         "SSL_ERROR_ZERO_RETURN",
         "SSL_ERROR_WANT_CONNECT",
         "SSL_ERROR_WANT_ACCEPT"};
-
-/* TLS connection states */
-#define ST_NONE       0
-#define ST_TLS_EST    1
-#define ST_TCP_EST    2
-#define ST_CONNECTING 3
-#define ST_ACCEPTING  4  
-#define ST_READING    5
-#define ST_WRITING    6
-#define ST_EOF        7
-#define ST_CLOSING0   8
-#define ST_CLOSING1   9
-#define ST_CLOSING2  10
-/* and for output */
+/* TLS connection states -- keep in sync with symbols in .h */
 const char *TLS_CONN_STATES[] = {
         "ST_NONE",
         "ST_TLS_EST",
@@ -74,7 +61,6 @@ extern void schedule_event(struct event **, struct timeval *, void (*)(int, shor
 extern char *make_timestamp(time_t *, bool);
 extern struct filed *get_f_by_conninfo(struct tls_conn_settings *conn_info);
 extern bool message_queue_remove(struct filed *, struct buf_queue *);
-extern struct buf_queue *message_queue_add(struct filed *, struct buf_msg *);
 extern void buf_msg_free(struct buf_msg *msg);
 extern void message_queue_freeall(struct filed *);
 
@@ -1535,11 +1521,7 @@ tls_send(struct filed *f, struct buf_msg *buffer, char *line, size_t len, struct
                 (len > DEBUG_LINELENGTH ? DEBUG_LINELENGTH : len),
                 line, (len > DEBUG_LINELENGTH ? "..." : ""),
                 len, f->f_un.f_tls.tls_conn->sslptr ? "" : "un");
-
-        /* make sure every message gets queued once
-         * it will be removed when sendmsg is sent and free()d */
-        if (!qentry)
-                qentry = message_queue_add(f, buffer);
+        assert(qentry->msg == buffer);
 
         if(f->f_un.f_tls.tls_conn->state == ST_TLS_EST) {
                 /* send now */

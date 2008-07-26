@@ -591,7 +591,7 @@ check_msgid(char *p)
         }
 }
 
-/*
+/* 
  * returns number of chars found in SD at beginning of string p
  * thus returns 0 if no valid SD is found
  */
@@ -599,12 +599,18 @@ static unsigned
 check_sd(const char* p)
 {
         const char *q = p;
-        for (;;) { /* SD-ELEMENT */
+        int esc = 0;
+        
+        /* consider the NILVALUE to be valid */
+        if (*q == '-' && (*(q+1) == ' ' || *(q+1) == '\0'))
+                return 1;
+        
+        while (/*CONSTCOND*/1) { /* SD-ELEMENT */
                 if (*q++ != '[') return 0;
                 /* SD-ID */
                 if (!sdname(*q)) return 0;
                 while (sdname(*q)) q++;
-                for (;;) { /* SD-PARAM */
+                while (/*CONSTCOND*/1) { /* SD-PARAM */
                         if (*q == ']') {
                                 q++;
                                 if (*q == ' ' || *q == '\0') return q-p;
@@ -619,17 +625,22 @@ check_sd(const char* p)
                         if (*q++ != '"') return 0;
 
                         /* PARAM-VALUE */
-                        while (*q != '"'
-                           || (*(q-1) == '\\' && *(q-2) != '\\')) {
-                                if (*q++ == '\0') return 0;
-                                if (*q == ']'
-                                && (*(q-1) != '\\' || *(q-2) == '\\'))
-                                        return 0;
-                                /* *(q+1) is safe because there
-                                 * is still a \0 at the end */
-                                if (*q == '\\' && *(q+1) != '\\'
-                                && *(q+1) != '"' && *(q+1) != ']')
-                                        return 0;
+                        while (/*CONSTCOND*/1) {
+                                if (esc) {
+                                        esc = 0;
+                                        if (*q == '\\'
+                                         || *q == '"'
+                                         || *q == ']') {
+                                                q++;
+                                                continue;
+                                        }
+                                        /* no else because invalid
+                                         * escape sequences are accepted */
+                                }
+                                else if (*q == '"') break;
+                                else if (*q == '\0' || *q == ']') return 0;
+                                else if (*q == '\\') esc = 1;
+                                q++;
                         }
                         q++;
                 }

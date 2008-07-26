@@ -605,12 +605,12 @@ check_sd(const char* p)
         if (*q == '-' && (*(q+1) == ' ' || *(q+1) == '\0'))
                 return 1;
         
-        while (/*CONSTCOND*/1) { /* SD-ELEMENT */
+        for(;;) { /* SD-ELEMENT */
                 if (*q++ != '[') return 0;
                 /* SD-ID */
                 if (!sdname(*q)) return 0;
                 while (sdname(*q)) q++;
-                while (/*CONSTCOND*/1) { /* SD-PARAM */
+                for(;;) { /* SD-PARAM */
                         if (*q == ']') {
                                 q++;
                                 if (*q == ' ' || *q == '\0') return q-p;
@@ -625,7 +625,7 @@ check_sd(const char* p)
                         if (*q++ != '"') return 0;
 
                         /* PARAM-VALUE */
-                        while (/*CONSTCOND*/1) {
+                        for(;;) {
                                 if (esc) {
                                         esc = 0;
                                         if (*q == '\\'

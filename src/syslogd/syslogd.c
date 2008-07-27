@@ -75,6 +75,11 @@ __RCSID("$NetBSD: syslogd.c,v 1.84 2006/11/13 20:24:00 christos Exp $");
 #include "tls_stuff.h"
 #endif /* !DISABLE_TLS */
 
+#ifndef DISABLE_SIGN
+#include "sign.h"
+struct sign_global_t GlobalSign;
+#endif /* !DISABLE_SIGN */
+
 #ifdef LIBWRAP
 int allow_severity = LOG_AUTH|LOG_INFO;
 int deny_severity = LOG_AUTH|LOG_WARNING;
@@ -209,8 +214,9 @@ struct socketEvent* socksetup(int, const char *);
 void    init(int fd, short event, void *ev);  /* SIGHUP kevent dispatch routine */
 void    logerror(const char *, ...);
 void    loginfo(const char *, ...);
-void    logmsg_async(const int, const char *, const int);
+void    logmsg_async(const int, const char *, const char *, const int);
 void    logmsg(struct buf_msg *);
+void    logmsg_f(struct buf_msg*, struct filed*);
 void    log_deadchild(pid_t, int, const char *);
 int     matches_spec(const char *, const char *,
                      char *(*)(const char *, const char *));
@@ -1347,7 +1353,7 @@ printsys(char *msg)
 
                 buffer->msg = strndup(p, q - p);
                 buffer->msglen = buffer->msgsize = q - p;
-                buffer->timestamp = strdup(make_timestamp(NULL, false));
+                buffer->timestamp = strdup(make_timestamp(NULL, !BSDOutputFormat));
                 buffer->recvhost = buffer->host = LocalFQDN;
                 buffer->prog = strdup(_PATH_UNIX);
                 
@@ -1397,20 +1403,29 @@ matches_spec(const char *name, const char *spec,
  * keeps calling code shorter and hides buffer allocation
  */
 void
-logmsg_async(const int pri, const char *msg, const int flags)
+logmsg_async(const int pri, const char *sd, const char *msg, const int flags)
 {
         struct buf_msg *buffer;
         size_t msglen;
         
-        msglen = strlen(msg)+1;
-        buffer = buf_msg_new(msglen);
-        
-        buffer->pri = pri;
-        buffer->msglen = strlcpy(buffer->msg, msg, msglen) + 1;
-        buffer->timestamp = strdup(make_timestamp(NULL, false));
-        buffer->recvhost = buffer->host = LocalHostName;
-        buffer->flags = flags;
+        DPRINTF((D_CALL|D_DATA), "logmsg_async(%d, \"%s\", \"%s\", %d)\n",
+                pri, sd, msg, flags);
+
+        if (msg) {
+                msglen = strlen(msg);
+                msglen++;               /* adds \0 */
+                buffer = buf_msg_new(msglen);
+                buffer->msglen = strlcpy(buffer->msg, msg, msglen) + 1;
+        } else {
+                buffer = buf_msg_new(0);
+        }
+        if (sd) buffer->sd = strdup(sd);
+        buffer->timestamp = strdup(make_timestamp(NULL, !BSDOutputFormat));
         buffer->prog = strdup("syslogd");
+        buffer->recvhost = buffer->host = LocalHostName;
+        buffer->pri = pri;
+        buffer->flags = flags;
+
         logmsg(buffer);
         DELREF(buffer);
 }
@@ -1548,6 +1563,69 @@ check_timestamp(unsigned char *from_buf, char **to_buf, const bool from_iso, con
 }
 
 /*
+ * Log a message to one specific filed
+ * used to send signatures independent from priorities
+ */
+void
+logmsg_async_f(const int pri, const char *sd, const char *msg, const int flags, struct filed *f)
+{
+        int omask;
+        struct buf_msg *buffer;
+        size_t msglen;
+
+        DPRINTF((D_CALL|D_BUFFER), "logmsg_async_f: pri 0%o/%d,"
+                " sd '%s', msg '%s', flags 0x%x, f@%p\n",
+                pri, pri, sd, msg, flags, f);
+
+        omask = sigblock(sigmask(SIGHUP)|sigmask(SIGALRM));
+
+        if (msg) {
+                msglen = strlen(msg);
+                msglen++;               /* adds \0 */
+                buffer = buf_msg_new(msglen);
+                buffer->msglen = strlcpy(buffer->msg, msg, msglen) + 1;
+        } else {
+                buffer = buf_msg_new(0);
+        }
+        if (sd) buffer->sd = strdup(sd);
+        buffer->timestamp = strdup(make_timestamp(NULL, true));
+        buffer->prog = strdup("syslogd");
+
+        buffer->recvhost = buffer->host = LocalHostName;
+        buffer->pri = pri;
+        buffer->flags = flags;
+
+        /* sanity check */
+        if (Debug) {
+                if (buffer->refcount != 1)
+                        DPRINTF(D_BUFFER,
+                                "buffer->refcount != 1 -- memory leak?\n");
+                if ((buffer->msg) && (buffer->msglen != strlen(buffer->msg)+1))
+                        DPRINTF((D_BUFFER|D_DATA),
+                                "buffer->msglen = %d != %d = "
+                                "strlen(buffer->msg)+1\n",
+                                buffer->msglen, strlen(buffer->msg)+1);
+                if (!buffer->msg && !buffer->sd && !buffer->msgid)
+                        DPRINTF(D_BUFFER, "Empty message?\n");
+                /* basic invariants */
+                assert(buffer->msglen <= buffer->msgsize);
+                assert(buffer->msgorig <= buffer->msg);
+                assert(f);
+        }
+
+        /* log the message to the particular output */
+        if (f->f_prevcount)
+                fprintlog(f, NULL, NULL);
+        f->f_repeatcount = 0;
+        DELREF(f->f_prevmsg);
+        f->f_prevmsg = NEWREF(buffer);
+        fprintlog(f, NEWREF(buffer), NULL);
+        DELREF(buffer);
+        DELREF(buffer);
+        (void)sigsetmask(omask);
+}
+
+/*
  * Log a message to the appropriate log files, users, etc. based on
  * the priority.
  */
@@ -1558,9 +1636,9 @@ logmsg(struct buf_msg *buffer)
         int fac, omask, prilev;
 
         DPRINTF((D_CALL|D_BUFFER), "logmsg: buffer@%p, pri 0%o/%d, flags 0x%x,"
-                " timestamp \"%s\", from \"%s\", msg \"%s\"\n",
+                " timestamp \"%s\", from \"%s\", sd \"%s\", msg \"%s\"\n",
                 buffer, buffer->pri, buffer->pri, buffer->flags,
-                buffer->timestamp, buffer->recvhost, buffer->msg);
+                buffer->timestamp, buffer->recvhost, buffer->sd, buffer->msg);
 
         omask = sigblock(sigmask(SIGHUP)|sigmask(SIGALRM));
 
@@ -1574,6 +1652,8 @@ logmsg(struct buf_msg *buffer)
                                 "buffer->msglen = %d != %d = "
                                 "strlen(buffer->msg)+1\n",
                                 buffer->msglen, strlen(buffer->msg)+1);
+                if (!buffer->msg && !buffer->sd && !buffer->msgid)
+                        DPRINTF(D_BUFFER, "Empty message?\n");
                 /* basic invariants */
                 assert(buffer->msglen <= buffer->msgsize);
                 assert(buffer->msgorig <= buffer->msg);
@@ -1692,6 +1772,10 @@ logmsg(struct buf_msg *buffer)
                         fprintlog(f, NEWREF(buffer), NULL);
                         DELREF(buffer);
                 }
+#ifndef DISABLE_SIGN
+                if (f->f_sg)
+                        (void)sign_send_signature_block(f->f_sg, f);
+#endif /* !DISABLE_SIGN */
         }
         (void)sigsetmask(omask);
 }
@@ -1861,6 +1945,22 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
                 DPRINTF(D_DATA, "truncating oversized message to %d octets\n", linelen);
         }
 
+#ifndef DISABLE_SIGN
+        /* get hash */
+        if ((f->f_flags & FFLAG_SIGN)
+         && !(buffer->flags & SIGNATURE)) {
+                char *hash = NULL;
+                struct signature_group_t *sg;
+
+                if (!sign_msg_hash(line + tlsprefixlen, &hash)
+                 || (!(sg = sign_get_sg(buffer->pri, &GlobalSign.SigGroups, f)))) {
+                        free(hash);
+                        logerror("Unable to hash line \"%s\"", line);
+                 } else
+                        sign_append_hash(hash, sg);
+        }
+#endif /* !DISABLE_SIGN */
+
         /* set start and length of buffer and/or fill iovec */
         switch (f->f_type) {
         case F_UNUSED:
@@ -1876,8 +1976,14 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
                 len = linelen - tlsprefixlen;
                 break;
         case F_PIPE:
-                v->iov_base = line + tlsprefixlen + prilen;
-                v->iov_len = linelen - tlsprefixlen - prilen;
+        case F_FILE:  /* fallthrough */
+                if (f->f_flags & FFLAG_SIGN) {
+                        v->iov_base = line + tlsprefixlen;
+                        v->iov_len = linelen - tlsprefixlen;
+                } else {
+                        v->iov_base = line + tlsprefixlen + prilen;
+                        v->iov_len = linelen - tlsprefixlen - prilen;
+                }
                 ADDEV();
                 v->iov_base = "\n";
                 v->iov_len = 1;
@@ -1897,14 +2003,6 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
                 ADDEV();
                 v->iov_base = "\r\n";
                 v->iov_len = 2;
-                ADDEV();
-                break;
-        case F_FILE:
-                v->iov_base = line + tlsprefixlen + prilen;
-                v->iov_len = linelen - tlsprefixlen - prilen;
-                ADDEV();
-                v->iov_base = "\n";
-                v->iov_len = 1;
                 ADDEV();
                 break;
         case F_USERS:
@@ -2388,7 +2486,7 @@ domark(int fd, short event, void *ev)
         now = time((time_t *)NULL);
         MarkSeq += TIMERINTVL;
         if (MarkSeq >= MarkInterval) {
-                logmsg_async(LOG_INFO, markline, ADDDATE|MARK);
+                logmsg_async(LOG_INFO, NULL, markline, ADDDATE|MARK);
                 MarkSeq = 0;
         }
 
@@ -2463,7 +2561,7 @@ logerror(const char *fmt, ...)
                 (void)snprintf(buf, sizeof(buf), "syslogd: %s", tmpbuf);
 
         if (daemonized) 
-                logmsg_async(LOG_SYSLOG|LOG_ERR, buf, ADDDATE);
+                logmsg_async(LOG_SYSLOG|LOG_ERR, NULL, buf, ADDDATE);
         if (!daemonized && Debug)
                 DPRINTF(D_MISC, "%s\n", buf);
         if (!daemonized && !Debug)
@@ -2488,7 +2586,7 @@ loginfo(const char *fmt, ...)
         (void)snprintf(buf, sizeof(buf), "syslogd: %s", tmpbuf);
 
         if (daemonized) 
-                logmsg_async(LOG_SYSLOG|LOG_INFO, buf, ADDDATE);
+                logmsg_async(LOG_SYSLOG|LOG_INFO, NULL, buf, ADDDATE);
         if (!daemonized && Debug)
                 DPRINTF(D_MISC, "%s\n", buf);
         if (!daemonized && !Debug)
@@ -2534,6 +2632,9 @@ die(int fd, short event, void *ev)
 #ifndef DISABLE_TLS
         free_incoming_tls_sockets();
 #endif /* !DISABLE_TLS */
+#ifndef DISABLE_SIGN
+        sign_global_free(Files);
+#endif /* !DISABLE_SIGN */
 
         /*
          *  Close all open log files.
@@ -2665,27 +2766,33 @@ init(int fd, short event, void *ev)
         }
         LocalDomainLen = strlen(LocalDomain);
         (void)strlcpy(oldLocalHostName, LocalFQDN, sizeof(oldLocalHostName));
-        Initialized = 0;
 
+        /* some actions only on SIGHUP and not on first start */
+        if (Initialized) {
+#ifndef DISABLE_SIGN
+                sign_global_free(Files);
+#endif /* !DISABLE_SIGN */
 #ifndef DISABLE_TLS
-        free_incoming_tls_sockets();
-        /* TODO: I wonder whether TLS connections should
-         * use a multi-step shutdown:
-         * 1. send close notify to incoming connections
-         * 2. receive outstanding messages/buffer
-         * 3. receive close notify and close TLS socket
-         * 4. close outgoing connections & files
-         * 
-         * Since init() is called after kevent, this would
-         * probably require splitting it into hangup() for closing
-         * and newinit() for opening, so that messages can still
-         * be received between these two function calls.
-         * 
-         * Or we check inside init() if new kevents arrive
-         * for the incoming sockets...
-         */
+                free_incoming_tls_sockets();
+                /* TODO: I wonder whether TLS connections should
+                 * use a multi-step shutdown:
+                 * 1. send close notify to incoming connections
+                 * 2. receive outstanding messages/buffer
+                 * 3. receive close notify and close TLS socket
+                 * 4. close outgoing connections & files
+                 * 
+                 * Since init() is called after kevent, this would
+                 * probably require splitting it into hangup() for closing
+                 * and newinit() for opening, so that messages can still
+                 * be received between these two function calls.
+                 * 
+                 * Or we check inside init() if new kevents arrive
+                 * for the incoming sockets...
+                 */
 #endif /* !DISABLE_TLS */
-
+                Initialized = 0;
+        }
+        
         /*
          *  Close all open log files.
          */
@@ -2973,6 +3080,10 @@ init(int fd, short event, void *ev)
         }
         Files = newf;
 
+#ifndef DISABLE_SIGN
+        sign_global_init(SIGN_SG, Files);
+#endif /* !DISABLE_SIGN */
+
         Initialized = 1;
 
         if (Debug) {
@@ -3071,6 +3182,12 @@ init(int fd, short event, void *ev)
         if (ev != NULL && strcmp(oldLocalHostName, LocalHostName) != 0)
                 loginfo("host name changed, \"%s\" to \"%s\"",
                     oldLocalHostName, LocalHostName);
+
+#ifndef DISABLE_SIGN
+        for (struct filed *f = Files; f; f = f->f_next)
+                if (f->f_flags & FFLAG_SIGN)
+                        sign_send_certificate_block(f);
+#endif /* !DISABLE_SIGN */
 }
 
 /*
@@ -3254,6 +3371,8 @@ cfline(const unsigned int linenum, char *line, struct filed *f, char *prog, char
                                 break;
                         }
                         f->f_type = F_TLS;
+                        /* TODO: for testing; remove later */
+                        f->f_flags = FFLAG_SIGN;
                         break;
                 }
 #endif /* !DISABLE_TLS */
@@ -3960,8 +4079,11 @@ make_timestamp(time_t *in_now, bool iso)
                 tvptr = &tv;
         }
 
-        if (!iso)
-                return ctime(&mytime) + 4;
+        if (!iso) {
+                strlcpy(timestamp, ctime(&mytime) + 4, TIMESTAMPBUFSIZE);
+                timestamp[BSD_TIMESTAMPLEN] = '\0';
+                return timestamp;
+        }
         if (tvptr)
                 gettimeofday(tvptr, NULL);
 

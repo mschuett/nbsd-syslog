@@ -136,7 +136,7 @@ char *strndup(const char *str, size_t n);
 #define D_MEM2  1024    /* every single malloc/free */
 #define D_SIGN  2048    /* -sign */
 #define D_MISC  4096    /* everything else */
-#define D_ALL   (D_CALL | D_DATA | D_NET | D_FILE | D_TLS | D_EVENT | D_SIGN | D_MISC) 
+#define D_ALL   (D_CALL | D_DATA | D_NET | D_FILE | D_TLS | D_EVENT | D_BUFFER | D_SIGN | D_MISC) 
 
 /* remove first printf for short debug messages */
 #define DPRINTF(x, ...) ((Debug & x) \
@@ -181,6 +181,14 @@ char *strndup(const char *str, size_t n);
                                                 f->f_qelements/10, \
                                                 PURGE_BY_PRIORITY); \
                           }
+#define CALLOC(ptr, size) while(!(ptr = calloc(1, size))) { \
+                                struct filed *f; \
+                                DPRINTF(D_MEM, "Unable to allocate memory"); \
+                                for (f = Files; f; f = f->f_next) \
+                                        message_queue_purge(f, \
+                                                f->f_qelements/10, \
+                                                PURGE_BY_PRIORITY); \
+                          }
 
 /* strlen(NULL) does not work? */
 #define SAFEstrlen(x) ((x) ? strlen(x) : 0)
@@ -205,6 +213,7 @@ char *strndup(const char *str, size_t n);
 #define MARK            0x008   /* this message is a mark */
 #define ISKERNEL        0x010   /* kernel generated message */
 #define BSDSYSLOG       0x020   /* line in traditional BSD Syslog format */
+#define SIGNATURE       0x040   /* syslog-sign data, not signed again */
 
 /* strategies for message_queue_purge() */
 #define PURGE_OLDEST            1
@@ -247,6 +256,9 @@ struct filed {
                         pid_t   f_pid;
                 } f_pipe;
         } f_un;
+#ifndef DISABLE_SIGN
+        struct signature_group_t *f_sg;      /* one signature group */
+#endif /* !DISABLE_SIGN */
         struct buf_queue_head f_qhead;       /* undelivered msgs queue */
         unsigned int          f_qelements;   /* elements in queue */
         size_t                f_qsize;       /* size of queue in bytes */
@@ -256,6 +268,7 @@ struct filed {
         int                   f_lasterror;   /* last error on writev() */
         int                   f_flags;       /* file-specific flags */
 #define FFLAG_SYNC      0x01
+#define FFLAG_SIGN      0x02
 };
 
 #ifndef DISABLE_TLS

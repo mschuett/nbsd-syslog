@@ -207,6 +207,7 @@ int     deadq_remove(pid_t);
 int     decode(const char *, CODE *);
 void    die(int fd, short event, void *ev);   /* SIGTERM kevent dispatch routine */
 void    domark(int fd, short event, void *ev);/* timer kevent dispatch routine */
+bool    format_buffer(struct buf_msg*, char**, size_t*, size_t*, size_t*, size_t*);
 void    fprintlog(struct filed *, struct buf_msg *, struct buf_queue *);
 int     getmsgbufsize(void);
 char   *getLocalFQDN(void);
@@ -1780,59 +1781,30 @@ logmsg(struct buf_msg *buffer)
         (void)sigsetmask(omask);
 }
 
-/* 
- * Added parameter struct buf_msg *buffer
- * If present (!= NULL) then a destination that is unable to send the
- * message can queue the message for later delivery.
- */
 /*
- * if qentry == NULL: new message, if temporarily undeliverable it will be enqueued
- * if qentry != NULL: a temporarily undeliverable message will not be enqueued,
- *                  but after delivery be removed from the queue
+ * format one buffer into output format given by flag BSDOutputFormat
+ * line is allocated and has to be free()d by caller
+ * size_t pointers are optional, if not NULL then they will return
+ *   different lenghts used for formatting and output
  */
 #define OUT(x) ((x)?(x):"-")
-void
-fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentry)
+bool
+format_buffer(struct buf_msg *buffer, char **line, size_t *ptr_linelen,
+        size_t *ptr_msglen, size_t *ptr_tlsprefixlen, size_t *ptr_prilen)
 {
-        struct buf_msg *buffer = passedbuffer;
-        struct iovec iov[4];
-        struct iovec *v = iov;
-        struct addrinfo *r;
-        int j, lsent, fail, retry, len = 0;
-        size_t msglen, linelen, tlsprefixlen, prilen;
-        char *p, *line = NULL, *lineptr = NULL;
-#define REPBUFSIZE 80
 #define FPBUFSIZE 30
-        char greetings[200];
         char fp_buf[FPBUFSIZE] = "\0";
-#define ADDEV() assert(++v - iov < A_CNT(iov))
+        size_t linelen, msglen, tlsprefixlen, prilen;
 
-        DPRINTF(D_CALL, "fprintlog(%p, %p, %p)\n", f, buffer, qentry);
+        DPRINTF(D_CALL, "format_buffer(%p)\n", buffer);
+        if (!buffer) return false;
 
-        f->f_time = now;
-
-        /* increase refcount here and lower again at return.
-         * this enables the buffer in the else branch to be freed
-         * --> every branch needs one NEWREF() or buf_msg_new()! */ 
-        if (buffer) {
-                NEWREF(buffer);
-        } else {
-                /* ad-hoc buffer to format repeat message,
-                 * problem: when is this freed? */
-                if (f->f_prevcount > 1) {
-                        buffer = buf_msg_new(REPBUFSIZE);
-                        buffer->msglen = snprintf(buffer->msg, REPBUFSIZE,
-                            "last message repeated %d times", f->f_prevcount);
-                        buffer->timestamp =
-                                strdup(make_timestamp(NULL, !BSDOutputFormat));
-                        buffer->pri = f->f_prevmsg->pri;
-                        buffer->host = LocalHostName;
-                        buffer->prog = strdup("syslogd");
-                } else {
-                        buffer = NEWREF(f->f_prevmsg);
-                }
-        }
-
+        /* required fields */
+        assert(buffer->pri);
+        assert(buffer->timestamp);
+        assert(buffer->host || buffer->recvhost);
+        assert(buffer->prog || !BSDOutputFormat);
+        
         if (LogFacPri) {
                 const char *f_s = NULL, *p_s = NULL;
                 int fac = buffer->pri & LOG_FACMASK;
@@ -1882,7 +1854,8 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
                              (buffer->host ? buffer->host : buffer->recvhost),
                              buffer->prog, buffer->pid ? "[" : "", 
                              buffer->pid ? buffer->pid : "", 
-                             buffer->pid ? "]" : "", buffer->sd,
+                             buffer->pid ? "]" : "", 
+                             buffer->sd ? buffer->sd : "", 
                              (buffer->sd && buffer->msg ? " ": ""),
                              (buffer->msg ? buffer->msg: ""));
         else
@@ -1894,7 +1867,8 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
                              (buffer->msg ? " ": ""),
                              (buffer->msg ? buffer->msg: ""));
         /* add space for length prefix */
-        for (tlsprefixlen = 0, j = msglen+1; j; j /= 10)
+        tlsprefixlen = 0;
+        for (int j = msglen+1; j; j /= 10)
                 tlsprefixlen++;
         /* one more for the space */
         tlsprefixlen++;
@@ -1902,16 +1876,9 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
         prilen = snprintf(NULL, 0, "<%d>", buffer->pri);
         if (!BSDOutputFormat)
                 prilen += 2; /* version char and space */
-
-        if (!(line = malloc(msglen + tlsprefixlen + 1))) {
-                logerror("Unable to allocate memory, drop message");
-                f->f_prevcount = 0;
-                /* skip the queue_add() without memory */
-                DELREF(buffer);
-                return;
-        }
+        MALLOC(*line, msglen + tlsprefixlen + 1);
         if (BSDOutputFormat)
-                linelen = snprintf(line,
+                linelen = snprintf(*line,
                              msglen + tlsprefixlen + 1,
                              "%d <%d>%s%.15s %s %s%s%s%s: %s%s%s",
                              msglen, buffer->pri, fp_buf, buffer->timestamp, 
@@ -1924,7 +1891,7 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
                              (buffer->sd && buffer->msg ? " ": ""),
                              (buffer->msg ? buffer->msg: ""));
         else
-                linelen = snprintf(line,
+                linelen = snprintf(*line,
                              msglen + tlsprefixlen + 1,
                              "%d <%d>1 %s%s %s %s %s %s %s%s%s",
                              msglen, buffer->pri, fp_buf, buffer->timestamp,
@@ -1933,11 +1900,69 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
                              OUT(buffer->msgid), OUT(buffer->sd),
                              (buffer->msg ? " ": ""),
                              (buffer->msg ? buffer->msg: ""));
-        DPRINTF(D_DATA, "formatted %d (of %d allowed) "
-                "octets to: %.*s\n", linelen,
-                TypeInfo[f->f_type].max_msg_length,
-                linelen, line);
+        DPRINTF(D_DATA, "formatted %d octets to: '%.*s' (linelen %d, "
+                "msglen %d, tlsprefixlen %d, prilen %d)\n", linelen,
+                linelen, *line, linelen, msglen, tlsprefixlen, prilen);
+        
+        if (ptr_linelen)      *ptr_linelen      = linelen;
+        if (ptr_msglen)       *ptr_msglen       = msglen;
+        if (ptr_tlsprefixlen) *ptr_tlsprefixlen = tlsprefixlen;
+        if (ptr_prilen)       *ptr_prilen       = prilen;
+        return true;
+}
+/* 
+ * Added parameter struct buf_msg *buffer
+ * If present (!= NULL) then a destination that is unable to send the
+ * message can queue the message for later delivery.
+ */
+/*
+ * if qentry == NULL: new message, if temporarily undeliverable it will be enqueued
+ * if qentry != NULL: a temporarily undeliverable message will not be enqueued,
+ *                  but after delivery be removed from the queue
+ */
+void
+fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentry)
+{
+        struct buf_msg *buffer = passedbuffer;
+        struct iovec iov[4];
+        struct iovec *v = iov;
+        struct addrinfo *r;
+        int j, lsent, fail, retry, len = 0;
+        size_t msglen, linelen, tlsprefixlen, prilen;
+        char *p, *line = NULL, *lineptr = NULL;
+#define REPBUFSIZE 80
+        char greetings[200];
+#define ADDEV() assert(++v - iov < A_CNT(iov))
 
+        DPRINTF(D_CALL, "fprintlog(%p, %p, %p)\n", f, buffer, qentry);
+
+        f->f_time = now;
+
+        /* increase refcount here and lower again at return.
+         * this enables the buffer in the else branch to be freed
+         * --> every branch needs one NEWREF() or buf_msg_new()! */ 
+        if (buffer) {
+                NEWREF(buffer);
+        } else {
+                if (f->f_prevcount > 1) {
+                        buffer = buf_msg_new(REPBUFSIZE);
+                        buffer->msglen = snprintf(buffer->msg, REPBUFSIZE,
+                            "last message repeated %d times", f->f_prevcount);
+                        buffer->timestamp =
+                                strdup(make_timestamp(NULL, !BSDOutputFormat));
+                        buffer->pri = f->f_prevmsg->pri;
+                        buffer->host = LocalHostName;
+                        buffer->prog = strdup("syslogd");
+                } else {
+                        buffer = NEWREF(f->f_prevmsg);
+                }
+        }
+
+        if (!format_buffer(buffer, &line, &linelen, &msglen, &tlsprefixlen, &prilen)) {
+                DPRINTF(D_CALL, "format_buffer() failed, skip message\n");
+                DELREF(buffer);
+                return;
+        }
         /* assert maximum message length */
         if (TypeInfo[f->f_type].max_msg_length != -1
          && TypeInfo[f->f_type].max_msg_length < linelen - tlsprefixlen - prilen) {
@@ -3922,9 +3947,12 @@ buf_msg_free(struct buf_msg *buf)
         if (!buf->refcount) {
                 /* small optimization: the host/recvhost may point to the
                  * global HostName/FQDN. of course this must not be free()d */
-                if (buf->recvhost != LocalHostName && buf->recvhost != LocalFQDN)
+                if (buf->recvhost != LocalHostName
+                 && buf->recvhost != LocalFQDN
+                 && buf->recvhost != buf->host)
                         FREEPTR(buf->recvhost);
-                if (buf->host != LocalHostName && buf->host != LocalFQDN)
+                if (buf->host != LocalHostName
+                 && buf->host != LocalFQDN)
                         FREEPTR(buf->host);
                 FREEPTR(buf->msgorig);  /* instead of msg */
                 FREEPTR(buf->sd);

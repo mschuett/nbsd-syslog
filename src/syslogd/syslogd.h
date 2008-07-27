@@ -147,18 +147,27 @@ char *strndup(const char *str, size_t n);
 /* shortcuts for libevent */
 #define EVENT_ADD(x) do { \
                         if (event_add(x, NULL) == -1) \
-                                DPRINTF(D_TLS, "Failure in event_add()\n"); \
+                                DPRINTF(D_EVENT, "Failure in event_add()\n"); \
                         } while (0)
 #define RETRYEVENT_ADD(x) do { \
                         if (event_add(x, &((struct timeval){0, TLS_RETRY_EVENT_USEC})) == -1) \
-                                DPRINTF(D_TLS, "Failure in event_add()\n"); \
+                                DPRINTF(D_EVENT, "Failure in event_add()\n"); \
                         } while (0)
 
 #define FREEPTR(x)      if (x)     { DPRINTF(D_MEM2, "free(%s@%p)\n", #x, x); \
                                      free(x);         x = NULL; }
 #define FREE_SSL(x)     if (x)     { SSL_free(x);     x = NULL; }
 #define FREE_SSL_CTX(x) if (x)     { SSL_CTX_free(x); x = NULL; }
-
+#define FREE_EVENT(x) do { \
+                        if (!(x)) { DPRINTF(D_EVENT, "FREE_EVENT(NULL)\n"); }  \
+                        else {                                                 \
+                                if (event_del(x) == -1) {                      \
+                                        DPRINTF(D_EVENT, "Failure in "         \
+                                                "event_del()\n");              \
+                                } else {                                       \
+                                        FREEPTR(x);                            \
+                        } } } while (0)
+                                
 /* generic for all structs with refcount */ 
 #define NEWREF(x) ((x) ? (DPRINTF(D_BUFFER, "inc refcount of " #x \
                         " @ %p: %d --> %d\n", (x), (x)->refcount, \

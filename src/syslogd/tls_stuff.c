@@ -1086,8 +1086,8 @@ tls_reconnect(int fd, short event, void *arg)
         DPRINTF((D_TLS|D_CALL|D_EVENT), "tls_reconnect(conn_info@%p, "
                 "server %s)\n", conn_info, conn_info->hostname);
         assert(conn_info->state == ST_NONE);
-        FREEPTR(conn_info->event);
-        FREEPTR(conn_info->retryevent);
+        FREE_EVENT(conn_info->event);
+        FREE_EVENT(conn_info->event);
 
         if (!tls_connect(conn_info)) {
                 if (conn_info->reconnect > tls_opt.reconnect_giveup) {
@@ -1647,12 +1647,8 @@ free_tls_conn(struct tls_conn_settings *conn_info)
         FREEPTR(conn_info->hostname);
         FREEPTR(conn_info->certfile);
         FREEPTR(conn_info->fingerprint);
-        if (conn_info->event)
-                event_del(conn_info->event);
-        if (conn_info->retryevent)
-                event_del(conn_info->retryevent);
-        FREEPTR(conn_info->event);
-        FREEPTR(conn_info->retryevent);
+        FREE_EVENT(conn_info->event);
+        FREE_EVENT(conn_info->retryevent);
         FREEPTR(conn_info);
 }
 
@@ -1737,13 +1733,14 @@ void dispatch_SSL_shutdown(int fd, short event, void *arg)
                         event_del(conn_info->event);
                 if (conn_info->retryevent)
                         event_del(conn_info->retryevent);
-                FREEPTR(conn_info->event);
-                FREEPTR(conn_info->retryevent);
+                FREE_EVENT(conn_info->event);
+                FREE_EVENT(conn_info->retryevent);
 
                 if (close(sock) == -1)
                         logerror("Cannot close socket");
+                DPRINTF((D_TLS|D_NET), "Closed TCP connection to %s\n", conn_info->hostname);
                 ST_CHANGE(conn_info->state, ST_NONE);
-                FREE_SSL(conn_info->sslptr);                
+                FREE_SSL(conn_info->sslptr);
          }
 }
 

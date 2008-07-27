@@ -36,14 +36,21 @@ extern time_t now;
 extern struct filed *Files;
 
 extern struct tls_global_options_t tls_opt;
-extern char  *timestamp;
-extern char  *LocalFQDN;
+extern char   timestamp[];
+extern char   LocalFQDN[];
+extern char   LocalHostName[];
 
 extern void  logerror(const char *, ...);
 extern void  loginfo(const char *, ...);
 extern void  logmsg_async_f(const int, const char *, const char *, const int, struct filed*);
+extern bool  format_buffer(struct buf_msg*, char**, size_t*, size_t*, size_t*, size_t*);
+extern void  fprintlog(struct filed *, struct buf_msg *, struct buf_queue *);
+extern void  buf_msg_free(struct buf_msg *msg);
 extern char *make_timestamp(time_t*, bool);
-extern unsigned int message_queue_purge(struct filed*, const unsigned int, const int);
+extern struct buf_msg 
+            *buf_msg_new(const size_t);
+extern unsigned int
+             message_queue_purge(struct filed*, const unsigned int, const int);
 
 /*
  * init all SGs for a given algorithm 
@@ -229,11 +236,14 @@ sign_global_free(struct filed *Files)
 bool
 sign_send_certificate_block(struct filed *f)
 {
-        char *timestamp, *signature;
+        struct buf_msg *buffer;
+        char *timestamp, *signature, *line;
         char payload[MAXLINE];
         char sd[SIGN_MAX_SD_LENGTH];
-        size_t payload_len, sd_len, fragment_len, payload_index = 0;
-        
+        int omask;
+        size_t payload_len, sd_len, fragment_len, linelen, tlsprefixlen;
+        size_t payload_index = 0;
+
         DPRINTF((D_CALL|D_SIGN), "sign_send_certificate_block(%p)\n", f);
         timestamp = make_timestamp(NULL, true);
 
@@ -250,6 +260,18 @@ sign_send_certificate_block(struct filed *f)
                 else
                         fragment_len = SIGN_MAX_FRAG_LENGTH;
 
+                /* 
+                 * this basically duplicates logmsg_async_f() and
+                 * part of fprintlog() because the message has to be
+                 * completely formatted before it can be signed.
+                 */ 
+                buffer = buf_msg_new(0);
+                buffer->timestamp = strdup(make_timestamp(NULL, true));
+                buffer->prog = strdup("syslogd");
+                buffer->recvhost = buffer->host = strdup(LocalHostName);
+                buffer->pri = 110;
+                buffer->flags = IGN_CONS|SIGNATURE;
+
                 sd_len = snprintf(sd, sizeof(sd), "[ssign-cert "
                         "VER=\"%s\" RSID=\"%llu\" SG=\"%d\" "
                         "SPRI=\"%d\" TBPL=\"%d\" INDEX=\"%d\" "
@@ -258,24 +280,43 @@ sign_send_certificate_block(struct filed *f)
                         GlobalSign.ver, GlobalSign.rsid, GlobalSign.sg,
                         GlobalSign.spri, payload_len, payload_index,
                         fragment_len, fragment_len, &payload[payload_index]);
-                
-                assert(sd_len < SIGN_MAX_SD_LENGTH);
+                assert(sd_len < sizeof(sd));
                 assert(sd[sd_len] == '\0');
                 assert(sd[sd_len-1] == ']');
                 assert(sd[sd_len-2] == '"');
+                buffer->sd = strdup(sd);
                 
-                sign_msg_sign(sd, &signature);
+                /* SD ready, now format */
+                if (!format_buffer(buffer, &line, &linelen, NULL,
+                        &tlsprefixlen, NULL)) {
+                        DPRINTF((D_CALL|D_SIGN), "sign_send_certificate_block():"
+                                " format_buffer() failed\n");
+                        DELREF(buffer);
+                        return 0;  /* TODO */
+                }
+                sign_msg_sign(line+tlsprefixlen, &signature);
                 sd[sd_len-2] = '\0';
-                strlcat(sd, signature, SIGN_MAX_SD_LENGTH+1);
-                strlcat(sd, "\"]", SIGN_MAX_SD_LENGTH+1);
+                strlcat(sd, signature, sizeof(sd));
+                strlcat(sd, "\"]", sizeof(sd));
 
-                /* TODO: either
-                 * a) format message and call fprintlog() directly because
-                 *    destination should not be determined by PRI
-                 * b) set PRI according to signature group PRI
-                 */
-                logmsg_async_f(110, sd, NULL, (IGN_CONS|ADDDATE|SIGNATURE), f);
+                free(buffer->sd);
+                buffer->sd = strdup(sd);
+                
+                DPRINTF((D_CALL|D_SIGN), "sign_send_certificate_block(): "
+                        "calling fprintlog()\n");
+
+                /* log the message to the particular output */
+                omask = sigblock(sigmask(SIGHUP)|sigmask(SIGALRM));
+                if (f->f_prevcount)
+                        fprintlog(f, NULL, NULL);
+                f->f_repeatcount = 0;
+                DELREF(f->f_prevmsg);
+                f->f_prevmsg = NEWREF(buffer);
+                fprintlog(f, NEWREF(buffer), NULL);
+                DELREF(buffer);
+                DELREF(buffer);
                 sign_inc_gbc();
+                (void)sigsetmask(omask);
                 payload_index += fragment_len;
         }
         return true;
@@ -306,11 +347,13 @@ unsigned
 sign_send_signature_block(struct signature_group_t *group, struct filed *f)
 {
         char sd[SIGN_MAX_SD_LENGTH];
-        char *signature;
-        size_t sd_len;
+        char *signature, *line;
+        size_t sd_len, linelen, tlsprefixlen;
+        int omask;
         unsigned hashcount = 0;
         unsigned sendcount = 0;
         struct string_queue *qentry, *old_qentry, *first_qentry;
+        struct buf_msg *buffer;
         
         DPRINTF((D_CALL|D_SIGN), "sign_send_signature_block(%p, %p)\n",
                 group, f);
@@ -329,6 +372,19 @@ sign_send_signature_block(struct signature_group_t *group, struct filed *f)
                 //[ssign VER="" RSID="" SG="" SPRI="" GBC="" FMN="" CNT="" HB="" SIGN=""]
                 /* TODO: add redundancy and send more than once */
 
+                /* 
+                 * this basically duplicates logmsg_async_f() and
+                 * part of fprintlog() because the message has to be
+                 * completely formatted before it can be signed.
+                 */ 
+                buffer = buf_msg_new(0);
+                buffer->timestamp = strdup(make_timestamp(NULL, true));
+                buffer->prog = strdup("syslogd");
+                buffer->recvhost = buffer->host = strdup(LocalHostName);
+                buffer->pri = 110;
+                buffer->flags = IGN_CONS|SIGNATURE;
+
+                /* now the SD */
                 first_qentry = TAILQ_FIRST(&group->hashes);
                 sd_len = snprintf(sd, sizeof(sd), "[ssign "
                         "VER=\"%s\" RSID=\"%lld\" SG=\"%d\" "
@@ -342,37 +398,57 @@ sign_send_signature_block(struct signature_group_t *group, struct filed *f)
                                 "%s ", qentry->data);
                         sendcount++;
 
+                        /* TODO: count and delete after send */
                         TAILQ_REMOVE(&group->hashes, qentry, entries);
                         old_qentry = qentry;
                         qentry = TAILQ_NEXT(old_qentry, entries);
                         FREEPTR(old_qentry->data);
                         FREEPTR(old_qentry);
                 }
-                DPRINTF(D_SIGN, "sign_send_signature_block() line: %s\n", sd);
-                
-                /* overwrite last space */
+                /* overwrite last space and close SD */
                 assert(sd_len < sizeof(sd));
                 assert(sd[sd_len] == '\0');
                 assert(sd[sd_len-1] == ' ');
                 sd[sd_len-1] = '\0';
-                
                 sd_len = strlcat(sd, "\" SIGN=\"\"]", sizeof(sd));
                 assert(sd_len < sizeof(sd));
-                
                 assert(sd[sd_len] == '\0');
                 assert(sd[sd_len-1] == ']');
                 assert(sd[sd_len-2] == '"');
+                buffer->sd = strdup(sd);
                 
-                sign_msg_sign(sd, &signature);
+                /* SD ready, now format */
+                if (!format_buffer(buffer, &line, &linelen, NULL,
+                        &tlsprefixlen, NULL)) {
+                        DPRINTF((D_CALL|D_SIGN), "sign_send_signature_block():"
+                                " format_buffer() failed\n");
+                        DELREF(buffer);
+                        return 0;  /* TODO */
+                }
+                sign_msg_sign(line+tlsprefixlen, &signature);
                 sd[sd_len-2] = '\0';
                 strlcat(sd, signature, sizeof(sd));
                 strlcat(sd, "\"]", sizeof(sd));
+
+                free(buffer->sd);
+                buffer->sd = strdup(sd);
                 
-                DPRINTF((D_CALL|D_SIGN), "calling logmsg_async_f, "
-                        "sending %d out of %d hashes\n",
+                DPRINTF((D_CALL|D_SIGN), "sign_send_signature_block(): calling"
+                        " fprintlog(), sending %d out of %d hashes\n",
                         MIN(SIGN_MAX_HASH_NUM, hashcount), hashcount);
-                logmsg_async_f(110, sd, NULL, (IGN_CONS|ADDDATE|SIGNATURE), f);
+
+                /* log the message to the particular output */
+                omask = sigblock(sigmask(SIGHUP)|sigmask(SIGALRM));
+                if (f->f_prevcount)
+                        fprintlog(f, NULL, NULL);
+                f->f_repeatcount = 0;
+                DELREF(f->f_prevmsg);
+                f->f_prevmsg = NEWREF(buffer);
+                fprintlog(f, NEWREF(buffer), NULL);
+                DELREF(buffer);
+                DELREF(buffer);
                 sign_inc_gbc();
+                (void)sigsetmask(omask);
         }
         return sendcount;
 }
@@ -469,8 +545,7 @@ sign_msg_sign(char *line, char **signature)
          */
         /* removes all spaces and the string SIGN="" */
         for (p = line, q = buf;
-             *p && q-buf <= SIGN_MAX_LENGTH;
-             p++) {
+             *p && (q - buf <= SIGN_MAX_LENGTH);) {
                 if (*p == ' ') p++;
                 if (*p == 'S' && *(p+1) == 'I' && *(p+2) == 'G'
                  && *(p+3) == 'N' && *(p+4) == '=' && *(p+5) == '"'
@@ -478,7 +553,7 @@ sign_msg_sign(char *line, char **signature)
                         p += 7;
                         if (*p == ' ') p++;
                 }
-                *q = *p;
+                *q++ = *p++;
         }
         *q = '\0';
 
@@ -489,7 +564,7 @@ sign_msg_sign(char *line, char **signature)
         b64_ntop(sig_value, sig_len, (char *)sig_b64, EVP_MAX_MD_SIZE*2);
         *signature = strdup((char *)sig_b64);
 
-        DPRINTF((D_CALL|D_SIGN), "sign_msg_sign() --> \"%s\"\n", *signature);
+        DPRINTF((D_CALL|D_SIGN), "sign_msg_sign('%s') --> '%s'\n", buf, *signature);
         return true;
 }
 

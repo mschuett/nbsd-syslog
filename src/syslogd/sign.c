@@ -38,7 +38,6 @@ extern struct filed *Files;
 extern struct tls_global_options_t tls_opt;
 extern char   timestamp[];
 extern char   LocalFQDN[];
-extern char   LocalHostName[];
 
 extern void  logerror(const char *, ...);
 extern void  loginfo(const char *, ...);
@@ -231,15 +230,19 @@ void
 sign_global_free(struct filed *Files)
 {
         struct signature_group_t *sg, *tmp_sg;
+
+        DPRINTF((D_CALL|D_SIGN), "sign_global_free(%p)\n", Files);
+        if (!GlobalSign.rsid)  /* never initialized */
+                return;
+
         FREEPTR(GlobalSign.pubkey);
         FREEPTR(GlobalSign.pubkey_b64);
         FREEPTR(GlobalSign.privkey);
-        EVP_MD_CTX_destroy(GlobalSign.mdctx);        
+        if(GlobalSign.mdctx) EVP_MD_CTX_destroy(GlobalSign.mdctx);        
 
-        DPRINTF((D_CALL|D_SIGN), "sign_global_free(%p)\n", Files);
         assert(GlobalSign.sg == 3);
         for (struct filed *f = Files; f; f = f->f_next)
-                if (f->f_flags & FFLAG_SIGN) {
+                if (f->f_sg) {
                         sign_send_signature_block(f->f_sg, f, true);
                         f->f_sg = NULL;
                 }
@@ -266,6 +269,8 @@ sign_send_certificate_block(struct filed *f)
         size_t payload_len, sd_len, fragment_len, linelen, tlsprefixlen;
         size_t payload_index = 0;
 
+        if (!GlobalSign.resendcount) return false;
+
         DPRINTF((D_CALL|D_SIGN), "sign_send_certificate_block(%p)\n", f);
         timestamp = make_timestamp(NULL, true);
 
@@ -286,7 +291,7 @@ sign_send_certificate_block(struct filed *f)
                 buffer = buf_msg_new(0);
                 buffer->timestamp = strdup(make_timestamp(NULL, true));
                 buffer->prog = strdup("syslogd");
-                buffer->recvhost = buffer->host = strdup(LocalHostName);
+                buffer->recvhost = buffer->host = strdup(LocalFQDN);
                 buffer->pri = 110;
                 buffer->flags = IGN_CONS|SIGNATURE;
 
@@ -342,6 +347,7 @@ sign_send_certificate_block(struct filed *f)
                 (void)sigsetmask(omask);
                 payload_index += fragment_len;
         }
+        GlobalSign.resendcount--;
         return true;
 }
 
@@ -380,25 +386,27 @@ sign_send_signature_block(struct signature_group_t *group,
         unsigned sg_num_hashes = 0;     /* hashes in SG queue */
         unsigned hashes_in_sb = 0;      /* number of hashes to send in current SB */
         unsigned hashes_sent = 0;       /* count of hashes sent */
-        struct string_queue *qentry, *old_qentry, *first_qentry;
+        struct string_queue *qentry, *old_qentry;
         struct buf_msg *buffer;
         
         DPRINTF((D_CALL|D_SIGN), "sign_send_signature_block(%p, %p, %d)\n",
                 group, f, force);
 
+        if (!group)
+                DPRINTF((D_CALL|D_SIGN), "sign_send_signature_block(): "
+                        "NULL group!\n");
         TAILQ_FOREACH(qentry, &group->hashes, entries)
                 sg_num_hashes++;
 
         /* only act if a division is full */
-        if (sg_num_hashes && !force
-         && sg_num_hashes % SIGN_HASH_DIVISION_NUM)
+        if (!sg_num_hashes || (!force && (sg_num_hashes % SIGN_HASH_DIVISION_NUM)))
                 return 0;
         
         /* shortly after reboot we have shorter SBs */
         hashes_in_sb = MIN(sg_num_hashes, SIGN_HASH_NUM);
         
         DPRINTF(D_SIGN, "sign_send_signature_block(): "
-                "hashcount = %d, hashes_in_sb = %d, SIGN_HASH_NUM = %d\n",
+                "sg_num_hashes = %d, hashes_in_sb = %d, SIGN_HASH_NUM = %d\n",
                 sg_num_hashes, hashes_in_sb, SIGN_HASH_NUM);
         if (sg_num_hashes > SIGN_HASH_NUM)
                 DPRINTF(D_SIGN, "sign_send_signature_block(): sg_num_hashes"
@@ -413,7 +421,7 @@ sign_send_signature_block(struct signature_group_t *group,
         buffer = buf_msg_new(0);
         buffer->timestamp = strdup(make_timestamp(NULL, true));
         buffer->prog = strdup("syslogd");
-        buffer->recvhost = buffer->host = strdup(LocalHostName);
+        buffer->recvhost = buffer->host = strdup(LocalFQDN);
         buffer->pri = 110;
         buffer->flags = IGN_CONS|SIGNATURE;
 
@@ -474,7 +482,6 @@ sign_send_signature_block(struct signature_group_t *group,
         DELREF(buffer);
         DELREF(buffer);
         sign_inc_gbc();
-        (void)sigsetmask(omask);
 
         /* finally drop the oldest division of hashes */
         if (sg_num_hashes >= SIGN_HASH_NUM) {
@@ -487,6 +494,7 @@ sign_send_signature_block(struct signature_group_t *group,
                         FREEPTR(old_qentry);
                 }
         }
+        (void)sigsetmask(omask);
         return hashes_sent;
 }
 
@@ -567,7 +575,7 @@ sign_msg_sign(char *line, char **signature)
         unsigned int sig_len = 0;
         char *p, *q;
 
-        DPRINTF((D_CALL|D_SIGN), "sign_msg_sign('%s')\n", line);
+        DPRINTF((D_CALL|D_SIGN), "sign_msg_sign()\n");
         
         /* 
          * The signature is calculated over the completely formatted
@@ -580,16 +588,14 @@ sign_msg_sign(char *line, char **signature)
          * Only the ones inside the "ssign" element or those between
          * header fields as well?
          */
-        /* removes all spaces and the string SIGN="" */
+        /* removes the string ' SIGN=""' */
         for (p = line, q = buf;
              *p && (q - buf <= SIGN_MAX_LENGTH);) {
-                if (*p == ' ') p++;
-                if (*p == 'S' && *(p+1) == 'I' && *(p+2) == 'G'
-                 && *(p+3) == 'N' && *(p+4) == '=' && *(p+5) == '"'
-                 && *(p+6) == '"') {
-                        p += 7;
-                        if (*p == ' ') p++;
-                }
+                //if (*p == ' ') p++;
+                if (*p == ' ' && *(p+1) == 'S' && *(p+2) == 'I'
+                 && *(p+3) == 'G' && *(p+4) == 'N' && *(p+5) == '='
+                 && *(p+6) == '"' && *(p+7) == '"')
+                        p += 8;
                 *q++ = *p++;
         }
         *q = '\0';

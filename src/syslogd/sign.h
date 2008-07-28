@@ -46,9 +46,9 @@
 #define SIGN_RESENDCOUNT_HASHES     3
 
 /* maximum length of syslog-sign messages */
-//#define SIGN_MAX_LENGTH 2048
+#define SIGN_MAX_LENGTH 2048
 // 2048 by standard, I only use smaller values to test correct fragmentation
-#define SIGN_MAX_LENGTH 512
+//#define SIGN_MAX_LENGTH 512
 /* the length we can use for the SD and keep the
  * message length with header below 2048 octets */
 #define SIGN_MAX_SD_LENGTH (SIGN_MAX_LENGTH - 100)
@@ -61,7 +61,7 @@
 /* the maximum number of hashes pec signature block */
 #define SIGN_MAX_HASH_NUM (SIGN_MAX_SB_LENGTH / GlobalSign.md_len_b64)
 /* number of hashes in one signature block */
-#define SIGN_HASH_NUM_WANT 24
+#define SIGN_HASH_NUM_WANT 100
 /* make sure to consider SIGN_MAX_HASH_NUM and
  * to have a SIGN_HASH_NUM that is a multiple of SIGN_HASH_DIVISION_NUM */
 #define SIGN_HASH_DIVISION_NUM (MIN(SIGN_HASH_NUM_WANT, SIGN_MAX_HASH_NUM) / SIGN_RESENDCOUNT_HASHES)
@@ -98,8 +98,8 @@ struct sign_global_t {
         /* params for signature block, named as in RFC nnnn */
         const char   *ver;
         uint_fast64_t rsid;
-        unsigned      sg;
-        unsigned      spri;
+        unsigned int  sg;
+        unsigned int  spri;
         uint_fast64_t gbc;
 
         struct signature_group_head SigGroups;
@@ -110,13 +110,13 @@ struct sign_global_t {
         
         EVP_MD_CTX   *mdctx;       /* hashing context */
         const EVP_MD *md;          /* hashing method/algorithm */
-        unsigned      md_len_b64;  /* length of b64 hash value */
+        unsigned int  md_len_b64;  /* length of b64 hash value */
 
         EVP_MD_CTX   *sigctx;      /* signature context */
         const EVP_MD *sig;         /* signature method/algorithm */
-        unsigned      sig_len_b64; /* length of b64 signature */
+        unsigned int  sig_len_b64; /* length of b64 signature */
 
-        unsigned                       resendcount;
+        unsigned int  resendcount;
 };
 
 bool sign_global_init(unsigned, struct filed*);

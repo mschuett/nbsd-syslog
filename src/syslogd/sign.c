@@ -37,7 +37,6 @@ extern struct filed *Files;
 
 extern struct tls_global_options_t tls_opt;
 extern char   timestamp[];
-extern char   LocalFQDN[];
 
 extern void  logerror(const char *, ...);
 extern void  loginfo(const char *, ...);
@@ -50,6 +49,7 @@ extern struct buf_msg
             *buf_msg_new(const size_t);
 extern unsigned int
              message_queue_purge(struct filed*, const unsigned int, const int);
+extern char *LocalFQDN;
 
 /*
  * init all SGs for a given algorithm 
@@ -291,7 +291,7 @@ sign_send_certificate_block(struct filed *f)
                 buffer = buf_msg_new(0);
                 buffer->timestamp = strdup(make_timestamp(NULL, true));
                 buffer->prog = strdup("syslogd");
-                buffer->recvhost = buffer->host = strdup(LocalFQDN);
+                buffer->recvhost = buffer->host = LocalFQDN;
                 buffer->pri = 110;
                 buffer->flags = IGN_CONS|SIGNATURE;
 
@@ -421,7 +421,7 @@ sign_send_signature_block(struct signature_group_t *group,
         buffer = buf_msg_new(0);
         buffer->timestamp = strdup(make_timestamp(NULL, true));
         buffer->prog = strdup("syslogd");
-        buffer->recvhost = buffer->host = strdup(LocalFQDN);
+        buffer->recvhost = buffer->host = LocalFQDN;
         buffer->pri = 110;
         buffer->flags = IGN_CONS|SIGNATURE;
 

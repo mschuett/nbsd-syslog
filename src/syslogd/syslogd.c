@@ -163,11 +163,12 @@ struct global_memory_limit {
 struct  filed *Files = NULL;
 struct  filed consfile;
 
+time_t  now;
 int     Debug = D_NONE;         /* debug flag */
 int     daemonized = 0;         /* we are not daemonized yet */
-char    *LocalFQDN;             /* our FQDN */
-char    LocalHostName[MAXHOSTNAMELEN];  /* our hostname */
-char    oldLocalHostName[MAXHOSTNAMELEN];/* previous hostname */
+char    *LocalFQDN = NULL;             /* our FQDN */
+char    *oldLocalFQDN = NULL;          /* our previous FQDN */
+char    LocalHostName[MAXHOSTNAMELEN]; /* our hostname */
 char    *LocalDomain;           /* our local domain name */
 size_t  LocalDomainLen;         /* length of LocalDomain */
 struct socketEvent *finet;      /* Internet datagram sockets and events */
@@ -1369,8 +1370,6 @@ printsys(char *msg)
         }
 }
 
-time_t  now;
-
 /*
  * Check to see if `name' matches the provided specification, using the
  * specified strstr function.
@@ -1428,7 +1427,7 @@ logmsg_async(const int pri, const char *sd, const char *msg, const int flags)
         if (sd) buffer->sd = strdup(sd);
         buffer->timestamp = strdup(make_timestamp(NULL, !BSDOutputFormat));
         buffer->prog = strdup("syslogd");
-        buffer->recvhost = buffer->host = LocalHostName;
+        buffer->recvhost = buffer->host = LocalFQDN;
         buffer->pri = pri;
         buffer->flags = flags;
 
@@ -1597,7 +1596,7 @@ logmsg_async_f(const int pri, const char *sd, const char *msg, const int flags, 
         buffer->timestamp = strdup(make_timestamp(NULL, true));
         buffer->prog = strdup("syslogd");
 
-        buffer->recvhost = buffer->host = LocalHostName;
+        buffer->recvhost = buffer->host = LocalFQDN;
         buffer->pri = pri;
         buffer->flags = flags;
 
@@ -1795,6 +1794,8 @@ format_buffer(struct buf_msg *buffer, char **line, size_t *ptr_linelen,
 {
 #define FPBUFSIZE 30
         char fp_buf[FPBUFSIZE] = "\0";
+        char shorthostname[MAXHOSTNAMELEN];
+        char *hostname;
         size_t linelen, msglen, tlsprefixlen, prilen;
 
         DPRINTF(D_CALL, "format_buffer(%p)\n", buffer);
@@ -1839,6 +1840,22 @@ format_buffer(struct buf_msg *buffer, char **line, size_t *ptr_linelen,
                 snprintf(fp_buf, sizeof(fp_buf), "<%s.%s>", f_s, p_s);
         }
 
+        /* hostname or FQDN */
+        if (BSDOutputFormat) {
+                /* if the previous BSD output format with "host [recvhost]:"
+                 * gets implemented, this is the right place to distinguish
+                 * between buffer->host and buffer->recvhost
+                 */
+                char *dest, *src;
+                src = (buffer->host ? buffer->host : buffer->recvhost);
+                dest = shorthostname;
+                while (*src && *src != '.')
+                        *dest++ = *src++;
+                *dest = '\0';
+                hostname = shorthostname;
+        } else
+                hostname = (buffer->host ? buffer->host : buffer->recvhost);
+
         /* new message formatting:
          * instead of using iov always assemble one complete TLS-ready line
          * with length and priority (depending on BSDOutputFormat either in
@@ -1852,8 +1869,8 @@ format_buffer(struct buf_msg *buffer, char **line, size_t *ptr_linelen,
         if (BSDOutputFormat)
                 msglen = snprintf(NULL, 0, "<%d>%s%.15s %s %s%s%s%s: %s%s%s",
                              buffer->pri, fp_buf, buffer->timestamp,
-                             (buffer->host ? buffer->host : buffer->recvhost),
-                             buffer->prog, buffer->pid ? "[" : "", 
+                             hostname, buffer->prog,
+                             buffer->pid ? "[" : "", 
                              buffer->pid ? buffer->pid : "", 
                              buffer->pid ? "]" : "", 
                              buffer->sd ? buffer->sd : "", 
@@ -1862,8 +1879,7 @@ format_buffer(struct buf_msg *buffer, char **line, size_t *ptr_linelen,
         else
                 msglen = snprintf(NULL, 0, "<%d>1 %s%s %s %s %s %s %s%s%s",
                              buffer->pri, fp_buf, buffer->timestamp,
-                             (buffer->host ? buffer->host : buffer->recvhost),
-                             OUT(buffer->prog), OUT(buffer->pid),
+                             hostname, OUT(buffer->prog), OUT(buffer->pid),
                              OUT(buffer->msgid), OUT(buffer->sd),
                              (buffer->msg ? " ": ""),
                              (buffer->msg ? buffer->msg: ""));
@@ -1883,8 +1899,7 @@ format_buffer(struct buf_msg *buffer, char **line, size_t *ptr_linelen,
                              msglen + tlsprefixlen + 1,
                              "%d <%d>%s%.15s %s %s%s%s%s: %s%s%s",
                              msglen, buffer->pri, fp_buf, buffer->timestamp, 
-                             (buffer->host ? buffer->host : buffer->recvhost),
-                             buffer->prog,
+                             hostname, buffer->prog,
                              (buffer->pid ? "[" : ""),
                              (buffer->pid ? buffer->pid : ""),
                              (buffer->pid ? "]" : ""),
@@ -1896,8 +1911,7 @@ format_buffer(struct buf_msg *buffer, char **line, size_t *ptr_linelen,
                              msglen + tlsprefixlen + 1,
                              "%d <%d>1 %s%s %s %s %s %s %s%s%s",
                              msglen, buffer->pri, fp_buf, buffer->timestamp,
-                             (buffer->host ? buffer->host : buffer->recvhost),
-                             OUT(buffer->prog), OUT(buffer->pid),
+                             hostname, OUT(buffer->prog), OUT(buffer->pid),
                              OUT(buffer->msgid), OUT(buffer->sd),
                              (buffer->msg ? " ": ""),
                              (buffer->msg ? buffer->msg: ""));
@@ -1955,7 +1969,7 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
                         buffer->timestamp =
                                 strdup(make_timestamp(NULL, !BSDOutputFormat));
                         buffer->pri = f->f_prevmsg->pri;
-                        buffer->host = LocalHostName;
+                        buffer->host = LocalFQDN;
                         buffer->prog = strdup("syslogd");
                 } else {
                         buffer = NEWREF(f->f_prevmsg);
@@ -2785,12 +2799,8 @@ init(int fd, short event, void *ev)
         DPRINTF((D_EVENT|D_CALL), "init\n");
 
         /* get FQDN and hostname/domain */
-        /* this hostname/FQDN handling is quite ugly
-         * TODO: create all own messages with FQDN,
-         *       then let format_buffer() cut the domain
-         *       part for destinations with BSD format.
-         */
-        FREEPTR(LocalFQDN);
+        FREEPTR(oldLocalFQDN);
+        oldLocalFQDN = LocalFQDN;
         LocalFQDN = getLocalFQDN();
         if ((p = strchr(LocalFQDN, '.')) != NULL) {
                 LocalDomain = p;
@@ -2800,7 +2810,6 @@ init(int fd, short event, void *ev)
                 (void)strlcpy(LocalHostName, LocalFQDN, sizeof(LocalHostName));
         }
         LocalDomainLen = strlen(LocalDomain);
-        (void)strlcpy(oldLocalHostName, LocalFQDN, sizeof(oldLocalHostName));
 
         /* some actions only on SIGHUP and not on first start */
         if (Initialized) {
@@ -3210,9 +3219,9 @@ init(int fd, short event, void *ev)
          * Log a change in hostname, but only on a restart (we detect this
          * by checking to see if we're passed a kevent).
          */
-        if (ev != NULL && strcmp(oldLocalHostName, LocalHostName) != 0)
+        if (ev != NULL && strcmp(oldLocalFQDN, LocalFQDN) != 0)
                 loginfo("host name changed, \"%s\" to \"%s\"",
-                    oldLocalHostName, LocalHostName);
+                    oldLocalFQDN, LocalHostName);
 
 #ifndef DISABLE_SIGN
         /* only initialize -sign if actually used */

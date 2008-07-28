@@ -1729,10 +1729,6 @@ void dispatch_SSL_shutdown(int fd, short event, void *arg)
                 
                 if (shutdown(sock, SHUT_RDWR) == -1)
                         logerror("Cannot shutdown socket");
-                if (conn_info->event)
-                        event_del(conn_info->event);
-                if (conn_info->retryevent)
-                        event_del(conn_info->retryevent);
                 FREE_EVENT(conn_info->event);
                 FREE_EVENT(conn_info->retryevent);
 

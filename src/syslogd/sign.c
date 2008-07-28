@@ -240,7 +240,7 @@ sign_global_free(struct filed *Files)
         assert(GlobalSign.sg == 3);
         for (struct filed *f = Files; f; f = f->f_next)
                 if (f->f_flags & FFLAG_SIGN) {
-                        sign_send_signature_block(f->f_sg, f);
+                        sign_send_signature_block(f->f_sg, f, true);
                         f->f_sg = NULL;
                 }
 
@@ -365,9 +365,13 @@ sign_get_sg(int pri, struct signature_group_head *SGs, struct filed *f)
 
 /*
  * create and send signature block
+ * 
+ * uses a sliding window for redundancy
+ * if force==true then simply send all available hashes, e.g. on shutdown
  */
 unsigned
-sign_send_signature_block(struct signature_group_t *group, struct filed *f)
+sign_send_signature_block(struct signature_group_t *group,
+        struct filed *f, bool force)
 {
         char sd[SIGN_MAX_SD_LENGTH];
         char *signature, *line;
@@ -379,14 +383,15 @@ sign_send_signature_block(struct signature_group_t *group, struct filed *f)
         struct string_queue *qentry, *old_qentry, *first_qentry;
         struct buf_msg *buffer;
         
-        DPRINTF((D_CALL|D_SIGN), "sign_send_signature_block(%p, %p)\n",
-                group, f);
+        DPRINTF((D_CALL|D_SIGN), "sign_send_signature_block(%p, %p, %d)\n",
+                group, f, force);
 
         TAILQ_FOREACH(qentry, &group->hashes, entries)
                 sg_num_hashes++;
 
         /* only act if a division is full */
-        if (sg_num_hashes && (sg_num_hashes % SIGN_HASH_DIVISION_NUM))
+        if (sg_num_hashes && !force
+         && sg_num_hashes % SIGN_HASH_DIVISION_NUM)
                 return 0;
         
         /* shortly after reboot we have shorter SBs */
@@ -399,7 +404,6 @@ sign_send_signature_block(struct signature_group_t *group, struct filed *f)
                 DPRINTF(D_SIGN, "sign_send_signature_block(): sg_num_hashes"
                         " > SIGN_HASH_NUM -- This should not happen!\n");
 
-        qentry = TAILQ_FIRST(&group->hashes);
         //[ssign VER="" RSID="" SG="" SPRI="" GBC="" FMN="" CNT="" HB="" SIGN=""]
         /* 
          * this basically duplicates logmsg_async_f() and
@@ -414,13 +418,13 @@ sign_send_signature_block(struct signature_group_t *group, struct filed *f)
         buffer->flags = IGN_CONS|SIGNATURE;
 
         /* now the SD */
-        first_qentry = TAILQ_FIRST(&group->hashes);
+        qentry = TAILQ_FIRST(&group->hashes);
         sd_len = snprintf(sd, sizeof(sd), "[ssign "
                 "VER=\"%s\" RSID=\"%lld\" SG=\"%d\" "
                 "SPRI=\"%d\" GBC=\"%lld\" FMN=\"%lld\" "
                 "CNT=\"%u\" HB=\"",
                 GlobalSign.ver, GlobalSign.rsid, GlobalSign.sg,
-                group->spri, GlobalSign.gbc, first_qentry->key,
+                group->spri, GlobalSign.gbc, qentry->key,
                 hashes_in_sb);
         while (hashes_sent < hashes_in_sb) {
                 assert(qentry);

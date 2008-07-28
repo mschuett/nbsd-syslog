@@ -123,7 +123,7 @@ bool sign_global_init(unsigned, struct filed*);
 void sign_global_free(struct filed*);
 struct signature_group_t *sign_get_sg(int, struct signature_group_head*, struct filed*);
 bool sign_send_certificate_block(struct filed*);
-unsigned sign_send_signature_block(struct signature_group_t*, struct filed*);
+unsigned sign_send_signature_block(struct signature_group_t*, struct filed*, bool);
 void sign_free_hashes(struct signature_group_t*);
 bool sign_msg_hash(char*, char**);
 bool sign_append_hash(char*, struct signature_group_t*);

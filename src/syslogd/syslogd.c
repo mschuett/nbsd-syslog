@@ -1952,8 +1952,6 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
 
         DPRINTF(D_CALL, "fprintlog(%p, %p, %p)\n", f, buffer, qentry);
 
-        assert((f->f_sg && f->f_flags & FFLAG_SIGN) || !(f->f_sg || f->f_flags & FFLAG_SIGN));
-
         f->f_time = now;
 
         /* increase refcount here and lower again at return.
@@ -2264,8 +2262,11 @@ sendagain:
         if (error && !qentry)
                 message_queue_add(f, NEWREF(buffer));
 #ifndef DISABLE_SIGN
-        if (f->f_sg && !(buffer->flags & SIGNATURE))
-                (void)sign_send_signature_block(f->f_sg, f, false);
+        if (!(buffer->flags & SIGNATURE)) {
+                struct signature_group_t *sg;
+                sg = sign_get_sg(buffer->pri, &GlobalSign.SigGroups, f);
+                (void)sign_send_signature_block(sg, false);
+        }
 #endif /* !DISABLE_SIGN */
         /* this belongs to the ad-hoc buffer at the first if(buffer) */
         DELREF(buffer);
@@ -2572,9 +2573,12 @@ domark(int fd, short event, void *ev)
                 }
         }
 #ifndef DISABLE_SIGN
-        for (struct filed *f = Files; f; f = f->f_next)
-                if (f->f_flags & FFLAG_SIGN)
-                        sign_send_certificate_block(f);
+        if (GlobalSign.rsid) {  /* check if initialized */
+                struct signature_group_t *sg;
+                TAILQ_FOREACH(sg, &GlobalSign.SigGroups, entries) {
+                        sign_send_certificate_block(sg);
+                }
+        }
 #endif /* !DISABLE_SIGN */
 }
 

@@ -57,7 +57,6 @@ extern char *LocalFQDN;
 bool
 sign_global_init(unsigned alg, struct filed *Files)
 {
-        struct signature_group_t *newsg;
         FILE  *keyfile, *certfile;
         EVP_PKEY *pubkey = NULL, *privkey = NULL;
         unsigned char *der_pubkey = NULL, *ptr_der_pubkey = NULL;
@@ -209,8 +208,15 @@ sign_global_init(unsigned alg, struct filed *Files)
         assert(GlobalSign.sg == 3);
         for (struct filed *f = Files; f; f = f->f_next)
                 if (f->f_flags & FFLAG_SIGN) {
+                        struct signature_group_t *newsg;
+                        struct filed_queue       *fq;
+                        
                         //CALLOC(newsg, sizeof(*newsg));
                         newsg = calloc(1, sizeof(*newsg));
+                        fq    = calloc(1, sizeof(*fq));
+                        fq->f = f;
+                        TAILQ_INIT(&newsg->files);
+                        TAILQ_INSERT_TAIL(&newsg->files, fq, entries);
                         TAILQ_INIT(&newsg->hashes);
                         TAILQ_INSERT_TAIL(&GlobalSign.SigGroups,
                                 newsg, entries);
@@ -227,9 +233,10 @@ sign_global_init(unsigned alg, struct filed *Files)
  * free all SGs for a given algorithm 
  */
 void
-sign_global_free(struct filed *Files)
+sign_global_free()
 {
         struct signature_group_t *sg, *tmp_sg;
+        struct filed_queue *fq, *tmp_fq;
 
         DPRINTF((D_CALL|D_SIGN), "sign_global_free(%p)\n", Files);
         if (!GlobalSign.rsid)  /* never initialized */
@@ -241,15 +248,17 @@ sign_global_free(struct filed *Files)
         if(GlobalSign.mdctx) EVP_MD_CTX_destroy(GlobalSign.mdctx);        
 
         assert(GlobalSign.sg == 3);
-        for (struct filed *f = Files; f; f = f->f_next)
-                if (f->f_sg) {
-                        sign_send_signature_block(f->f_sg, f, true);
-                        f->f_sg = NULL;
-                }
-
         TAILQ_FOREACH_SAFE(sg, &GlobalSign.SigGroups, entries, tmp_sg) {
-                if (!TAILQ_EMPTY(&sg->hashes))
+                if (!TAILQ_EMPTY(&sg->hashes)) {
+                        sign_send_signature_block(sg, true);
                         sign_free_hashes(sg);
+                }
+                fq = TAILQ_FIRST(&sg->files);
+                while (fq != NULL) {
+                        tmp_fq = TAILQ_NEXT(fq, entries);
+                        free(fq);
+                        fq = tmp_fq;
+                }
                 TAILQ_REMOVE(&GlobalSign.SigGroups, sg, entries);
                 free(sg);
         }
@@ -259,8 +268,9 @@ sign_global_free(struct filed *Files)
  * create and send certificate block
  */
 bool
-sign_send_certificate_block(struct filed *f)
+sign_send_certificate_block(struct signature_group_t *sg)
 {
+        struct filed_queue *fq;
         struct buf_msg *buffer;
         char *timestamp, *signature, *line;
         char payload[SIGN_MAX_PAYLOAD_LENGTH];
@@ -269,9 +279,9 @@ sign_send_certificate_block(struct filed *f)
         size_t payload_len, sd_len, fragment_len, linelen, tlsprefixlen;
         size_t payload_index = 0;
 
-        if (!GlobalSign.resendcount) return false;
+        if (!sg->resendcount) return false;
 
-        DPRINTF((D_CALL|D_SIGN), "sign_send_certificate_block(%p)\n", f);
+        DPRINTF((D_CALL|D_SIGN), "sign_send_certificate_block(%p)\n", sg);
         timestamp = make_timestamp(NULL, true);
 
         payload_len = snprintf(payload, sizeof(payload), "%s %c %s", timestamp,
@@ -330,34 +340,42 @@ sign_send_certificate_block(struct filed *f)
                 free(buffer->sd);
                 buffer->sd = strdup(sd);
                 
+                omask = sigblock(sigmask(SIGHUP)|sigmask(SIGALRM));
                 DPRINTF((D_CALL|D_SIGN), "sign_send_certificate_block(): "
                         "calling fprintlog()\n");
-
-                /* log the message to the particular output */
-                omask = sigblock(sigmask(SIGHUP)|sigmask(SIGALRM));
-                if (f->f_prevcount)
-                        fprintlog(f, NULL, NULL);
-                f->f_repeatcount = 0;
-                DELREF(f->f_prevmsg);
-                f->f_prevmsg = NEWREF(buffer);
-                fprintlog(f, NEWREF(buffer), NULL);
-                DELREF(buffer);
-                DELREF(buffer);
+                TAILQ_FOREACH(fq, &sg->files, entries) {
+                        struct filed *f = fq->f;
+                        /* TODO: write fprintlog() wrapper for this */
+                        /* TODO: do not include this in repeat counts */
+                        if (f->f_prevcount)
+                                fprintlog(f, NULL, NULL);
+                        f->f_repeatcount = 0;
+                        DELREF(f->f_prevmsg);
+                        f->f_prevmsg = NEWREF(buffer);
+                        fprintlog(f, NEWREF(buffer), NULL);
+                        DELREF(buffer);
+                        DELREF(buffer);
+                }
                 sign_inc_gbc();
-                (void)sigsetmask(omask);
                 payload_index += fragment_len;
+                (void)sigsetmask(omask);
         }
-        GlobalSign.resendcount--;
+        sg->resendcount--;
         return true;
 }
 
 /*
  * determine the SG for a message
+ * returns NULL if -sign not configured or no SG for this priority
  */
 struct signature_group_t *
 sign_get_sg(int pri, struct signature_group_head *SGs, struct filed *f)
 {
         DPRINTF((D_CALL|D_SIGN), "sign_get_sg(%p, %p)\n", SGs, f);
+        
+        if (!GlobalSign.rsid)
+                return NULL;
+        
         if (GlobalSign.sg == 0) {
                 return TAILQ_FIRST(&GlobalSign.SigGroups);
         } else if (GlobalSign.sg == 3) {
@@ -376,8 +394,7 @@ sign_get_sg(int pri, struct signature_group_head *SGs, struct filed *f)
  * if force==true then simply send all available hashes, e.g. on shutdown
  */
 unsigned
-sign_send_signature_block(struct signature_group_t *group,
-        struct filed *f, bool force)
+sign_send_signature_block(struct signature_group_t *sg, bool force)
 {
         char sd[SIGN_MAX_SD_LENGTH];
         char *signature, *line;
@@ -388,14 +405,13 @@ sign_send_signature_block(struct signature_group_t *group,
         unsigned hashes_sent = 0;       /* count of hashes sent */
         struct string_queue *qentry, *old_qentry;
         struct buf_msg *buffer;
-        
-        DPRINTF((D_CALL|D_SIGN), "sign_send_signature_block(%p, %p, %d)\n",
-                group, f, force);
+        struct filed_queue *fq;
 
-        if (!group)
-                DPRINTF((D_CALL|D_SIGN), "sign_send_signature_block(): "
-                        "NULL group!\n");
-        TAILQ_FOREACH(qentry, &group->hashes, entries)
+        if (!sg) return 0;
+        DPRINTF((D_CALL|D_SIGN), "sign_send_signature_block(%p, %d)\n",
+                sg, force);
+
+        TAILQ_FOREACH(qentry, &sg->hashes, entries)
                 sg_num_hashes++;
 
         /* only act if a division is full */
@@ -426,13 +442,13 @@ sign_send_signature_block(struct signature_group_t *group,
         buffer->flags = IGN_CONS|SIGNATURE;
 
         /* now the SD */
-        qentry = TAILQ_FIRST(&group->hashes);
+        qentry = TAILQ_FIRST(&sg->hashes);
         sd_len = snprintf(sd, sizeof(sd), "[ssign "
                 "VER=\"%s\" RSID=\"%lld\" SG=\"%d\" "
                 "SPRI=\"%d\" GBC=\"%lld\" FMN=\"%lld\" "
                 "CNT=\"%u\" HB=\"",
                 GlobalSign.ver, GlobalSign.rsid, GlobalSign.sg,
-                group->spri, GlobalSign.gbc, qentry->key,
+                sg->spri, GlobalSign.gbc, qentry->key,
                 hashes_in_sb);
         while (hashes_sent < hashes_in_sb) {
                 assert(qentry);
@@ -471,25 +487,29 @@ sign_send_signature_block(struct signature_group_t *group,
                 " fprintlog(), sending %d out of %d hashes\n",
                 MIN(SIGN_MAX_HASH_NUM, sg_num_hashes), sg_num_hashes);
 
-        /* send the message to the particular output */
         omask = sigblock(sigmask(SIGHUP)|sigmask(SIGALRM));
-        if (f->f_prevcount)
-                fprintlog(f, NULL, NULL);
-        f->f_repeatcount = 0;
-        DELREF(f->f_prevmsg);
-        f->f_prevmsg = NEWREF(buffer);
-        fprintlog(f, NEWREF(buffer), NULL);
-        DELREF(buffer);
-        DELREF(buffer);
+        TAILQ_FOREACH(fq, &sg->files, entries) {
+                struct filed *f = fq->f;
+                /* TODO: write fprintlog() wrapper for this */
+                /* TODO: do not include this in repeat counts */
+                if (f->f_prevcount)
+                        fprintlog(f, NULL, NULL);
+                f->f_repeatcount = 0;
+                DELREF(f->f_prevmsg);
+                f->f_prevmsg = NEWREF(buffer);
+                fprintlog(f, NEWREF(buffer), NULL);
+                DELREF(buffer);
+                DELREF(buffer);
+        }
         sign_inc_gbc();
 
         /* finally drop the oldest division of hashes */
         if (sg_num_hashes >= SIGN_HASH_NUM) {
-                qentry = TAILQ_FIRST(&group->hashes);
+                qentry = TAILQ_FIRST(&sg->hashes);
                 for (int i = 0; i < SIGN_HASH_DIVISION_NUM; i++) {
                         old_qentry = qentry;
                         qentry = TAILQ_NEXT(old_qentry, entries);
-                        TAILQ_REMOVE(&group->hashes, old_qentry, entries);
+                        TAILQ_REMOVE(&sg->hashes, old_qentry, entries);
                         FREEPTR(old_qentry->data);
                         FREEPTR(old_qentry);
                 }
@@ -618,24 +638,20 @@ sign_new_reboot_session()
 
         DPRINTF((D_CALL|D_SIGN), "sign_new_reboot_session()\n");
 
-        /* reset SGs */
-        TAILQ_FOREACH(sg, &GlobalSign.SigGroups, entries) {
-                sg->last_msg_num = 1;
-        }
-
         /* global counters */
         GlobalSign.gbc = 0;
         /* might be useful for later analysis:
          * rebooted session IDs are sequential,
          * normal IDs are almost always not */
         GlobalSign.rsid++;
-        GlobalSign.resendcount = SIGN_RESENDCOUNT_CERTBLOCK;
 
-        /* send first CBs immediately */ 
         assert(GlobalSign.sg == 3);
-        for (struct filed *f = Files; f; f = f->f_next)
-                if (f->f_flags & FFLAG_SIGN)
-                        sign_send_certificate_block(f);
+        /* reset SGs and send first CBs immediately */ 
+        TAILQ_FOREACH(sg, &GlobalSign.SigGroups, entries) {
+                sg->resendcount = SIGN_RESENDCOUNT_CERTBLOCK;
+                sg->last_msg_num = 1;
+                sign_send_certificate_block(sg);
+        }
 }
 
 /* get msg_num, increment counter, check overflow */

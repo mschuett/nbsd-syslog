@@ -73,6 +73,10 @@
  */
 #define SIGN_MAX_PAYLOAD_LENGTH 20480
 
+
+/* structs use uint_fast64_t in different places because the standard
+ * requires values in interval [0:9999999999 = SIGN_MAX_COUNT] */
+ 
 /* queue of C-Strings (here used for hashes) */
 struct string_queue {
         uint_fast64_t  key;
@@ -81,14 +85,20 @@ struct string_queue {
 };
 TAILQ_HEAD(string_queue_head, string_queue);
 
-/* use uint_fast64_t in different places because the standard
- * requires values in interval [0:9999999999 = SIGN_MAX_COUNT] */
+/* queue of destinations (used associate SGs and fileds) */
+struct filed_queue {
+        struct filed             *f;
+        TAILQ_ENTRY(filed_queue) entries;
+};
+TAILQ_HEAD(filed_queue_head, filed_queue);
 
 /* queue of Signature Groups */
 struct signature_group_t {
-        unsigned                       spri;
+        unsigned int                   spri;
+        unsigned int                   resendcount;
         uint_fast64_t                  last_msg_num;
         struct string_queue_head       hashes;
+        struct filed_queue_head        files;
         TAILQ_ENTRY(signature_group_t) entries;
 };
 TAILQ_HEAD(signature_group_head, signature_group_t);
@@ -115,15 +125,13 @@ struct sign_global_t {
         EVP_MD_CTX   *sigctx;      /* signature context */
         const EVP_MD *sig;         /* signature method/algorithm */
         unsigned int  sig_len_b64; /* length of b64 signature */
-
-        unsigned int  resendcount;
 };
 
 bool sign_global_init(unsigned, struct filed*);
-void sign_global_free(struct filed*);
+void sign_global_free();
 struct signature_group_t *sign_get_sg(int, struct signature_group_head*, struct filed*);
-bool sign_send_certificate_block(struct filed*);
-unsigned sign_send_signature_block(struct signature_group_t*, struct filed*, bool);
+bool sign_send_certificate_block(struct signature_group_t*);
+unsigned sign_send_signature_block(struct signature_group_t*, bool);
 void sign_free_hashes(struct signature_group_t*);
 bool sign_msg_hash(char*, char**);
 bool sign_append_hash(char*, struct signature_group_t*);

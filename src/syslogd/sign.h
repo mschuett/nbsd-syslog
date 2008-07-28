@@ -18,7 +18,7 @@
  * 
  * We use '3' and assign one SG to every destination (=struct filed)
  */
-#define SIGN_SG 3
+#define SIGN_SG 0
 
 /* maximum value for several counters in -sign */
 #define SIGN_MAX_COUNT  9999999999

@@ -29,14 +29,14 @@
 #include "sign.h"
 
 /* definitions in syslogd.c */
-extern short int Debug;
+extern short    Debug;
 extern unsigned GlobalMsgCounter;
-extern struct sign_global_t GlobalSign;
-extern time_t now;
-extern struct filed *Files;
-
+extern time_t   now;
+extern char     timestamp[];
+extern char    *LocalFQDN;
+extern struct filed               *Files;
+extern struct sign_global_t        GlobalSign;
 extern struct tls_global_options_t tls_opt;
-extern char   timestamp[];
 
 extern void  logerror(const char *, ...);
 extern void  loginfo(const char *, ...);
@@ -49,7 +49,6 @@ extern struct buf_msg
             *buf_msg_new(const size_t);
 extern unsigned int
              message_queue_purge(struct filed*, const unsigned int, const int);
-extern char *LocalFQDN;
 
 /*
  * init all SGs for a given algorithm 
@@ -57,6 +56,8 @@ extern char *LocalFQDN;
 bool
 sign_global_init(unsigned alg, struct filed *Files)
 {
+        struct signature_group_t *newsg;
+        struct filed_queue       *fq;
         FILE  *keyfile, *certfile;
         EVP_PKEY *pubkey = NULL, *privkey = NULL;
         unsigned char *der_pubkey = NULL, *ptr_der_pubkey = NULL;
@@ -64,7 +65,7 @@ sign_global_init(unsigned alg, struct filed *Files)
         int der_len;
         
         DPRINTF((D_CALL|D_SIGN), "sign_global_init()\n");
-        if (alg != 3) {
+        if (alg != 3 && alg != 0) {
                 logerror("sign_init(): alg %d not implemented", alg);
                 return false;
         }
@@ -205,26 +206,44 @@ sign_global_init(unsigned alg, struct filed *Files)
         }
 
         /* single SG(s) */
-        assert(GlobalSign.sg == 3);
-        for (struct filed *f = Files; f; f = f->f_next)
-                if (f->f_flags & FFLAG_SIGN) {
-                        struct signature_group_t *newsg;
-                        struct filed_queue       *fq;
-                        
+        if (GlobalSign.sg == 3) {
+                /* every file gets one SG */ 
+                for (struct filed *f = Files; f; f = f->f_next) {
+                        if (!(f->f_flags & FFLAG_SIGN)) {
+                                f->f_sg = NULL;
+                                continue;
+                        }
                         //CALLOC(newsg, sizeof(*newsg));
                         newsg = calloc(1, sizeof(*newsg));
                         fq    = calloc(1, sizeof(*fq));
                         fq->f = f;
+                        f->f_sg = newsg;
+                        TAILQ_INIT(&newsg->hashes);
                         TAILQ_INIT(&newsg->files);
                         TAILQ_INSERT_TAIL(&newsg->files, fq, entries);
-                        TAILQ_INIT(&newsg->hashes);
+                        newsg->last_msg_num = 1; /* cf. section 4.2.5 */
                         TAILQ_INSERT_TAIL(&GlobalSign.SigGroups,
                                 newsg, entries);
-                        newsg->last_msg_num = 1; /* cf. section 4.2.5 */
-                        f->f_sg = newsg;
-                } else {
-                        f->f_sg = NULL;
                 }
+        } else if (GlobalSign.sg == 0) {
+                /* one SG, linked to all files */
+                newsg = calloc(1, sizeof(*newsg));
+                TAILQ_INIT(&newsg->hashes);
+                TAILQ_INIT(&newsg->files);
+                for (struct filed *f = Files; f; f = f->f_next) {
+                        if (!(f->f_flags & FFLAG_SIGN)) {
+                                f->f_sg = NULL;
+                                continue;
+                        }
+                        fq    = calloc(1, sizeof(*fq));
+                        fq->f = f;
+                        f->f_sg = newsg;
+                        TAILQ_INSERT_TAIL(&newsg->files, fq, entries);
+                }
+                newsg->last_msg_num = 1; /* cf. section 4.2.5 */
+                TAILQ_INSERT_TAIL(&GlobalSign.SigGroups,
+                        newsg, entries);
+        }
         sign_new_reboot_session();
         return true;
 }
@@ -238,7 +257,7 @@ sign_global_free()
         struct signature_group_t *sg, *tmp_sg;
         struct filed_queue *fq, *tmp_fq;
 
-        DPRINTF((D_CALL|D_SIGN), "sign_global_free(%p)\n", Files);
+        DPRINTF((D_CALL|D_SIGN), "sign_global_free()\n");
         if (!GlobalSign.rsid)  /* never initialized */
                 return;
 
@@ -247,7 +266,6 @@ sign_global_free()
         FREEPTR(GlobalSign.privkey);
         if(GlobalSign.mdctx) EVP_MD_CTX_destroy(GlobalSign.mdctx);        
 
-        assert(GlobalSign.sg == 3);
         TAILQ_FOREACH_SAFE(sg, &GlobalSign.SigGroups, entries, tmp_sg) {
                 if (!TAILQ_EMPTY(&sg->hashes)) {
                         sign_send_signature_block(sg, true);
@@ -327,10 +345,7 @@ sign_send_certificate_block(struct signature_group_t *sg)
                         DPRINTF((D_CALL|D_SIGN), "sign_send_certificate_block():"
                                 " format_buffer() failed\n");
                         DELREF(buffer);
-                        return false;
-                        /* TODO: Don't really know how to handle this
-                         * so just ignore and hope there will be another
-                         * certificate block sent */
+                        return false; /* do not decrease resendcount */
                 }
                 sign_msg_sign(line+tlsprefixlen, &signature);
                 sd[sd_len-2] = '\0';
@@ -354,9 +369,9 @@ sign_send_certificate_block(struct signature_group_t *sg)
                         f->f_prevmsg = NEWREF(buffer);
                         fprintlog(f, NEWREF(buffer), NULL);
                         DELREF(buffer);
-                        DELREF(buffer);
                 }
                 sign_inc_gbc();
+                DELREF(buffer);
                 payload_index += fragment_len;
                 (void)sigsetmask(omask);
         }
@@ -376,12 +391,9 @@ sign_get_sg(int pri, struct signature_group_head *SGs, struct filed *f)
         if (!GlobalSign.rsid)
                 return NULL;
         
-        if (GlobalSign.sg == 0) {
-                return TAILQ_FIRST(&GlobalSign.SigGroups);
-        } else if (GlobalSign.sg == 3) {
+        if (GlobalSign.sg == 0 || GlobalSign.sg == 3) {
                 return f->f_sg;
         } else {
-                /* TODO */
                 logerror("sign_get_sg(): sg %d not implemented", GlobalSign.sg);
                 return NULL;
         }
@@ -499,9 +511,9 @@ sign_send_signature_block(struct signature_group_t *sg, bool force)
                 f->f_prevmsg = NEWREF(buffer);
                 fprintlog(f, NEWREF(buffer), NULL);
                 DELREF(buffer);
-                DELREF(buffer);
         }
         sign_inc_gbc();
+        DELREF(buffer);
 
         /* finally drop the oldest division of hashes */
         if (sg_num_hashes >= SIGN_HASH_NUM) {
@@ -645,7 +657,7 @@ sign_new_reboot_session()
          * normal IDs are almost always not */
         GlobalSign.rsid++;
 
-        assert(GlobalSign.sg == 3);
+        assert(GlobalSign.sg == 3 || GlobalSign.sg == 0);
         /* reset SGs and send first CBs immediately */ 
         TAILQ_FOREACH(sg, &GlobalSign.SigGroups, entries) {
                 sg->resendcount = SIGN_RESENDCOUNT_CERTBLOCK;

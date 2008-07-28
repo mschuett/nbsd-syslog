@@ -497,6 +497,11 @@ getgroup:
         }
         SLIST_INIT(&TLS_Incoming_Head);
 #endif /* !DISABLE_TLS */
+#ifndef DISABLE_SIGN
+        /* initialize rsid -- we will use that later to determine
+         * whether sign_global_init() was already called */
+        GlobalSign.rsid = 0;
+#endif /* !DISABLE_SIGN */
         /* 
          * All files are open, we can drop privileges and chroot
          */
@@ -1773,10 +1778,6 @@ logmsg(struct buf_msg *buffer)
                         fprintlog(f, NEWREF(buffer), NULL);
                         DELREF(buffer);
                 }
-#ifndef DISABLE_SIGN
-                if (f->f_sg)
-                        (void)sign_send_signature_block(f->f_sg, f);
-#endif /* !DISABLE_SIGN */
         }
         (void)sigsetmask(omask);
 }
@@ -1927,6 +1928,7 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
         struct iovec iov[4];
         struct iovec *v = iov;
         struct addrinfo *r;
+        bool error = false;
         int j, lsent, fail, retry, len = 0;
         size_t msglen, linelen, tlsprefixlen, prilen;
         char *p, *line = NULL, *lineptr = NULL;
@@ -1935,6 +1937,8 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
 #define ADDEV() assert(++v - iov < A_CNT(iov))
 
         DPRINTF(D_CALL, "fprintlog(%p, %p, %p)\n", f, buffer, qentry);
+
+        assert((f->f_sg && f->f_flags & FFLAG_SIGN) || !(f->f_sg || f->f_flags & FFLAG_SIGN));
 
         f->f_time = now;
 
@@ -1973,7 +1977,8 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
 #ifndef DISABLE_SIGN
         /* get hash */
         if ((f->f_flags & FFLAG_SIGN)
-         && !(buffer->flags & SIGNATURE)) {
+         && !(buffer->flags & SIGNATURE)
+         && !qentry) {
                 char *hash = NULL;
                 struct signature_group_t *sg;
 
@@ -2002,7 +2007,7 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
                 break;
         case F_PIPE:
         case F_FILE:  /* fallthrough */
-                if (f->f_flags & FFLAG_SIGN) {
+                if (f->f_flags & FFLAG_FULL) {
                         v->iov_base = line + tlsprefixlen;
                         v->iov_len = linelen - tlsprefixlen;
                 } else {
@@ -2175,17 +2180,11 @@ sendagain:
                                                         f->f_un.f_pipe.f_pname);
                                         }
                                         f->f_un.f_pipe.f_pid = 0;
-                                        f->f_prevcount = 0;
-                                        if (buffer && !qentry) {
-                                                message_queue_add(f, NEWREF(buffer));
-                                        }
-                                        DELREF(buffer);
-                                        FREEPTR(line);
-                                        return;
+                                        error = true;   /* cleanup on return */
                                 } else
                                         e = 0;
                         }
-                        if (e != 0) {
+                        if (e != 0 && !error) {
                                 errno = e;
                                 logerror(f->f_un.f_pipe.f_pname);
                         }
@@ -2211,13 +2210,7 @@ sendagain:
                                 if (lasterror != e)
                                         logerror(f->f_un.f_fname);
                                 /* TODO: can we get an event when file is writeable again? */
-                                f->f_prevcount = 0;
-                                if (buffer && !qentry) {
-                                        message_queue_add(f, NEWREF(buffer));
-                                }
-                                DELREF(buffer);
-                                FREEPTR(line);
-                                return;
+                                error = true;   /* cleanup on return */
                         }
                         (void)close(f->f_file);
                         /*
@@ -2253,6 +2246,13 @@ sendagain:
                 break;
         }
         f->f_prevcount = 0;
+        
+        if (error && !qentry)
+                message_queue_add(f, NEWREF(buffer));
+#ifndef DISABLE_SIGN
+        if (f->f_sg && !(buffer->flags & SIGNATURE))
+                (void)sign_send_signature_block(f->f_sg, f, false);
+#endif /* !DISABLE_SIGN */
         /* this belongs to the ad-hoc buffer at the first if(buffer) */
         DELREF(buffer);
         /* TLS frees on its own */
@@ -2557,6 +2557,11 @@ domark(int fd, short event, void *ev)
                         q->dq_timeout--;
                 }
         }
+#ifndef DISABLE_SIGN
+        for (struct filed *f = Files; f; f = f->f_next)
+                if (f->f_flags & FFLAG_SIGN)
+                        sign_send_certificate_block(f);
+#endif /* !DISABLE_SIGN */
 }
 
 /*
@@ -2780,6 +2785,11 @@ init(int fd, short event, void *ev)
         DPRINTF((D_EVENT|D_CALL), "init\n");
 
         /* get FQDN and hostname/domain */
+        /* this hostname/FQDN handling is quite ugly
+         * TODO: create all own messages with FQDN,
+         *       then let format_buffer() cut the domain
+         *       part for destinations with BSD format.
+         */
         FREEPTR(LocalFQDN);
         LocalFQDN = getLocalFQDN();
         if ((p = strchr(LocalFQDN, '.')) != NULL) {
@@ -3105,10 +3115,6 @@ init(int fd, short event, void *ev)
         }
         Files = newf;
 
-#ifndef DISABLE_SIGN
-        sign_global_init(SIGN_SG, Files);
-#endif /* !DISABLE_SIGN */
-
         Initialized = 1;
 
         if (Debug) {
@@ -3209,9 +3215,13 @@ init(int fd, short event, void *ev)
                     oldLocalHostName, LocalHostName);
 
 #ifndef DISABLE_SIGN
-        for (struct filed *f = Files; f; f = f->f_next)
-                if (f->f_flags & FFLAG_SIGN)
-                        sign_send_certificate_block(f);
+        /* only initialize -sign if actually used */
+        for (f = Files; f; f = f->f_next) {
+                if (f->f_flags & FFLAG_SIGN) {
+                        sign_global_init(SIGN_SG, Files);
+                        break;
+                }
+        }
 #endif /* !DISABLE_SIGN */
 }
 
@@ -3380,6 +3390,21 @@ cfline(const unsigned int linenum, char *line, struct filed *f, char *prog, char
         while (isblank((unsigned char)*p))
                 p++;
 
+#ifndef DISABLE_SIGN
+        /* 
+         * preliminary symbols to configure syslog-sign:
+         * '+' before file destination: write with PRI field for later verification
+         * '!' before any destination: sign messages going there
+         */ 
+        if (*p == '+') {
+                f->f_flags |= FFLAG_FULL;
+                p++;
+        }
+        if (*p == '!') {
+                f->f_flags |= FFLAG_SIGN;
+                p++;
+        }
+#endif /* !DISABLE_SIGN */
         if (*p == '-') {
                 syncfile = 0;
                 p++;
@@ -3396,8 +3421,6 @@ cfline(const unsigned int linenum, char *line, struct filed *f, char *prog, char
                                 break;
                         }
                         f->f_type = F_TLS;
-                        /* TODO: for testing; remove later */
-                        f->f_flags = FFLAG_SIGN;
                         break;
                 }
 #endif /* !DISABLE_TLS */

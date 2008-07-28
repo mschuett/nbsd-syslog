@@ -162,6 +162,7 @@ char *strndup(const char *str, size_t n);
                         if (!(x)) { DPRINTF(D_EVENT, "FREE_EVENT(NULL)\n"); }  \
                         else {                                                 \
                                 if (event_del(x) == -1) {                      \
+                                        /* will leak memory */                 \
                                         DPRINTF(D_EVENT, "Failure in "         \
                                                 "event_del()\n");              \
                                 } else {                                       \
@@ -277,7 +278,8 @@ struct filed {
         int                   f_lasterror;   /* last error on writev() */
         int                   f_flags;       /* file-specific flags */
 #define FFLAG_SYNC      0x01
-#define FFLAG_SIGN      0x02
+#define FFLAG_FULL      0x02
+#define FFLAG_SIGN      0x04
 };
 
 #ifndef DISABLE_TLS

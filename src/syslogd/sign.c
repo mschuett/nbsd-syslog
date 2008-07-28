@@ -71,8 +71,7 @@ sign_global_init(unsigned alg, struct filed *Files)
                 return false;
         }
 
-        /* uses TLS keys */
-        /* private key */
+        /* try PKIX/TLS keys first */
         if (tls_opt.keyfile && tls_opt.certfile
          && (keyfile = fopen(tls_opt.keyfile, "r"))
          && (certfile = fopen(tls_opt.certfile, "r"))) {
@@ -94,13 +93,34 @@ sign_global_init(unsigned alg, struct filed *Files)
                         logerror("X509_get_pubkey() failed");
                         return false;
                 }
-        }
-
-        if (privkey && pubkey) { /* PKIX */
                 DPRINTF(D_SIGN, "Got public and private key from X.509 "
                         "--> use type PKIX\n");
                 GlobalSign.keytype = 'C';
-        } else {                 /* PKIX not available --> generate new key */
+                GlobalSign.privkey = privkey;
+                GlobalSign.pubkey = pubkey;   
+                
+                /* base64 certificate encoding */
+                int i2d_X509(X509 *x, unsigned char **out);
+                
+                der_len = i2d_X509(cert, NULL);
+                if (!(ptr_der_pubkey = der_pubkey = malloc(der_len))
+                 || !(pubkey_b64 = malloc(der_len*2))) {
+                        free(der_pubkey);
+                        logerror("malloc() failed");
+                        return false;
+                }
+                if (i2d_X509(cert, &ptr_der_pubkey) <= 0) {
+                        logerror("i2d_X509() failed");
+                        return false;
+                }
+                b64_ntop(der_pubkey, der_len, pubkey_b64, der_len*2);
+                free(der_pubkey);
+                /* try to resize memory object as needed */
+                GlobalSign.pubkey_b64 = realloc(pubkey_b64, strlen(pubkey_b64)+1);
+                if (!GlobalSign.pubkey_b64)
+                        GlobalSign.pubkey_b64 = pubkey_b64;
+        }
+        if (!(privkey && pubkey)) { /* PKIX not available --> generate key */
                 DSA *dsa;
 
                 DPRINTF(D_SIGN, "Unable to get keys from X.509 "
@@ -120,29 +140,29 @@ sign_global_init(unsigned alg, struct filed *Files)
                         return false;
                 }
                 GlobalSign.keytype = 'K';  /* public/private keys used */
+                GlobalSign.privkey = privkey;
+                GlobalSign.pubkey = pubkey;
+
+                /* pubkey base64 encoding */
+                der_len = i2d_PUBKEY(pubkey, NULL);
+                if (!(ptr_der_pubkey = der_pubkey = malloc(der_len))
+                 || !(pubkey_b64 = malloc(der_len*2))) {
+                        free(der_pubkey);
+                        logerror("malloc() failed");
+                        return false;
+                }
+                if (i2d_PUBKEY(pubkey, &ptr_der_pubkey) <= 0) {
+                        logerror("i2d_PUBKEY() failed");
+                        return false;
+                }
+                b64_ntop(der_pubkey, der_len, pubkey_b64, der_len*2);
+                free(der_pubkey);
+                /* try to resize memory object as needed */
+                GlobalSign.pubkey_b64 = realloc(pubkey_b64, strlen(pubkey_b64)+1);
+                if (!GlobalSign.pubkey_b64)
+                        GlobalSign.pubkey_b64 = pubkey_b64;
         }
         assert(GlobalSign.keytype == 'C' || GlobalSign.keytype == 'K');
-        GlobalSign.privkey = privkey;
-        GlobalSign.pubkey = pubkey;        
-
-        /* pubkey base64 encoding */
-        der_len = i2d_PUBKEY(pubkey, NULL);
-        if (!(ptr_der_pubkey = der_pubkey = malloc(der_len))
-         || !(pubkey_b64 = malloc(der_len*2))) {
-                free(der_pubkey);
-                logerror("malloc() failed");
-                return false;
-        }
-        if (i2d_PUBKEY(pubkey, &ptr_der_pubkey) <= 0) {
-                logerror("i2d_PUBKEY() failed");
-                return false;
-        }
-        b64_ntop(der_pubkey, der_len, pubkey_b64, der_len*2);
-        free(der_pubkey);
-        /* try to resize memory object as needed */
-        GlobalSign.pubkey_b64 = realloc(pubkey_b64, strlen(pubkey_b64)+1);
-        if (!GlobalSign.pubkey_b64)
-                GlobalSign.pubkey_b64 = pubkey_b64;
         assert(GlobalSign.pubkey_b64 && GlobalSign.privkey && GlobalSign.pubkey);
 
         GlobalSign.sg = alg;
@@ -195,10 +215,12 @@ sign_global_init(unsigned alg, struct filed *Files)
                         TAILQ_INIT(&newsg->hashes);
                         TAILQ_INSERT_TAIL(&GlobalSign.SigGroups,
                                 newsg, entries);
+                        newsg->last_msg_num = 1; /* cf. section 4.2.5 */
                         f->f_sg = newsg;
                 } else {
                         f->f_sg = NULL;
                 }
+        sign_new_reboot_session();
         return true;
 }
 
@@ -238,7 +260,7 @@ sign_send_certificate_block(struct filed *f)
 {
         struct buf_msg *buffer;
         char *timestamp, *signature, *line;
-        char payload[MAXLINE];
+        char payload[SIGN_MAX_PAYLOAD_LENGTH];
         char sd[SIGN_MAX_SD_LENGTH];
         int omask;
         size_t payload_len, sd_len, fragment_len, linelen, tlsprefixlen;
@@ -247,9 +269,9 @@ sign_send_certificate_block(struct filed *f)
         DPRINTF((D_CALL|D_SIGN), "sign_send_certificate_block(%p)\n", f);
         timestamp = make_timestamp(NULL, true);
 
-        payload_len = snprintf(payload, MAXLINE, "%s %c %s", timestamp,
+        payload_len = snprintf(payload, sizeof(payload), "%s %c %s", timestamp,
                 GlobalSign.keytype, GlobalSign.pubkey_b64);
-        if (payload_len >= MAXLINE) {
+        if (payload_len >= sizeof(payload)) {
                 DPRINTF(D_SIGN, "Buffer too small for syslog-sign setup\n");
                 return false;
         }
@@ -260,11 +282,7 @@ sign_send_certificate_block(struct filed *f)
                 else
                         fragment_len = SIGN_MAX_FRAG_LENGTH;
 
-                /* 
-                 * this basically duplicates logmsg_async_f() and
-                 * part of fprintlog() because the message has to be
-                 * completely formatted before it can be signed.
-                 */ 
+                /* set up buffer */
                 buffer = buf_msg_new(0);
                 buffer->timestamp = strdup(make_timestamp(NULL, true));
                 buffer->prog = strdup("syslogd");
@@ -272,13 +290,15 @@ sign_send_certificate_block(struct filed *f)
                 buffer->pri = 110;
                 buffer->flags = IGN_CONS|SIGNATURE;
 
+                /* format SD */
                 sd_len = snprintf(sd, sizeof(sd), "[ssign-cert "
                         "VER=\"%s\" RSID=\"%llu\" SG=\"%d\" "
                         "SPRI=\"%d\" TBPL=\"%d\" INDEX=\"%d\" "
                         "FLEN=\"%d\" FRAG=\"%.*s\" "
                         "SIGN=\"\"]",
                         GlobalSign.ver, GlobalSign.rsid, GlobalSign.sg,
-                        GlobalSign.spri, payload_len, payload_index,
+                        GlobalSign.spri, payload_len,
+                        payload_index+1 /* cf. section 5.3.2.5 */,
                         fragment_len, fragment_len, &payload[payload_index]);
                 assert(sd_len < sizeof(sd));
                 assert(sd[sd_len] == '\0');
@@ -292,7 +312,10 @@ sign_send_certificate_block(struct filed *f)
                         DPRINTF((D_CALL|D_SIGN), "sign_send_certificate_block():"
                                 " format_buffer() failed\n");
                         DELREF(buffer);
-                        return 0;  /* TODO */
+                        return false;
+                        /* TODO: Don't really know how to handle this
+                         * so just ignore and hope there will be another
+                         * certificate block sent */
                 }
                 sign_msg_sign(line+tlsprefixlen, &signature);
                 sd[sd_len-2] = '\0';
@@ -350,8 +373,9 @@ sign_send_signature_block(struct signature_group_t *group, struct filed *f)
         char *signature, *line;
         size_t sd_len, linelen, tlsprefixlen;
         int omask;
-        unsigned hashcount = 0;
-        unsigned sendcount = 0;
+        unsigned sg_num_hashes = 0;     /* hashes in SG queue */
+        unsigned hashes_in_sb = 0;      /* number of hashes to send in current SB */
+        unsigned hashes_sent = 0;       /* count of hashes sent */
         struct string_queue *qentry, *old_qentry, *first_qentry;
         struct buf_msg *buffer;
         
@@ -359,98 +383,107 @@ sign_send_signature_block(struct signature_group_t *group, struct filed *f)
                 group, f);
 
         TAILQ_FOREACH(qentry, &group->hashes, entries)
-                hashcount++;
+                sg_num_hashes++;
 
-        DPRINTF((D_CALL|D_SIGN), "sign_send_signature_block(): hashcount = %d, "
-                "SIGN_HASH_NUM = %d\n", hashcount, SIGN_HASH_NUM);
-
-        if (hashcount < SIGN_HASH_NUM)
+        /* only act if a division is full */
+        if (sg_num_hashes && (sg_num_hashes % SIGN_HASH_DIVISION_NUM))
                 return 0;
+        
+        /* shortly after reboot we have shorter SBs */
+        hashes_in_sb = MIN(sg_num_hashes, SIGN_HASH_NUM);
+        
+        DPRINTF(D_SIGN, "sign_send_signature_block(): "
+                "hashcount = %d, hashes_in_sb = %d, SIGN_HASH_NUM = %d\n",
+                sg_num_hashes, hashes_in_sb, SIGN_HASH_NUM);
+        if (sg_num_hashes > SIGN_HASH_NUM)
+                DPRINTF(D_SIGN, "sign_send_signature_block(): sg_num_hashes"
+                        " > SIGN_HASH_NUM -- This should not happen!\n");
 
         qentry = TAILQ_FIRST(&group->hashes);
-        while (sendcount < hashcount && !TAILQ_EMPTY(&group->hashes)) {
-                //[ssign VER="" RSID="" SG="" SPRI="" GBC="" FMN="" CNT="" HB="" SIGN=""]
-                /* TODO: add redundancy and send more than once */
+        //[ssign VER="" RSID="" SG="" SPRI="" GBC="" FMN="" CNT="" HB="" SIGN=""]
+        /* 
+         * this basically duplicates logmsg_async_f() and
+         * part of fprintlog() because the message has to be
+         * completely formatted before it can be signed.
+         */ 
+        buffer = buf_msg_new(0);
+        buffer->timestamp = strdup(make_timestamp(NULL, true));
+        buffer->prog = strdup("syslogd");
+        buffer->recvhost = buffer->host = strdup(LocalHostName);
+        buffer->pri = 110;
+        buffer->flags = IGN_CONS|SIGNATURE;
 
-                /* 
-                 * this basically duplicates logmsg_async_f() and
-                 * part of fprintlog() because the message has to be
-                 * completely formatted before it can be signed.
-                 */ 
-                buffer = buf_msg_new(0);
-                buffer->timestamp = strdup(make_timestamp(NULL, true));
-                buffer->prog = strdup("syslogd");
-                buffer->recvhost = buffer->host = strdup(LocalHostName);
-                buffer->pri = 110;
-                buffer->flags = IGN_CONS|SIGNATURE;
+        /* now the SD */
+        first_qentry = TAILQ_FIRST(&group->hashes);
+        sd_len = snprintf(sd, sizeof(sd), "[ssign "
+                "VER=\"%s\" RSID=\"%lld\" SG=\"%d\" "
+                "SPRI=\"%d\" GBC=\"%lld\" FMN=\"%lld\" "
+                "CNT=\"%u\" HB=\"",
+                GlobalSign.ver, GlobalSign.rsid, GlobalSign.sg,
+                group->spri, GlobalSign.gbc, first_qentry->key,
+                hashes_in_sb);
+        while (hashes_sent < hashes_in_sb) {
+                assert(qentry);
+                sd_len += snprintf(sd+sd_len, sizeof(sd)-sd_len,
+                        "%s ", qentry->data);
+                hashes_sent++;
+                qentry = TAILQ_NEXT(qentry, entries);
+        }
+        /* overwrite last space and close SD */
+        assert(sd_len < sizeof(sd));
+        assert(sd[sd_len] == '\0');
+        assert(sd[sd_len-1] == ' ');
+        sd[sd_len-1] = '\0';
+        sd_len = strlcat(sd, "\" SIGN=\"\"]", sizeof(sd));
+        assert(sd_len < sizeof(sd));
+        assert(sd[sd_len] == '\0');
+        assert(sd[sd_len-1] == ']');
+        assert(sd[sd_len-2] == '"');
+        buffer->sd = strdup(sd);
+        
+        /* SD ready, now format and sign */
+        if (!format_buffer(buffer, &line, &linelen, NULL,
+                &tlsprefixlen, NULL)) {
+                DPRINTF((D_CALL|D_SIGN), "sign_send_signature_block():"
+                        " format_buffer() failed\n");
+                DELREF(buffer);
+                return 0;  /* TODO */
+        }
+        sign_msg_sign(line+tlsprefixlen, &signature);
+        sd[sd_len-2] = '\0';
+        strlcat(sd, signature, sizeof(sd));
+        strlcat(sd, "\"]", sizeof(sd));
+        free(buffer->sd);
+        buffer->sd = strdup(sd);
+        DPRINTF((D_CALL|D_SIGN), "sign_send_signature_block(): calling"
+                " fprintlog(), sending %d out of %d hashes\n",
+                MIN(SIGN_MAX_HASH_NUM, sg_num_hashes), sg_num_hashes);
 
-                /* now the SD */
-                first_qentry = TAILQ_FIRST(&group->hashes);
-                sd_len = snprintf(sd, sizeof(sd), "[ssign "
-                        "VER=\"%s\" RSID=\"%lld\" SG=\"%d\" "
-                        "SPRI=\"%d\" GBC=\"%lld\" FMN=\"%lld\" "
-                        "CNT=\"%u\" HB=\"",
-                        GlobalSign.ver, GlobalSign.rsid, GlobalSign.sg,
-                        group->spri, GlobalSign.gbc, first_qentry->key,
-                        MIN(SIGN_MAX_HASH_NUM, hashcount));
-                while (sendcount < MIN(SIGN_MAX_HASH_NUM, hashcount)) {
-                        sd_len += snprintf(sd+sd_len, sizeof(sd)-sd_len,
-                                "%s ", qentry->data);
-                        sendcount++;
+        /* send the message to the particular output */
+        omask = sigblock(sigmask(SIGHUP)|sigmask(SIGALRM));
+        if (f->f_prevcount)
+                fprintlog(f, NULL, NULL);
+        f->f_repeatcount = 0;
+        DELREF(f->f_prevmsg);
+        f->f_prevmsg = NEWREF(buffer);
+        fprintlog(f, NEWREF(buffer), NULL);
+        DELREF(buffer);
+        DELREF(buffer);
+        sign_inc_gbc();
+        (void)sigsetmask(omask);
 
-                        /* TODO: count and delete after send */
-                        TAILQ_REMOVE(&group->hashes, qentry, entries);
+        /* finally drop the oldest division of hashes */
+        if (sg_num_hashes >= SIGN_HASH_NUM) {
+                qentry = TAILQ_FIRST(&group->hashes);
+                for (int i = 0; i < SIGN_HASH_DIVISION_NUM; i++) {
                         old_qentry = qentry;
                         qentry = TAILQ_NEXT(old_qentry, entries);
+                        TAILQ_REMOVE(&group->hashes, old_qentry, entries);
                         FREEPTR(old_qentry->data);
                         FREEPTR(old_qentry);
                 }
-                /* overwrite last space and close SD */
-                assert(sd_len < sizeof(sd));
-                assert(sd[sd_len] == '\0');
-                assert(sd[sd_len-1] == ' ');
-                sd[sd_len-1] = '\0';
-                sd_len = strlcat(sd, "\" SIGN=\"\"]", sizeof(sd));
-                assert(sd_len < sizeof(sd));
-                assert(sd[sd_len] == '\0');
-                assert(sd[sd_len-1] == ']');
-                assert(sd[sd_len-2] == '"');
-                buffer->sd = strdup(sd);
-                
-                /* SD ready, now format */
-                if (!format_buffer(buffer, &line, &linelen, NULL,
-                        &tlsprefixlen, NULL)) {
-                        DPRINTF((D_CALL|D_SIGN), "sign_send_signature_block():"
-                                " format_buffer() failed\n");
-                        DELREF(buffer);
-                        return 0;  /* TODO */
-                }
-                sign_msg_sign(line+tlsprefixlen, &signature);
-                sd[sd_len-2] = '\0';
-                strlcat(sd, signature, sizeof(sd));
-                strlcat(sd, "\"]", sizeof(sd));
-
-                free(buffer->sd);
-                buffer->sd = strdup(sd);
-                
-                DPRINTF((D_CALL|D_SIGN), "sign_send_signature_block(): calling"
-                        " fprintlog(), sending %d out of %d hashes\n",
-                        MIN(SIGN_MAX_HASH_NUM, hashcount), hashcount);
-
-                /* log the message to the particular output */
-                omask = sigblock(sigmask(SIGHUP)|sigmask(SIGALRM));
-                if (f->f_prevcount)
-                        fprintlog(f, NULL, NULL);
-                f->f_repeatcount = 0;
-                DELREF(f->f_prevmsg);
-                f->f_prevmsg = NEWREF(buffer);
-                fprintlog(f, NEWREF(buffer), NULL);
-                DELREF(buffer);
-                DELREF(buffer);
-                sign_inc_gbc();
-                (void)sigsetmask(omask);
         }
-        return sendcount;
+        return hashes_sent;
 }
 
 void
@@ -571,12 +604,28 @@ sign_msg_sign(char *line, char **signature)
 void
 sign_new_reboot_session()
 {
+        struct signature_group_t *sg;
+
         DPRINTF((D_CALL|D_SIGN), "sign_new_reboot_session()\n");
+
+        /* reset SGs */
+        TAILQ_FOREACH(sg, &GlobalSign.SigGroups, entries) {
+                sg->last_msg_num = 1;
+        }
+
+        /* global counters */
         GlobalSign.gbc = 0;
         /* might be useful for later analysis:
          * rebooted session IDs are sequential,
          * normal IDs are almost always not */
         GlobalSign.rsid++;
+        GlobalSign.resendcount = SIGN_RESENDCOUNT_CERTBLOCK;
+
+        /* send first CBs immediately */ 
+        assert(GlobalSign.sg == 3);
+        for (struct filed *f = Files; f; f = f->f_next)
+                if (f->f_flags & FFLAG_SIGN)
+                        sign_send_certificate_block(f);
 }
 
 /* get msg_num, increment counter, check overflow */

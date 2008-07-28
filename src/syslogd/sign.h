@@ -20,9 +20,35 @@
  */
 #define SIGN_SG 3
 
+/* maximum value for several counters in -sign */
 #define SIGN_MAX_COUNT  9999999999
+
+/*
+ * many of these options could be made user configurable if desired,
+ * but I do not see the need for that
+ */
+
+/* redundancy options */
+/* 
+ * note on the implementation of redundancy:
+ * - certificate blocks: first CB is sent immediately on session (re)boot.
+ *   resends are called by domark() until resend count is reached.
+ *   alternative: put extra timer for this into signature_group_t
+ *   --> for now it works. final decision when other SG algorithms are implemented
+ * - signature blocks: to send every hash n times I use a sliding window.
+ *   the hashes in every SB are grouped into n divisions:
+ *   * the 1st hashcount/n hashes are sent for the 1st time
+ *   * the 2nd hashcount/n hashes are sent for the 2nd time
+ *   * ...
+ *   * the n-th hashcount/n hashes are sent for the n-th time and deleted thereafter
+ */ 
+#define SIGN_RESENDCOUNT_CERTBLOCK  3
+#define SIGN_RESENDCOUNT_HASHES     3
+
 /* maximum length of syslog-sign messages */
-#define SIGN_MAX_LENGTH 2048
+//#define SIGN_MAX_LENGTH 2048
+// 2048 by standard, I only use smaller values to test correct fragmentation
+#define SIGN_MAX_LENGTH 512
 /* the length we can use for the SD and keep the
  * message length with header below 2048 octets */
 #define SIGN_MAX_SD_LENGTH (SIGN_MAX_LENGTH - 100)
@@ -34,8 +60,18 @@
 #define SIGN_MAX_SB_LENGTH SIGN_MAX_FRAG_LENGTH
 /* the maximum number of hashes pec signature block */
 #define SIGN_MAX_HASH_NUM (SIGN_MAX_SB_LENGTH / GlobalSign.md_len_b64)
-/* send signature block after this number of messages */
-#define SIGN_HASH_NUM MIN(10, (SIGN_MAX_HASH_NUM-3))
+/* number of hashes in one signature block */
+#define SIGN_HASH_NUM_WANT 24
+/* make sure to consider SIGN_MAX_HASH_NUM and
+ * to have a SIGN_HASH_NUM that is a multiple of SIGN_HASH_DIVISION_NUM */
+#define SIGN_HASH_DIVISION_NUM (MIN(SIGN_HASH_NUM_WANT, SIGN_MAX_HASH_NUM) / SIGN_RESENDCOUNT_HASHES)
+#define SIGN_HASH_NUM (SIGN_HASH_DIVISION_NUM * SIGN_RESENDCOUNT_HASHES) 
+
+/* the length of payload strings
+ * since the payload is fragmented there is no technical limit
+ * it just has to be big enough to hold big b64 encoded PKIX certificates
+ */
+#define SIGN_MAX_PAYLOAD_LENGTH 20480
 
 /* queue of C-Strings (here used for hashes) */
 struct string_queue {
@@ -79,6 +115,8 @@ struct sign_global_t {
         EVP_MD_CTX   *sigctx;      /* signature context */
         const EVP_MD *sig;         /* signature method/algorithm */
         unsigned      sig_len_b64; /* length of b64 signature */
+
+        unsigned                       resendcount;
 };
 
 bool sign_global_init(unsigned, struct filed*);

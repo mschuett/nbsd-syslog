@@ -3230,10 +3230,9 @@ init(int fd, short event, void *ev)
 #ifndef DISABLE_SIGN
         /* only initialize -sign if actually used */
         for (f = Files; f; f = f->f_next) {
-                if (f->f_flags & FFLAG_SIGN) {
-                        sign_global_init(SIGN_SG, Files);
+                if ((f->f_flags & FFLAG_SIGN)
+                 && sign_global_init(SIGN_SG, Files))
                         break;
-                }
         }
 #endif /* !DISABLE_SIGN */
 }

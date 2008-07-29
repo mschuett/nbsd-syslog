@@ -367,16 +367,7 @@ sign_send_certificate_block(struct signature_group_t *sg)
 
                 omask = sigblock(sigmask(SIGHUP)|sigmask(SIGALRM));
                 TAILQ_FOREACH(fq, &sg->files, entries) {
-                        struct filed *f = fq->f;
-                        /* TODO: write fprintlog() wrapper for this */
-                        /* TODO: do not include this in repeat counts */
-                        if (f->f_prevcount)
-                                fprintlog(f, NULL, NULL);
-                        f->f_repeatcount = 0;
-                        DELREF(f->f_prevmsg);
-                        f->f_prevmsg = NEWREF(buffer);
-                        fprintlog(f, NEWREF(buffer), NULL);
-                        DELREF(buffer);
+                        fprintlog(fq->f, buffer, NULL);
                 }
                 sign_inc_gbc();
                 DELREF(buffer);
@@ -480,16 +471,7 @@ sign_send_signature_block(struct signature_group_t *sg, bool force)
 
         omask = sigblock(sigmask(SIGHUP)|sigmask(SIGALRM));
         TAILQ_FOREACH(fq, &sg->files, entries) {
-                struct filed *f = fq->f;
-                /* TODO: write fprintlog() wrapper for this */
-                /* TODO: do not include this in repeat counts */
-                if (f->f_prevcount)
-                        fprintlog(f, NULL, NULL);
-                f->f_repeatcount = 0;
-                DELREF(f->f_prevmsg);
-                f->f_prevmsg = NEWREF(buffer);
-                fprintlog(f, NEWREF(buffer), NULL);
-                DELREF(buffer);
+                fprintlog(fq->f, buffer, NULL);
         }
         sign_inc_gbc();
         DELREF(buffer);

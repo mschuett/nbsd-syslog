@@ -7,7 +7,7 @@
 /* 
  * Issues with the current internet draft: 
  * 1. The draft is a bit unclear on the input format for the signature,
- *    so this might have to be changed later. Cf. sign_msg_sign()
+ *    so this might have to be changed later. Cf. sign_string_sign()
  * 2. The draft only defines DSA signatures. I hope it will be extended
  *    to DSS, thus allowing DSA, RSA (ANSI X9.31) and ECDSA (ANSI X9.62)
  * 3. This current implementation uses high-level OpenSSL API.
@@ -16,7 +16,7 @@
 /* 
  * Limitations of this implementation:
  * - cannot use OpenPGP keys, only PKIX or DSA due to OpenSSL capabilities
- * - currently only SG 3
+ * - currently only SG 0 and 3
  * - due to the splitting and formatting this syslogd modifies messages
  *   (e.g. if it receives a message with two spaces between fields it will
  *   not forward the message unchanged). This would invalidate signatures,
@@ -56,20 +56,84 @@ extern unsigned int
 bool
 sign_global_init(unsigned alg, struct filed *Files)
 {
-        struct signature_group_t *newsg;
-        struct filed_queue       *fq;
-        FILE  *keyfile, *certfile;
-        EVP_PKEY *pubkey = NULL, *privkey = NULL;
-        unsigned char *der_pubkey = NULL, *ptr_der_pubkey = NULL;
-        char *pubkey_b64 = NULL;
-        int der_len;
-        
         DPRINTF((D_CALL|D_SIGN), "sign_global_init()\n");
         if (alg != 3 && alg != 0) {
                 logerror("sign_init(): alg %d not implemented", alg);
                 return false;
         }
 
+        if (!sign_get_keys())
+                return false;
+
+        assert(GlobalSign.keytype == 'C' || GlobalSign.keytype == 'K');
+        assert(GlobalSign.pubkey_b64 && GlobalSign.privkey && GlobalSign.pubkey);
+
+        GlobalSign.sg = alg;
+        GlobalSign.gbc = 0;
+        TAILQ_INIT(&GlobalSign.SigGroups);
+
+        /* hash algorithm */
+        OpenSSL_add_all_digests();
+        GlobalSign.mdctx = EVP_MD_CTX_create();
+        EVP_MD_CTX_init(GlobalSign.mdctx);
+
+#ifndef SIGN_USE_SHA256
+        /* values for SHA-1 */
+        GlobalSign.md = EVP_sha1();
+        GlobalSign.md_len_b64 = 28;
+        GlobalSign.ver = "0111";
+#else
+        /* values for SHA-256 */
+        GlobalSign.md = EVP_sha256();
+        GlobalSign.md_len_b64 = 44;
+        GlobalSign.ver = "0121";
+#endif
+
+        /* signature algorithm */
+        /* can probably be merged with the hash algorithm/context but
+         * I leave the optimization for later until the RFC is ready */
+        GlobalSign.sigctx = EVP_MD_CTX_create();
+        EVP_MD_CTX_init(GlobalSign.sigctx);
+
+        /* the signature algorithm depends on the type of key */
+        if (EVP_PKEY_DSA == EVP_PKEY_type(GlobalSign.pubkey->type)) {
+                GlobalSign.sig = EVP_dss1();
+                GlobalSign.sig_len_b64 = 28;
+        } else if (EVP_PKEY_RSA == EVP_PKEY_type(GlobalSign.pubkey->type)) {
+                GlobalSign.sig = EVP_sha1();
+                GlobalSign.sig_len_b64 = 28;
+        } else {
+                logerror("EVP_PKEY_type not supported for signing");
+                return false;
+        }
+
+        if (!sign_sg_init(Files))
+                return false;
+        sign_new_reboot_session();
+        
+        /* set just before return, so it indicates initialization */
+        GlobalSign.rsid = now;
+        return true;
+}
+
+/*
+ * get keys for syslog-sign
+ * either from the X.509 certificate used for TLS
+ * or by generating a new one
+ * 
+ * sets the global variables
+ * GlobalSign.keytype, GlobalSign.pubkey_b64,
+ * GlobalSign.privkey, and GlobalSign.pubkey
+ */
+bool
+sign_get_keys()
+{
+        FILE  *keyfile, *certfile;
+        EVP_PKEY *pubkey = NULL, *privkey = NULL;
+        unsigned char *der_pubkey = NULL, *ptr_der_pubkey = NULL;
+        char *pubkey_b64 = NULL;
+        int der_len;
+        
         /* try PKIX/TLS keys first */
         if (tls_opt.keyfile && tls_opt.certfile
          && (keyfile = fopen(tls_opt.keyfile, "r"))
@@ -161,51 +225,18 @@ sign_global_init(unsigned alg, struct filed *Files)
                 if (!GlobalSign.pubkey_b64)
                         GlobalSign.pubkey_b64 = pubkey_b64;
         }
-        assert(GlobalSign.keytype == 'C' || GlobalSign.keytype == 'K');
-        assert(GlobalSign.pubkey_b64 && GlobalSign.privkey && GlobalSign.pubkey);
+        return true;
+}
 
-        GlobalSign.sg = alg;
-        GlobalSign.spri = 0;
-        GlobalSign.gbc = 0;
-        GlobalSign.rsid = now;
-        TAILQ_INIT(&GlobalSign.SigGroups);
+/*
+ * init SGs 
+ */
+bool
+sign_sg_init(struct filed *Files)
+{
+        struct signature_group_t *newsg;
+        struct filed_queue       *fq;
 
-        /* hash algorithm */
-        OpenSSL_add_all_digests();
-        GlobalSign.mdctx = EVP_MD_CTX_create();
-        EVP_MD_CTX_init(GlobalSign.mdctx);
-
-#ifndef SIGN_USE_SHA256
-        /* values for SHA-1 */
-        GlobalSign.md = EVP_sha1();
-        GlobalSign.md_len_b64 = 28;
-        GlobalSign.ver = "0111";
-#else
-        /* values for SHA-256 */
-        GlobalSign.md = EVP_sha256();
-        GlobalSign.md_len_b64 = 44;
-        GlobalSign.ver = "0121";
-#endif
-
-        /* signature algorithm */
-        /* can probably be merged with the hash algorithm/context but
-         * I leave the optimization for later until the RFC is ready */
-        GlobalSign.sigctx = EVP_MD_CTX_create();
-        EVP_MD_CTX_init(GlobalSign.sigctx);
-
-        /* the signature algorithm depends on the type of key */
-        if (EVP_PKEY_DSA == EVP_PKEY_type(GlobalSign.pubkey->type)) {
-                GlobalSign.sig = EVP_dss1();
-                GlobalSign.sig_len_b64 = 28;
-        } else if (EVP_PKEY_RSA == EVP_PKEY_type(GlobalSign.pubkey->type)) {
-                GlobalSign.sig = EVP_sha1();
-                GlobalSign.sig_len_b64 = 28;
-        } else {
-                logerror("EVP_PKEY_type not supported");
-                return false;
-        }
-
-        /* single SG(s) */
         if (GlobalSign.sg == 3) {
                 /* every file gets one SG */ 
                 for (struct filed *f = Files; f; f = f->f_next) {
@@ -221,6 +252,7 @@ sign_global_init(unsigned alg, struct filed *Files)
                         TAILQ_INIT(&newsg->hashes);
                         TAILQ_INIT(&newsg->files);
                         TAILQ_INSERT_TAIL(&newsg->files, fq, entries);
+                        newsg->spri = f->f_file; /* not needed but shows SGs */
                         newsg->last_msg_num = 1; /* cf. section 4.2.5 */
                         TAILQ_INSERT_TAIL(&GlobalSign.SigGroups,
                                 newsg, entries);
@@ -244,7 +276,6 @@ sign_global_init(unsigned alg, struct filed *Files)
                 TAILQ_INSERT_TAIL(&GlobalSign.SigGroups,
                         newsg, entries);
         }
-        sign_new_reboot_session();
         return true;
 }
 
@@ -290,11 +321,11 @@ sign_send_certificate_block(struct signature_group_t *sg)
 {
         struct filed_queue *fq;
         struct buf_msg *buffer;
-        char *timestamp, *signature, *line;
+        char *timestamp;
         char payload[SIGN_MAX_PAYLOAD_LENGTH];
         char sd[SIGN_MAX_SD_LENGTH];
         int omask;
-        size_t payload_len, sd_len, fragment_len, linelen, tlsprefixlen;
+        size_t payload_len, sd_len, fragment_len;
         size_t payload_index = 0;
 
         if (!sg->resendcount) return false;
@@ -315,14 +346,6 @@ sign_send_certificate_block(struct signature_group_t *sg)
                 else
                         fragment_len = SIGN_MAX_FRAG_LENGTH;
 
-                /* set up buffer */
-                buffer = buf_msg_new(0);
-                buffer->timestamp = strdup(make_timestamp(NULL, true));
-                buffer->prog = strdup("syslogd");
-                buffer->recvhost = buffer->host = LocalFQDN;
-                buffer->pri = 110;
-                buffer->flags = IGN_CONS|SIGNATURE;
-
                 /* format SD */
                 sd_len = snprintf(sd, sizeof(sd), "[ssign-cert "
                         "VER=\"%s\" RSID=\"%llu\" SG=\"%d\" "
@@ -330,34 +353,19 @@ sign_send_certificate_block(struct signature_group_t *sg)
                         "FLEN=\"%d\" FRAG=\"%.*s\" "
                         "SIGN=\"\"]",
                         GlobalSign.ver, GlobalSign.rsid, GlobalSign.sg,
-                        GlobalSign.spri, payload_len,
-                        payload_index+1 /* cf. section 5.3.2.5 */,
+                        sg->spri, payload_len, payload_index+1, /* cf. section 5.3.2.5 */
                         fragment_len, fragment_len, &payload[payload_index]);
                 assert(sd_len < sizeof(sd));
                 assert(sd[sd_len] == '\0');
                 assert(sd[sd_len-1] == ']');
                 assert(sd[sd_len-2] == '"');
-                buffer->sd = strdup(sd);
                 
-                /* SD ready, now format */
-                if (!format_buffer(buffer, &line, &linelen, NULL,
-                        &tlsprefixlen, NULL)) {
-                        DPRINTF((D_CALL|D_SIGN), "sign_send_certificate_block():"
-                                " format_buffer() failed\n");
-                        DELREF(buffer);
-                        return false; /* do not decrease resendcount */
-                }
-                sign_msg_sign(line+tlsprefixlen, &signature);
-                sd[sd_len-2] = '\0';
-                strlcat(sd, signature, sizeof(sd));
-                strlcat(sd, "\"]", sizeof(sd));
-
-                free(buffer->sd);
-                buffer->sd = strdup(sd);
-                
-                omask = sigblock(sigmask(SIGHUP)|sigmask(SIGALRM));
+                if (!sign_msg_sign(&buffer, sd, sizeof(sd)))
+                        return 0;
                 DPRINTF((D_CALL|D_SIGN), "sign_send_certificate_block(): "
                         "calling fprintlog()\n");
+
+                omask = sigblock(sigmask(SIGHUP)|sigmask(SIGALRM));
                 TAILQ_FOREACH(fq, &sg->files, entries) {
                         struct filed *f = fq->f;
                         /* TODO: write fprintlog() wrapper for this */
@@ -409,8 +417,7 @@ unsigned
 sign_send_signature_block(struct signature_group_t *sg, bool force)
 {
         char sd[SIGN_MAX_SD_LENGTH];
-        char *signature, *line;
-        size_t sd_len, linelen, tlsprefixlen;
+        size_t sd_len;
         int omask;
         unsigned sg_num_hashes = 0;     /* hashes in SG queue */
         unsigned hashes_in_sb = 0;      /* number of hashes to send in current SB */
@@ -441,17 +448,6 @@ sign_send_signature_block(struct signature_group_t *sg, bool force)
                         " > SIGN_HASH_NUM -- This should not happen!\n");
 
         //[ssign VER="" RSID="" SG="" SPRI="" GBC="" FMN="" CNT="" HB="" SIGN=""]
-        /* 
-         * this basically duplicates logmsg_async_f() and
-         * part of fprintlog() because the message has to be
-         * completely formatted before it can be signed.
-         */ 
-        buffer = buf_msg_new(0);
-        buffer->timestamp = strdup(make_timestamp(NULL, true));
-        buffer->prog = strdup("syslogd");
-        buffer->recvhost = buffer->host = LocalFQDN;
-        buffer->pri = 110;
-        buffer->flags = IGN_CONS|SIGNATURE;
 
         /* now the SD */
         qentry = TAILQ_FIRST(&sg->hashes);
@@ -475,26 +471,9 @@ sign_send_signature_block(struct signature_group_t *sg, bool force)
         assert(sd[sd_len-1] == ' ');
         sd[sd_len-1] = '\0';
         sd_len = strlcat(sd, "\" SIGN=\"\"]", sizeof(sd));
-        assert(sd_len < sizeof(sd));
-        assert(sd[sd_len] == '\0');
-        assert(sd[sd_len-1] == ']');
-        assert(sd[sd_len-2] == '"');
-        buffer->sd = strdup(sd);
-        
-        /* SD ready, now format and sign */
-        if (!format_buffer(buffer, &line, &linelen, NULL,
-                &tlsprefixlen, NULL)) {
-                DPRINTF((D_CALL|D_SIGN), "sign_send_signature_block():"
-                        " format_buffer() failed\n");
-                DELREF(buffer);
-                return 0;  /* TODO */
-        }
-        sign_msg_sign(line+tlsprefixlen, &signature);
-        sd[sd_len-2] = '\0';
-        strlcat(sd, signature, sizeof(sd));
-        strlcat(sd, "\"]", sizeof(sd));
-        free(buffer->sd);
-        buffer->sd = strdup(sd);
+
+        if (!sign_msg_sign(&buffer, sd, sizeof(sd)))
+                return 0;
         DPRINTF((D_CALL|D_SIGN), "sign_send_signature_block(): calling"
                 " fprintlog(), sending %d out of %d hashes\n",
                 MIN(SIGN_MAX_HASH_NUM, sg_num_hashes), sg_num_hashes);
@@ -531,24 +510,19 @@ sign_send_signature_block(struct signature_group_t *sg, bool force)
 }
 
 void
-sign_free_hashes(struct signature_group_t *group)
+sign_free_hashes(struct signature_group_t *sg)
 {
         struct string_queue *qentry, *tmp_qentry;
         
-        DPRINTF((D_CALL|D_SIGN), "sign_free_hashes(%p)\n", group);
-        TAILQ_FOREACH_SAFE(qentry, &group->hashes, entries, tmp_qentry) {
-                TAILQ_REMOVE(&group->hashes, qentry, entries);
+        DPRINTF((D_CALL|D_SIGN), "sign_free_hashes(%p)\n", sg);
+        TAILQ_FOREACH_SAFE(qentry, &sg->hashes, entries, tmp_qentry) {
+                TAILQ_REMOVE(&sg->hashes, qentry, entries);
                 FREEPTR(qentry->data);
                 free(qentry);
         }
-        assert(TAILQ_EMPTY(&group->hashes));
+        assert(TAILQ_EMPTY(&sg->hashes));
 }
 
-#define CHECK_ONE(exp) do if ((exp) != 1) {                                  \
-                       DPRINTF(D_SIGN, #exp " failed in %d: %s\n", __LINE__, \
-                             ERR_error_string(ERR_get_error(), NULL));       \
-                       return 1;                                             \
-                    } while (0)
 /*
  * hash one syslog message
  */
@@ -561,9 +535,9 @@ sign_msg_hash(char *line, char **hash)
 
         DPRINTF((D_CALL|D_SIGN), "sign_msg_hash('%s')\n", line);
         
-        CHECK_ONE(EVP_DigestInit_ex(GlobalSign.mdctx, GlobalSign.md, NULL));
-        CHECK_ONE(EVP_DigestUpdate(GlobalSign.mdctx, line, strlen(line)));
-        CHECK_ONE(EVP_DigestFinal_ex(GlobalSign.mdctx, md_value, &md_len));
+        SSL_CHECK_ONE(EVP_DigestInit_ex(GlobalSign.mdctx, GlobalSign.md, NULL));
+        SSL_CHECK_ONE(EVP_DigestUpdate(GlobalSign.mdctx, line, strlen(line)));
+        SSL_CHECK_ONE(EVP_DigestFinal_ex(GlobalSign.mdctx, md_value, &md_len));
         
         b64_ntop(md_value, md_len, (char *)md_b64, EVP_MAX_MD_SIZE*2);
         *hash = strdup((char *)md_b64);
@@ -576,39 +550,87 @@ sign_msg_hash(char *line, char **hash)
  * append hash to SG queue
  */
 bool
-sign_append_hash(char *hash, struct signature_group_t *group)
+sign_append_hash(char *hash, struct signature_group_t *sg)
 {
         DPRINTF((D_CALL|D_SIGN), "sign_append_hash('%s', %p)\n",
-                hash, group);
+                hash, sg);
         struct string_queue *qentry;
 
         /* if one SG is shared by several destinations
          * prevent duplicate entries */
-        if ((qentry = TAILQ_LAST(&group->hashes, string_queue_head))
+        if ((qentry = TAILQ_LAST(&sg->hashes, string_queue_head))
           && !strcmp(qentry->data, hash))
                 return false;
 
         MALLOC(qentry, sizeof(*qentry));
-        qentry->key = sign_assign_msg_num(group);
+        qentry->key = sign_assign_msg_num(sg);
         qentry->data = hash;
-        TAILQ_INSERT_TAIL(&group->hashes, qentry, entries);
+        TAILQ_INSERT_TAIL(&sg->hashes, qentry, entries);
         return true;
 }
 
 /*
- * sign one syslog message
+ * sign one syslog-sign message
+ * 
+ * requires a ssign or ssigt-cert SD element
+ * ending with ' SIGN=""]' in sd
+ * linesize is available memory (= sizeof(sd))
+ * 
+ * function will calculate signature and return a new buffer
  */
 bool
-sign_msg_sign(char *line, char **signature)
+sign_msg_sign(struct buf_msg **bufferptr, char *sd, size_t linesize)
+{
+        char *signature, *line;
+        size_t linelen, tlsprefixlen, endptr;
+        struct buf_msg *buffer;
+
+        DPRINTF((D_CALL|D_SIGN), "sign_msg_sign()\n");
+        endptr = strlen(sd);
+
+        assert(endptr < linesize);
+        assert(sd[endptr] == '\0');
+        assert(sd[endptr-1] == ']');
+        assert(sd[endptr-2] == '"');
+
+        /* set up buffer */
+        buffer = buf_msg_new(0);
+        buffer->timestamp = strdup(make_timestamp(NULL, true));
+        buffer->prog = strdup("syslogd");
+        buffer->recvhost = buffer->host = LocalFQDN;
+        buffer->pri = 110;
+        buffer->flags = IGN_CONS|SIGNATURE;
+        buffer->sd = sd;
+
+        /* SD ready, now format and sign */
+        if (!format_buffer(buffer, &line, &linelen, NULL,
+                &tlsprefixlen, NULL)) {
+                DPRINTF((D_CALL|D_SIGN), "sign_send_signature_block():"
+                        " format_buffer() failed\n");
+                return false;
+        }
+        sign_string_sign(line+tlsprefixlen, &signature);
+
+        sd[endptr-2] = '\0';
+        strlcat(sd, signature, linesize);
+        strlcat(sd, "\"]", linesize);
+        buffer->sd = strdup(sd);
+        *bufferptr = buffer;
+        return true;
+}
+
+/*
+ * sign one string
+ */
+bool
+sign_string_sign(char *line, char **signature)
 {
         char buf[SIGN_MAX_LENGTH+1];
         unsigned char sig_value[EVP_MAX_MD_SIZE];
-        unsigned char sig_b64[EVP_MAX_MD_SIZE*2];  /* TODO: exact expression for b64 length? */
+        unsigned char sig_b64[EVP_MAX_MD_SIZE*2];
         unsigned int sig_len = 0;
         char *p, *q;
 
-        DPRINTF((D_CALL|D_SIGN), "sign_msg_sign()\n");
-        
         /* 
          * The signature is calculated over the completely formatted
          * syslog-message, including all of the PRI, HEADER, and hashes
@@ -632,15 +654,15 @@ sign_msg_sign(char *line, char **signature)
         }
         *q = '\0';
 
-        CHECK_ONE(EVP_SignInit(GlobalSign.sigctx, GlobalSign.sig));
-        CHECK_ONE(EVP_SignUpdate(GlobalSign.sigctx, buf, q-buf));
-        CHECK_ONE(EVP_DigestFinal_ex(GlobalSign.sigctx, sig_value, &sig_len));
+        SSL_CHECK_ONE(EVP_SignInit(GlobalSign.sigctx, GlobalSign.sig));
+        SSL_CHECK_ONE(EVP_SignUpdate(GlobalSign.sigctx, buf, q-buf));
+        SSL_CHECK_ONE(EVP_DigestFinal_ex(GlobalSign.sigctx, sig_value, &sig_len));
         
         b64_ntop(sig_value, sig_len, (char *)sig_b64, EVP_MAX_MD_SIZE*2);
         *signature = strdup((char *)sig_b64);
 
-        DPRINTF((D_CALL|D_SIGN), "sign_msg_sign('%s') --> '%s'\n", buf, *signature);
-        return true;
+        DPRINTF((D_CALL|D_SIGN), "sign_string_sign('%s') --> '%s'\n", buf, *signature);
+        return (bool) *signature;
 }
 
 void
@@ -668,12 +690,12 @@ sign_new_reboot_session()
 
 /* get msg_num, increment counter, check overflow */
 uint_fast64_t
-sign_assign_msg_num(struct signature_group_t *group)
+sign_assign_msg_num(struct signature_group_t *sg)
 {
         uint_fast64_t old;
 
-        old = group->last_msg_num++;
-        if (group->last_msg_num > SIGN_MAX_COUNT)
+        old = sg->last_msg_num++;
+        if (sg->last_msg_num > SIGN_MAX_COUNT)
                 sign_new_reboot_session();
         return old;
 }

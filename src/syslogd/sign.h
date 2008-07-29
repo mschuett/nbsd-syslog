@@ -18,7 +18,7 @@
  * 
  * We use '3' and assign one SG to every destination (=struct filed)
  */
-#define SIGN_SG 0
+#define SIGN_SG 3
 
 /* maximum value for several counters in -sign */
 #define SIGN_MAX_COUNT  9999999999
@@ -73,6 +73,11 @@
  */
 #define SIGN_MAX_PAYLOAD_LENGTH 20480
 
+#define SSL_CHECK_ONE(exp) do if ((exp) != 1) {                                  \
+                       DPRINTF(D_SIGN, #exp " failed in %d: %s\n", __LINE__, \
+                             ERR_error_string(ERR_get_error(), NULL));       \
+                       return 1;                                             \
+                    } while (0)
 
 /* structs use uint_fast64_t in different places because the standard
  * requires values in interval [0:9999999999 = SIGN_MAX_COUNT] */
@@ -109,7 +114,6 @@ struct sign_global_t {
         const char   *ver;
         uint_fast64_t rsid;
         unsigned int  sg;
-        unsigned int  spri;
         uint_fast64_t gbc;
 
         struct signature_group_head SigGroups;
@@ -128,6 +132,8 @@ struct sign_global_t {
 };
 
 bool sign_global_init(unsigned, struct filed*);
+bool sign_sg_init(struct filed*);
+bool sign_get_keys();
 void sign_global_free();
 struct signature_group_t *sign_get_sg(int, struct signature_group_head*, struct filed*);
 bool sign_send_certificate_block(struct signature_group_t*);
@@ -135,7 +141,8 @@ unsigned sign_send_signature_block(struct signature_group_t*, bool);
 void sign_free_hashes(struct signature_group_t*);
 bool sign_msg_hash(char*, char**);
 bool sign_append_hash(char*, struct signature_group_t*);
-bool sign_msg_sign(char*, char**);
+bool sign_msg_sign(struct buf_msg**, char*, size_t);
+bool sign_string_sign(char*, char**);
 void sign_new_reboot_session(void);
 void sign_inc_gbc(void);
 uint_fast64_t sign_assign_msg_num(struct signature_group_t*);

@@ -18,7 +18,7 @@
  * 
  * We use '3' and assign one SG to every destination (=struct filed)
  */
-#define SIGN_SG 3
+#define SIGN_SG 1
 
 /* maximum value for several counters in -sign */
 #define SIGN_MAX_COUNT  9999999999
@@ -135,7 +135,7 @@ bool sign_global_init(unsigned, struct filed*);
 bool sign_sg_init(struct filed*);
 bool sign_get_keys();
 void sign_global_free();
-struct signature_group_t *sign_get_sg(int, struct signature_group_head*, struct filed*);
+struct signature_group_t *sign_get_sg(int, struct filed*);
 bool sign_send_certificate_block(struct signature_group_t*);
 unsigned sign_send_signature_block(struct signature_group_t*, bool);
 void sign_free_hashes(struct signature_group_t*);

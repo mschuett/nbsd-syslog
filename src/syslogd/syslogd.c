@@ -1994,7 +1994,7 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
                 struct signature_group_t *sg;
 
                 if (!sign_msg_hash(line + tlsprefixlen, &hash)
-                 || (!(sg = sign_get_sg(buffer->pri, &GlobalSign.SigGroups, f)))) {
+                 || (!(sg = sign_get_sg(buffer->pri, f)))) {
                         free(hash);
                         logerror("Unable to hash line \"%s\"", line);
                  } else
@@ -2263,7 +2263,7 @@ sendagain:
 #ifndef DISABLE_SIGN
         if (!(buffer->flags & SIGNATURE)) {
                 struct signature_group_t *sg;
-                sg = sign_get_sg(buffer->pri, &GlobalSign.SigGroups, f);
+                sg = sign_get_sg(buffer->pri, f);
                 (void)sign_send_signature_block(sg, false);
         }
 #endif /* !DISABLE_SIGN */
@@ -2511,15 +2511,21 @@ domark(int fd, short event, void *ev)
                 logerror("Unable to get ressource usage/limits");
                 snprintf(markline, MARKLINELENGTH, "-- MARK --");
         } else {
-                humanize_number(usemem, sizeof(usemem), 1024*(ru.ru_idrss+ru.ru_isrss), "bytes", HN_AUTOSCALE, 0);
-                humanize_number(maxmem, sizeof(maxmem), rlp.rlim_max, "bytes", HN_AUTOSCALE, 0);
+                /* TODO: the memory usage reporting is not accurate */
+                humanize_number(usemem, sizeof(usemem),
+                        (ru.ru_idrss+ru.ru_isrss+ru.ru_ixrss),
+                        "bytes", HN_AUTOSCALE, 0);
+                humanize_number(maxmem, sizeof(maxmem),
+                        rlp.rlim_max, "bytes", HN_AUTOSCALE, 0);
                 
-                snprintf(markline, MARKLINELENGTH, "-- MARK -- (mem usage: %s/%s)",
+                snprintf(markline, MARKLINELENGTH,
+                        "-- MARK -- (mem usage: %s/%s)",
                         usemem, maxmem);
                 /* negative numbers imply overflow. check necessary? */
                 if ((ru.ru_idrss+ru.ru_isrss+ru.ru_ixrss > 0)
                  && ((MEMORY_HIGH_PERC * rlp.rlim_max) > 0)
-                 && (ru.ru_idrss+ru.ru_isrss+ru.ru_ixrss >= (MEMORY_HIGH_PERC * rlp.rlim_max) / 100))
+                 && (ru.ru_idrss+ru.ru_isrss+ru.ru_ixrss >=
+                        (MEMORY_HIGH_PERC * rlp.rlim_max) / 100))
                         sweep_queues = true;
         }
         now = time((time_t *)NULL);

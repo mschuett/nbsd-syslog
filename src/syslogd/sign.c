@@ -10,13 +10,15 @@
  *    so this might have to be changed later. Cf. sign_string_sign()
  * 2. The draft only defines DSA signatures. I hope it will be extended
  *    to DSS, thus allowing DSA, RSA (ANSI X9.31) and ECDSA (ANSI X9.62)
- * 3. This current implementation uses high-level OpenSSL API.
+ * 3. The draft does not define the data format for public keys in CBs.
+ *    This implementation sends public keys in DER encoding.
+ * 4. This current implementation uses high-level OpenSSL API.
  *    I am not sure if these completely implement the FIPS/ANSI standards.
  */
 /* 
  * Limitations of this implementation:
  * - cannot use OpenPGP keys, only PKIX or DSA due to OpenSSL capabilities
- * - currently only SG 0 and 3
+ * - currently no SG 2
  * - due to the splitting and formatting this syslogd modifies messages
  *   (e.g. if it receives a message with two spaces between fields it will
  *   not forward the message unchanged). This would invalidate signatures,
@@ -57,8 +59,8 @@ bool
 sign_global_init(unsigned alg, struct filed *Files)
 {
         DPRINTF((D_CALL|D_SIGN), "sign_global_init()\n");
-        if (alg != 3 && alg != 0) {
-                logerror("sign_init(): alg %d not implemented", alg);
+        if (alg > 3) {
+                logerror("sign_init(): invalid alg %d", alg);
                 return false;
         }
 
@@ -237,29 +239,11 @@ sign_sg_init(struct filed *Files)
         struct signature_group_t *newsg;
         struct filed_queue       *fq;
 
-        if (GlobalSign.sg == 3) {
-                /* every file gets one SG */ 
-                for (struct filed *f = Files; f; f = f->f_next) {
-                        if (!(f->f_flags & FFLAG_SIGN)) {
-                                f->f_sg = NULL;
-                                continue;
-                        }
-                        //CALLOC(newsg, sizeof(*newsg));
-                        newsg = calloc(1, sizeof(*newsg));
-                        fq    = calloc(1, sizeof(*fq));
-                        fq->f = f;
-                        f->f_sg = newsg;
-                        TAILQ_INIT(&newsg->hashes);
-                        TAILQ_INIT(&newsg->files);
-                        TAILQ_INSERT_TAIL(&newsg->files, fq, entries);
-                        newsg->spri = f->f_file; /* not needed but shows SGs */
-                        newsg->last_msg_num = 1; /* cf. section 4.2.5 */
-                        TAILQ_INSERT_TAIL(&GlobalSign.SigGroups,
-                                newsg, entries);
-                }
-        } else if (GlobalSign.sg == 0) {
+        switch (GlobalSign.sg) {
+        case 0:
                 /* one SG, linked to all files */
                 newsg = calloc(1, sizeof(*newsg));
+                newsg->last_msg_num = 1; /* cf. section 4.2.5 */
                 TAILQ_INIT(&newsg->hashes);
                 TAILQ_INIT(&newsg->files);
                 for (struct filed *f = Files; f; f = f->f_next) {
@@ -272,9 +256,72 @@ sign_sg_init(struct filed *Files)
                         f->f_sg = newsg;
                         TAILQ_INSERT_TAIL(&newsg->files, fq, entries);
                 }
-                newsg->last_msg_num = 1; /* cf. section 4.2.5 */
                 TAILQ_INSERT_TAIL(&GlobalSign.SigGroups,
                         newsg, entries);
+                break;
+        case 1:
+                /* every PRI gets one SG */
+                for (int i = 0; i <= (LOG_NFACILITIES<<3); i++) {
+                        int fac, prilev;
+                        fac = LOG_FAC(i);
+                        prilev = LOG_PRI(i);
+
+                        newsg = calloc(1, sizeof(*newsg));
+                        newsg->spri = i;
+                        newsg->last_msg_num = 1; /* cf. section 4.2.5 */
+                        TAILQ_INIT(&newsg->hashes);
+                        TAILQ_INIT(&newsg->files);
+                        for (struct filed *f = Files; f; f = f->f_next) {
+                                if (!(f->f_flags & FFLAG_SIGN))
+                                        continue;
+                                /* check priorities */
+                                if (((f->f_pcmp[fac] & PRI_EQ) && (f->f_pmask[fac] == prilev))
+                                     ||((f->f_pcmp[fac] & PRI_LT) && (f->f_pmask[fac] < prilev))
+                                     ||((f->f_pcmp[fac] & PRI_GT) && (f->f_pmask[fac] > prilev))) {
+                                        fq    = calloc(1, sizeof(*fq));
+                                        fq->f = f;
+                                        TAILQ_INSERT_TAIL(&newsg->files, fq, entries);
+                                }
+                        }
+                        TAILQ_INSERT_TAIL(&GlobalSign.SigGroups,
+                                newsg, entries);
+                        /* possible optimization: use a
+                         * struct signature_group_t *newsg[LOG_NFACILITIES<<3]
+                         * for direct group lookup */
+                }
+                for (struct filed *f = Files; f; f = f->f_next)
+                        /* f_sg is useless here */
+                        f->f_sg = NULL;
+                break;
+        case 2:
+                /* PRI ranges get one SG, boundaries given by the
+                 * SPRI, indicating the largest PRI in the SG */
+                /* TODO: do not know how to configure that
+                 *  possibly with a list of boundary values */
+                logerror("SG == 2 not implemented yet");
+                return false;
+                break;
+        case 3:
+                /* every file gets one SG */ 
+                for (struct filed *f = Files; f; f = f->f_next) {
+                        if (!(f->f_flags & FFLAG_SIGN)) {
+                                f->f_sg = NULL;
+                                continue;
+                        }
+                        //CALLOC(newsg, sizeof(*newsg));
+                        newsg = calloc(1, sizeof(*newsg));
+                        newsg->spri = f->f_file; /* not needed but shows SGs */
+                        newsg->last_msg_num = 1; /* cf. section 4.2.5 */
+                        fq    = calloc(1, sizeof(*fq));
+                        fq->f = f;
+                        f->f_sg = newsg;
+                        TAILQ_INIT(&newsg->hashes);
+                        TAILQ_INIT(&newsg->files);
+                        TAILQ_INSERT_TAIL(&newsg->files, fq, entries);
+                        TAILQ_INSERT_TAIL(&GlobalSign.SigGroups,
+                                newsg, entries);
+                }
+                break;
         }
         return true;
 }
@@ -383,19 +430,27 @@ sign_send_certificate_block(struct signature_group_t *sg)
  * returns NULL if -sign not configured or no SG for this priority
  */
 struct signature_group_t *
-sign_get_sg(int pri, struct signature_group_head *SGs, struct filed *f)
+sign_get_sg(int pri, struct filed *f)
 {
-        DPRINTF((D_CALL|D_SIGN), "sign_get_sg(%p, %p)\n", SGs, f);
+        struct signature_group_t *sg;
+        DPRINTF((D_CALL|D_SIGN), "sign_get_sg(%d, %p)\n", pri, f);
         
         if (!GlobalSign.rsid)
                 return NULL;
         
-        if (GlobalSign.sg == 0 || GlobalSign.sg == 3) {
+        switch (GlobalSign.sg) {
+        case 0:
+        case 3:
                 return f->f_sg;
-        } else {
-                logerror("sign_get_sg(): sg %d not implemented", GlobalSign.sg);
-                return NULL;
+                break;
+        case 1:
+        case 2:
+                TAILQ_FOREACH(sg, &GlobalSign.SigGroups, entries) {
+                        if (sg->spri >= pri) return sg;
+                }
+                break;
         }
+        return NULL;
 }
 
 /*
@@ -427,6 +482,11 @@ sign_send_signature_block(struct signature_group_t *sg, bool force)
         /* only act if a division is full */
         if (!sg_num_hashes || (!force && (sg_num_hashes % SIGN_HASH_DIVISION_NUM)))
                 return 0;
+
+        /* if no CB sent so far then do now, just before SB
+         * useful for SG 1 and 2 where some SPRIs are seldom used */
+        if (sg->resendcount == SIGN_RESENDCOUNT_CERTBLOCK)
+                sign_send_certificate_block(sg);
         
         /* shortly after reboot we have shorter SBs */
         hashes_in_sb = MIN(sg_num_hashes, SIGN_HASH_NUM);
@@ -661,12 +721,14 @@ sign_new_reboot_session()
          * normal IDs are almost always not */
         GlobalSign.rsid++;
 
-        assert(GlobalSign.sg == 3 || GlobalSign.sg == 0);
-        /* reset SGs and send first CBs immediately */ 
+        assert(GlobalSign.sg <= 3);
+        /* reset SGs */
         TAILQ_FOREACH(sg, &GlobalSign.SigGroups, entries) {
                 sg->resendcount = SIGN_RESENDCOUNT_CERTBLOCK;
                 sg->last_msg_num = 1;
-                sign_send_certificate_block(sg);
+                /* if only few SGs then send first CBs immediately */
+                if (GlobalSign.sg == 0 || GlobalSign.sg == 3)
+                        sign_send_certificate_block(sg);
         }
 }
 

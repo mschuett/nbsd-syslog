@@ -63,6 +63,8 @@ extern struct filed *get_f_by_conninfo(struct tls_conn_settings *conn_info);
 extern bool message_queue_remove(struct filed *, struct buf_queue *);
 extern void buf_msg_free(struct buf_msg *msg);
 extern void message_queue_freeall(struct filed *);
+extern bool copy_string(char **, const char *, const char *);
+extern bool copy_config_value_quoted(const char *, char **, char **);
 
 static unsigned int getVerifySetting(const char *x509verifystring);
 

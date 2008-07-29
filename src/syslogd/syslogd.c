@@ -2785,7 +2785,7 @@ init(int fd, short event, void *ev)
         bool found_keyword;
 #ifndef DISABLE_SIGN
         char *sign_sg_str = NULL;
-        int sign_sg_int = -1;
+        int sign_sg_int = SIGN_SG;
 #endif /* !DISABLE_SIGN */
 #ifndef DISABLE_TLS
         struct peer_cred *cred = NULL;

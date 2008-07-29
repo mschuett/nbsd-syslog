@@ -71,14 +71,19 @@ __RCSID("$NetBSD: syslogd.c,v 1.84 2006/11/13 20:24:00 christos Exp $");
  */
 #define SYSLOG_NAMES
 #include "syslogd.h"
-#ifndef DISABLE_TLS
-#include "tls_stuff.h"
-#endif /* !DISABLE_TLS */
+
+#if (!defined(DISABLE_SIGN) && defined(DISABLE_TLS))
+#error syslog-sign currently needs TLS code, cannot DISABLE_TLS without DISABLE_SIGN
+#endif /* (!defined(DISABLE_SIGN) && defined(DISABLE_TLS)) */
 
 #ifndef DISABLE_SIGN
 #include "sign.h"
 struct sign_global_t GlobalSign;
 #endif /* !DISABLE_SIGN */
+
+#ifndef DISABLE_TLS
+#include "tls_stuff.h"
+#endif /* !DISABLE_TLS */
 
 #ifdef LIBWRAP
 int allow_severity = LOG_AUTH|LOG_INFO;
@@ -237,7 +242,6 @@ unsigned check_timestamp(unsigned char *, char **, const bool, const bool);
 static inline unsigned valid_utf8(const char *);
 static unsigned check_sd(char*, const bool);
 static unsigned check_msgid(char *);
-static inline void free_incoming_tls_sockets(void);
 
 struct event *allocev(void);
 void schedule_event(struct event **, struct timeval *, void (*)(int, short, void *), void *);
@@ -247,14 +251,21 @@ static void dispatch_read_funix(int fd, short event, void *ev);
 
 unsigned int message_queue_purge(struct filed *f, const unsigned int, const int);
 void send_queue(struct filed *);
-void free_cred_SLIST(struct peer_cred_head *);
 static struct buf_queue *find_qentry_to_delete(const struct buf_queue_head *, const int, const bool);
 struct buf_msg *buf_msg_new(const size_t);
 void buf_msg_free(struct buf_msg *msg);
-
 bool message_queue_remove(struct filed *, struct buf_queue *);
 struct buf_queue *message_queue_add(struct filed *, struct buf_msg *);
 void message_queue_freeall(struct filed *);
+#ifndef DISABLE_TLS
+static inline void free_incoming_tls_sockets(void);
+void free_cred_SLIST(struct peer_cred_head *);
+#endif /* !DISABLE_TLS */
+/* configuration & parsing */
+bool copy_string(char **, const char *, const char *);
+bool copy_config_value_quoted(const char *, char **, char **);
+bool copy_config_value(const char *, char **, char **, const char *, const int);
+bool copy_config_value_word(char **, char **);
 
 /* for make_timestamp() */
 #define TIMESTAMPBUFSIZE 35
@@ -488,7 +499,7 @@ getgroup:
                 DPRINTF(D_FILE, "Listening on kernel log `%s' with fd %d\n", _PATH_KLOG, fklog);
         }
 
-#ifndef DISABLE_TLS
+#if (!defined(DISABLE_TLS) && !defined(DISABLE_SIGN))
         /* OpenSSL PRNG needs /dev/urandom, thus initialize before chroot() */
         if (!RAND_status())
                 logerror("Unable to initialize OpenSSL PRNG");
@@ -496,7 +507,7 @@ getgroup:
                 DPRINTF(D_TLS, "Initializing PRNG\n");
         }
         SLIST_INIT(&TLS_Incoming_Head);
-#endif /* !DISABLE_TLS */
+#endif /* (!defined(DISABLE_TLS) && !defined(DISABLE_SIGN)) */
 #ifndef DISABLE_SIGN
         /* initialize rsid -- we will use that later to determine
          * whether sign_global_init() was already called */
@@ -2646,6 +2657,7 @@ loginfo(const char *fmt, ...)
                 printf("%s\n", buf);
 }
 
+#ifndef DISABLE_TLS
 /* used in init() and die() */
 static inline void
 free_incoming_tls_sockets(void)
@@ -2673,6 +2685,7 @@ free_incoming_tls_sockets(void)
                 free(tls_in);
         }
 }
+#endif /* !DISABLE_TLS */
 
 void
 die(int fd, short event, void *ev)
@@ -2770,17 +2783,23 @@ init(int fd, short event, void *ev)
         char host[MAXHOSTNAMELEN];
         unsigned int linenum;
         bool found_keyword;
+#ifndef DISABLE_SIGN
+        char *sign_sg_str = NULL;
+        int sign_sg_int = -1;
+#endif /* !DISABLE_SIGN */
 #ifndef DISABLE_TLS
         struct peer_cred *cred = NULL;
         struct peer_cred_head *credhead = NULL;
         char *tmp_buf = NULL;
-
+#endif /* !DISABLE_TLS */
         /* central list of recognized configuration keywords
          * and an address for their values as strings */
         const struct config_keywords {
                 char *keyword;
                 char **variable;
         } config_keywords[] = {
+#ifndef DISABLE_TLS
+                /* TLS settings */
                 {"tls_ca",                &tls_opt.CAfile},
                 {"tls_cadir",             &tls_opt.CAdir},
                 {"tls_cert",              &tls_opt.certfile},
@@ -2795,15 +2814,20 @@ init(int fd, short event, void *ev)
                 /* special cases in parsing */
                 {"tls_allow_fingerprints",&tmp_buf},
                 {"tls_allow_clientcerts", &tmp_buf},
+                /* buffer settings */
                 {"tls_queue_length",      &TypeInfo[F_TLS].queue_length_string},
+                {"tls_queue_size",        &TypeInfo[F_TLS].queue_size_string},
+#endif /* !DISABLE_TLS */
                 {"file_queue_length",     &TypeInfo[F_FILE].queue_length_string},
                 {"pipe_queue_length",     &TypeInfo[F_PIPE].queue_length_string},
-                {"tls_queue_size",        &TypeInfo[F_TLS].queue_size_string},
                 {"file_queue_size",       &TypeInfo[F_FILE].queue_size_string},
                 {"pipe_queue_size",       &TypeInfo[F_PIPE].queue_size_string},
-                {"mem_size_limit",        &global_memory_limit.configstring}
+                {"mem_size_limit",        &global_memory_limit.configstring},
+#ifndef DISABLE_SIGN
+                /* syslog-sign setting */
+                {"sign_sg",               &sign_sg_str},
+#endif /* !DISABLE_SIGN */
         };
-#endif /* !DISABLE_TLS */
 
         DPRINTF((D_EVENT|D_CALL), "init\n");
 
@@ -2943,7 +2967,7 @@ init(int fd, short event, void *ev)
 
         free_cred_SLIST(&tls_opt.cert_head);
         free_cred_SLIST(&tls_opt.fprint_head);
-
+#endif /* !DISABLE_TLS */
         /* 
          * global settings
          * I introduced a second parsing loop, because I do not want
@@ -2961,7 +2985,7 @@ init(int fd, short event, void *ev)
                                                 config_keywords[i].variable,
                                                 &p, ConfFile, linenum)) {
                                 DPRINTF((D_PARSE|D_MEM), "found option %s, saved @%p\n", config_keywords[i].keyword, *config_keywords[i].variable);
-
+#ifndef DISABLE_TLS
                                 /* special cases with multiple parameters */
                                 if (!strcmp("tls_allow_fingerprints", config_keywords[i].keyword))
                                         credhead = &tls_opt.fprint_head;
@@ -2979,6 +3003,7 @@ init(int fd, short event, void *ev)
                                 } while /* additional values? */ (copy_config_value_word(&tmp_buf, &p));
                                 credhead = NULL;
                                 break;
+#endif /* !DISABLE_TLS */
                         }
                 }
         }
@@ -2997,6 +3022,7 @@ init(int fd, short event, void *ev)
                  || dehumanize_number(TypeInfo[i].queue_size_string, &TypeInfo[i].queue_size) == -1)
                         TypeInfo[i].queue_size = strtol(TypeInfo[i].default_size_string, NULL, 10);
         }
+#ifndef DISABLE_TLS
         /* either convert or set default values */
         if (!tls_opt.reconnect_interval_str
          || dehumanize_number(tls_opt.reconnect_interval_str, &tls_opt.reconnect_interval)) {
@@ -3006,10 +3032,24 @@ init(int fd, short event, void *ev)
          || dehumanize_number(tls_opt.reconnect_giveup_str, &tls_opt.reconnect_giveup)) {
                 tls_opt.reconnect_giveup = RECONNECT_GIVEUP;
         }
-        
+#endif /* !DISABLE_TLS */
+#ifndef DISABLE_SIGN
+        if (sign_sg_str) {
+                if (sign_sg_str[1] == '\0'
+                 && (sign_sg_str[0] == '0' || sign_sg_str[0] == '1'
+                  || /* sign_sg_str[0] == '2' || */ sign_sg_str[0] == '3'))
+                        sign_sg_int = sign_sg_str[0] - '0';
+                else {
+                        sign_sg_int = SIGN_SG;
+                        DPRINTF(D_MISC, "Invalid sign_sg value `%s', "
+                                "use default value `%d'\n",
+                                sign_sg_str, sign_sg_int);
+                }
+        }
+#endif /* !DISABLE_SIGN */
+
         rewind(cf);
         linenum = 0;
-#endif /* !DISABLE_TLS */
 
         /*
          *  Foreach line in the conf table, open that file.
@@ -3125,8 +3165,10 @@ init(int fd, short event, void *ev)
                 }
                 message_queue_freeall(f);
                 DELREF(f->f_prevmsg);
+#ifndef DISABLE_TLS
                 if (f->f_type == F_TLS)
                         free_tls_conn(f->f_un.f_tls.tls_conn);
+#endif /* !DISABLE_TLS */
                 FREEPTR(f->f_program);
                 FREEPTR(f->f_host);
                 free((char *)f);
@@ -3236,7 +3278,7 @@ init(int fd, short event, void *ev)
         /* only initialize -sign if actually used */
         for (f = Files; f; f = f->f_next) {
                 if ((f->f_flags & FFLAG_SIGN)
-                 && sign_global_init(SIGN_SG, Files))
+                 && sign_global_init(sign_sg_int, Files))
                         break;
         }
 #endif /* !DISABLE_SIGN */
@@ -3828,6 +3870,7 @@ schedule_event(struct event **ev, struct timeval *tv, void (*cb)(int, short, voi
         }
 }
 
+#ifndef DISABLE_TLS
 /* abbreviation for freeing credential lists */
 void
 free_cred_SLIST(struct peer_cred_head *head)
@@ -3841,6 +3884,7 @@ free_cred_SLIST(struct peer_cred_head *head)
                 free(cred);
         }
 }
+#endif /* !DISABLE_TLS */
 
 /* 
  * send message queue after reconnect 
@@ -4173,4 +4217,79 @@ make_timestamp(time_t *in_now, bool iso)
                 timestamp[len-2] = ':';
         }
         return timestamp;
+}
+
+/* auxillary code to allocate memory and copy a string */
+bool
+copy_string(char **mem, const char *p, const char *q)
+{
+        const size_t len = 1 + q - p;
+        if (!(*mem = malloc(len))) {
+                logerror("Unable to allocate memory for config");
+                return false;
+        }
+        strlcpy(*mem, p, len);
+        return true;
+}
+
+/* keyword has to end with ",  everything until next " is copied */
+bool
+copy_config_value_quoted(const char *keyword, char **mem, char **p)
+{
+        char *q;
+        if (strncasecmp(*p, keyword, strlen(keyword)))
+                return false;
+        q = *p += strlen(keyword);
+        if (!(q = strchr(*p, '"'))) {
+                logerror("unterminated \"\n");
+                return false;
+        }
+        if (!(copy_string(mem, *p, q)))
+                return false;
+        *p = ++q;
+        return true;
+}
+
+/* for config file:
+ * following = required but whitespace allowed, quotes optional
+ * if numeric, then conversion to integer and no memory allocation 
+ */
+bool
+copy_config_value(const char *keyword, char **mem, char **p, const char *file, const int line)
+{
+        if (strncasecmp(*p, keyword, strlen(keyword)))
+                return false;
+        *p += strlen(keyword);
+
+        while (isspace((unsigned char)**p))
+                *p += 1;
+        if (**p != '=') {
+                logerror("expected \"=\" in file %s, line %d", file, line);
+                return false;
+        }
+        *p += 1;
+        
+        return copy_config_value_word(mem, p);
+}
+
+/* copy next parameter from a config line */
+bool
+copy_config_value_word(char **mem, char **p)
+{
+        char *q;
+        while (isspace((unsigned char)**p))
+                *p += 1;
+        if (**p == '"')
+                return copy_config_value_quoted("\"", mem, p);
+
+        /* without quotes: find next whitespace or end of line */
+        (void) ((q = strchr(*p, ' ')) || (q = strchr(*p, '\t'))
+          || (q = strchr(*p, '\n')) || (q = strchr(*p, '\0')));
+
+        if (q-*p == 0
+         || !(copy_string(mem, *p, q)))
+                return false;
+
+        *p = ++q;
+        return true;
 }

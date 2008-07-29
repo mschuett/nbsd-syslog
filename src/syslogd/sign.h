@@ -7,10 +7,13 @@
 
 #include <netinet/in.h>
 #include <resolv.h>
+#include <openssl/x509v3.h>
+#include <openssl/err.h>
+#include <openssl/rand.h>
+#include <openssl/pem.h>
 
-/* Signature Group value
+/* default Signature Group value,
  * defines signature strategy:
- * 
  * 0 one global SG
  * 1 one SG per PRI
  * 2 SGs for PRI ranges
@@ -72,6 +75,9 @@
  * it just has to be big enough to hold big b64 encoded PKIX certificates
  */
 #define SIGN_MAX_PAYLOAD_LENGTH 20480
+
+/* length of generated DSA keys for signing */
+#define SIGN_GENCERT_BITS 1024
 
 #define SSL_CHECK_ONE(exp) do if ((exp) != 1) {                                  \
                        DPRINTF(D_SIGN, #exp " failed in %d: %s\n", __LINE__, \

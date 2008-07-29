@@ -148,11 +148,6 @@ bool match_certfile(const X509 *, const char *);
 
 /* configuration & parsing */
 bool parse_tls_destination(char *, struct filed *);
-bool copy_string(char **, const char *, const char *);
-bool copy_config_value_quoted(const char *, char **, char **);
-bool copy_config_value(const char *, char **, char **, const char *, const int);
-bool copy_config_value_word(char **, char **);
-
 /* event callbacks */
 void dispatch_socket_accept(int, short, void *);
 void dispatch_tls_accept(int, short, void *);

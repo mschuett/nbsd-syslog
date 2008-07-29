@@ -27,7 +27,9 @@
  */
 #ifndef DISABLE_SIGN
 #include "syslogd.h"
+#ifndef DISABLE_TLS
 #include "tls_stuff.h"
+#endif /* !DISABLE_TLS */
 #include "sign.h"
 
 /* definitions in syslogd.c */
@@ -130,13 +132,16 @@ sign_global_init(unsigned alg, struct filed *Files)
 bool
 sign_get_keys()
 {
+#ifndef DISABLE_TLS
         FILE  *keyfile, *certfile;
+#endif /* !DISABLE_TLS */
         EVP_PKEY *pubkey = NULL, *privkey = NULL;
         unsigned char *der_pubkey = NULL, *ptr_der_pubkey = NULL;
         char *pubkey_b64 = NULL;
         int der_len;
         
         /* try PKIX/TLS keys first */
+#ifndef DISABLE_TLS
         if (tls_opt.keyfile && tls_opt.certfile
          && (keyfile = fopen(tls_opt.keyfile, "r"))
          && (certfile = fopen(tls_opt.certfile, "r"))) {
@@ -185,6 +190,7 @@ sign_get_keys()
                 if (!GlobalSign.pubkey_b64)
                         GlobalSign.pubkey_b64 = pubkey_b64;
         }
+#endif /* !DISABLE_TLS */
         if (!(privkey && pubkey)) { /* PKIX not available --> generate key */
                 DSA *dsa;
 
@@ -194,7 +200,7 @@ sign_get_keys()
                         logerror("EVP_PKEY_new() failed");
                         return false;
                 }
-                dsa = DSA_generate_parameters(TLS_GENCERT_BITS, NULL, 0,
+                dsa = DSA_generate_parameters(SIGN_GENCERT_BITS, NULL, 0,
                         NULL, NULL, NULL, NULL);
                 if (!DSA_generate_key(dsa)) {
                         logerror("EVP_PKEY_assign_DSA() failed");

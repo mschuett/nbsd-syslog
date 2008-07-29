@@ -6,7 +6,7 @@
  *
  * Martin Schütte
  */
-
+#ifndef DISABLE_TLS
 #include "syslogd.h"
 #include "tls_stuff.h"
 
@@ -926,81 +926,6 @@ tls_examine_error(const char *functionname, const SSL *ssl, struct tls_conn_sett
 }
 
 
-/* auxillary code to allocate memory and copy a string */
-bool
-copy_string(char **mem, const char *p, const char *q)
-{
-        const size_t len = 1 + q - p;
-        if (!(*mem = malloc(len))) {
-                logerror("Unable to allocate memory for config");
-                return false;
-        }
-        strlcpy(*mem, p, len);
-        return true;
-}
-
-/* keyword has to end with ",  everything until next " is copied */
-bool
-copy_config_value_quoted(const char *keyword, char **mem, char **p)
-{
-        char *q;
-        if (strncasecmp(*p, keyword, strlen(keyword)))
-                return false;
-        q = *p += strlen(keyword);
-        if (!(q = strchr(*p, '"'))) {
-                logerror("unterminated \"\n");
-                return false;
-        }
-        if (!(copy_string(mem, *p, q)))
-                return false;
-        *p = ++q;
-        return true;
-}
-
-/* for config file:
- * following = required but whitespace allowed, quotes optional
- * if numeric, then conversion to integer and no memory allocation 
- */
-bool
-copy_config_value(const char *keyword, char **mem, char **p, const char *file, const int line)
-{
-        if (strncasecmp(*p, keyword, strlen(keyword)))
-                return false;
-        *p += strlen(keyword);
-
-        while (isspace((unsigned char)**p))
-                *p += 1;
-        if (**p != '=') {
-                logerror("expected \"=\" in file %s, line %d", file, line);
-                return false;
-        }
-        *p += 1;
-        
-        return copy_config_value_word(mem, p);
-}
-
-/* copy next parameter from a config line */
-bool
-copy_config_value_word(char **mem, char **p)
-{
-        char *q;
-        while (isspace((unsigned char)**p))
-                *p += 1;
-        if (**p == '"')
-                return copy_config_value_quoted("\"", mem, p);
-
-        /* without quotes: find next whitespace or end of line */
-        (void) ((q = strchr(*p, ' ')) || (q = strchr(*p, '\t'))
-          || (q = strchr(*p, '\n')) || (q = strchr(*p, '\0')));
-
-        if (q-*p == 0
-         || !(copy_string(mem, *p, q)))
-                return false;
-
-        *p = ++q;
-        return true;
-}
-
 bool
 parse_tls_destination(char *p, struct filed *f)
 {
@@ -1885,3 +1810,4 @@ free_tls_send_msg(struct tls_send_msg *msg)
         FREEPTR(msg->line);
         FREEPTR(msg);
 }
+#endif /* !DISABLE_TLS */

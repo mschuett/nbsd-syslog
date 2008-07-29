@@ -218,7 +218,6 @@ void    logerror(const char *, ...);
 void    loginfo(const char *, ...);
 void    logmsg_async(const int, const char *, const char *, const int);
 void    logmsg(struct buf_msg *);
-void    logmsg_f(struct buf_msg*, struct filed*);
 void    log_deadchild(pid_t, int, const char *);
 int     matches_spec(const char *, const char *,
                      char *(*)(const char *, const char *));

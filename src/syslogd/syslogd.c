@@ -218,6 +218,7 @@ void    fprintlog(struct filed *, struct buf_msg *, struct buf_queue *);
 int     getmsgbufsize(void);
 char   *getLocalFQDN(void);
 struct socketEvent* socksetup(int, const char *);
+void    read_config_file(FILE*, struct filed**, int*);
 void    init(int fd, short event, void *ev);  /* SIGHUP kevent dispatch routine */
 void    logerror(const char *, ...);
 void    loginfo(const char *, ...);
@@ -2769,29 +2770,27 @@ die(int fd, short event, void *ev)
 }
 
 /*
- *  INIT -- Initialize syslogd from configuration table
+ * read syslog.conf
  */
 void
-init(int fd, short event, void *ev)
+read_config_file(FILE *cf, struct filed **f_ptr, int *sign_sg_int)
 {
+        unsigned linenum = 0;
         size_t i;
-        FILE *cf;
-        struct filed *f, *newf, **nextp;
-        char *p;
+        struct filed *f, **nextp;
         char cline[LINE_MAX];
         char prog[NAME_MAX + 1];
         char host[MAXHOSTNAMELEN];
-        unsigned int linenum;
+        char *p;
         bool found_keyword;
-#ifndef DISABLE_SIGN
-        char *sign_sg_str = NULL;
-        int sign_sg_int = SIGN_SG;
-#endif /* !DISABLE_SIGN */
 #ifndef DISABLE_TLS
         struct peer_cred *cred = NULL;
         struct peer_cred_head *credhead = NULL;
         char *tmp_buf = NULL;
 #endif /* !DISABLE_TLS */
+#ifndef DISABLE_SIGN
+        char *sign_sg_str = NULL;
+#endif /* !DISABLE_SIGN */
         /* central list of recognized configuration keywords
          * and an address for their values as strings */
         const struct config_keywords {
@@ -2828,6 +2827,211 @@ init(int fd, short event, void *ev)
                 {"sign_sg",               &sign_sg_str},
 #endif /* !DISABLE_SIGN */
         };
+
+        DPRINTF(D_CALL, "read_config_file()\n");
+
+        /* free all previous config options */
+        for (i = 0; i < A_CNT(TypeInfo); i++) {
+                if (TypeInfo[i].queue_length_string
+                 && TypeInfo[i].queue_length_string != TypeInfo[i].default_length_string) {
+                        FREEPTR(TypeInfo[i].queue_length_string);
+                        TypeInfo[i].queue_length_string = strdup(TypeInfo[i].default_length_string);
+                 }
+                if (TypeInfo[i].queue_size_string
+                 && TypeInfo[i].queue_size_string != TypeInfo[i].default_size_string) {
+                        FREEPTR(TypeInfo[i].queue_size_string);
+                        TypeInfo[i].queue_size_string = strdup(TypeInfo[i].default_size_string);
+                 }
+        }
+        for (i = 0; i < A_CNT(config_keywords); i++)
+                FREEPTR(*config_keywords[i].variable);
+
+        /* 
+         * global settings
+         */
+        while (fgets(cline, sizeof(cline), cf) != NULL) {
+                linenum++;
+                for (p = cline; isspace((unsigned char)*p); ++p)
+                        continue;
+                if ((*p == '\0') || (*p == '#'))
+                        continue;
+
+                for (i = 0; i < A_CNT(config_keywords); i++) {
+                        if (copy_config_value(config_keywords[i].keyword,
+                                                config_keywords[i].variable,
+                                                &p, ConfFile, linenum)) {
+                                DPRINTF((D_PARSE|D_MEM), "found option %s, saved @%p\n", config_keywords[i].keyword, *config_keywords[i].variable);
+#ifndef DISABLE_TLS
+                                /* special cases with multiple parameters */
+                                if (!strcmp("tls_allow_fingerprints", config_keywords[i].keyword))
+                                        credhead = &tls_opt.fprint_head;
+                                else if (!strcmp("tls_allow_clientcerts", config_keywords[i].keyword))
+                                        credhead = &tls_opt.cert_head;
+
+                                if (credhead) do {
+                                        if(!(cred = malloc(sizeof(*cred)))) {
+                                                logerror("Unable to allocate memory");
+                                                break;
+                                        }
+                                        cred->data = tmp_buf;
+                                        tmp_buf = NULL;
+                                        SLIST_INSERT_HEAD(credhead, cred, entries);
+                                } while /* additional values? */ (copy_config_value_word(&tmp_buf, &p));
+                                credhead = NULL;
+                                break;
+#endif /* !DISABLE_TLS */
+                        }
+                }
+        }
+        /* convert strings to integer values */
+        if (global_memory_limit.configstring
+         && !dehumanize_number(global_memory_limit.configstring, &global_memory_limit.numeric)) {
+                if (setrlimit(RLIMIT_DATA,
+                        &((struct rlimit) {global_memory_limit.numeric, global_memory_limit.numeric})) == -1)
+                        logerror("Unable to setrlimit()");
+        }
+        for (i = 0; i < A_CNT(TypeInfo); i++) {
+                if (!TypeInfo[i].queue_length_string
+                 || dehumanize_number(TypeInfo[i].queue_length_string, &TypeInfo[i].queue_length) == -1)
+                        TypeInfo[i].queue_length = strtol(TypeInfo[i].default_length_string, NULL, 10);
+                if (!TypeInfo[i].queue_size_string
+                 || dehumanize_number(TypeInfo[i].queue_size_string, &TypeInfo[i].queue_size) == -1)
+                        TypeInfo[i].queue_size = strtol(TypeInfo[i].default_size_string, NULL, 10);
+        }
+#ifndef DISABLE_TLS
+        /* either convert or set default values */
+        if (!tls_opt.reconnect_interval_str
+         || dehumanize_number(tls_opt.reconnect_interval_str, &tls_opt.reconnect_interval)) {
+                tls_opt.reconnect_interval = TLS_RECONNECT_SEC;
+        }
+        if (!tls_opt.reconnect_giveup_str
+         || dehumanize_number(tls_opt.reconnect_giveup_str, &tls_opt.reconnect_giveup)) {
+                tls_opt.reconnect_giveup = RECONNECT_GIVEUP;
+        }
+#endif /* !DISABLE_TLS */
+#ifndef DISABLE_SIGN
+        if (sign_sg_str) {
+                if (sign_sg_str[1] == '\0'
+                 && (sign_sg_str[0] == '0' || sign_sg_str[0] == '1'
+                  || /* sign_sg_str[0] == '2' || */ sign_sg_str[0] == '3'))
+                        *sign_sg_int = sign_sg_str[0] - '0';
+                else {
+                        *sign_sg_int = SIGN_SG;
+                        DPRINTF(D_MISC, "Invalid sign_sg value `%s', "
+                                "use default value `%d'\n",
+                                sign_sg_str, *sign_sg_int);
+                }
+        } else
+                *sign_sg_int = SIGN_SG;
+#endif /* !DISABLE_SIGN */
+
+        rewind(cf);
+        linenum = 0;
+        /*
+         *  Foreach line in the conf table, open that file.
+         */
+        f = NULL;
+        nextp = &f;
+
+        strcpy(prog, "*");
+        strcpy(host, "*");
+        while (fgets(cline, sizeof(cline), cf) != NULL) {
+                linenum++;
+                found_keyword = false;
+                /*
+                 * check for end-of-section, comments, strip off trailing
+                 * spaces and newline character.  #!prog is treated specially:
+                 * following lines apply only to that program.
+                 */
+                for (p = cline; isspace((unsigned char)*p); ++p)
+                        continue;
+                if (*p == '\0')
+                        continue;
+                if (*p == '#') {
+                        p++;
+                        if (*p != '!' && *p != '+' && *p != '-')
+                                continue;
+                }
+
+                for (i = 0; i < A_CNT(config_keywords); i++) {
+                        if (!strncasecmp(p, config_keywords[i].keyword, strlen(config_keywords[i].keyword))) {
+                                DPRINTF(D_PARSE, "skip cline %d with keyword %s\n", linenum, config_keywords[i].keyword);
+                                found_keyword = true;
+                        }
+                }
+                if (found_keyword)
+                        continue;
+
+                if (*p == '+' || *p == '-') {
+                        host[0] = *p++;
+                        while (isspace((unsigned char)*p))
+                                p++;
+                        if (*p == '\0' || *p == '*') {
+                                strcpy(host, "*");
+                                continue;
+                        }
+                        /* the +hostname expression will continue
+                         * to use the LocalHostName, not the FQDN */
+                        for (i = 1; i < MAXHOSTNAMELEN - 1; i++) {
+                                if (*p == '@') {
+                                        (void)strncpy(&host[i], LocalHostName,
+                                            sizeof(host) - 1 - i);
+                                        host[sizeof(host) - 1] = '\0';
+                                        i = strlen(host) - 1;
+                                        p++;
+                                        continue;
+                                }
+                                if (!isalnum((unsigned char)*p) &&
+                                    *p != '.' && *p != '-' && *p != ',')
+                                        break;
+                                host[i] = *p++;
+                        }
+                        host[i] = '\0';
+                        continue;
+                }
+                if (*p == '!') {
+                        p++;
+                        while (isspace((unsigned char)*p))
+                                p++;
+                        if (*p == '\0' || *p == '*') {
+                                strcpy(prog, "*");
+                                continue;
+                        }
+                        for (i = 0; i < NAME_MAX; i++) {
+                                if (!isprint((unsigned char)p[i]))
+                                        break;
+                                prog[i] = p[i];
+                        }
+                        prog[i] = '\0';
+                        continue;
+                }
+                for (p = strchr(cline, '\0'); isspace((unsigned char)*--p);)
+                        continue;
+                *++p = '\0';
+                f = (struct filed *)calloc(1, sizeof(*f));
+                if (!*f_ptr) *f_ptr = f; /* return first node */
+                *nextp = f;
+                nextp = &f->f_next;
+                cfline(linenum, cline, f, prog, host);
+        }
+}
+
+/*
+ *  INIT -- Initialize syslogd from configuration table
+ */
+void
+init(int fd, short event, void *ev)
+{
+        FILE *cf;
+        size_t i;
+        struct filed *f, *newf, **nextp;
+        char *p;
+#ifndef DISABLE_TLS
+        struct peer_cred *cred = NULL;
+#endif /* !DISABLE_TLS */
+#ifndef DISABLE_SIGN
+        int sign_sg_int;
+#endif /* !DISABLE_SIGN */
 
         DPRINTF((D_EVENT|D_CALL), "init\n");
 
@@ -2904,9 +3108,6 @@ init(int fd, short event, void *ev)
 #endif /* !DISABLE_TLS */
                 }
         }
-        /* new destination list to replace Files */
-        newf = NULL;
-        nextp = &newf;
 
         /*
          *  Close all open UDP sockets
@@ -2931,8 +3132,13 @@ init(int fd, short event, void *ev)
 
         NumForwards=0;
         
+        /* new destination list to replace Files */
+        newf = NULL;
+        nextp = &newf;
+
         /* open the configuration file */
         if ((cf = fopen(ConfFile, "r")) == NULL) {
+                struct filed **nextp = &newf;
                 DPRINTF(D_FILE, "Cannot open `%s'\n", ConfFile);
                 *nextp = (struct filed *)calloc(1, sizeof(*f));
                 cfline(0, "*.ERR\t/dev/console", *nextp, "*", "*");
@@ -2941,23 +3147,6 @@ init(int fd, short event, void *ev)
                 Initialized = 1;
                 return;
         }
-        linenum = 0;
-
-        /* free all previous config options */
-        for (i = 0; i < A_CNT(TypeInfo); i++) {
-                if (TypeInfo[i].queue_length_string
-                 && TypeInfo[i].queue_length_string != TypeInfo[i].default_length_string) {
-                        FREEPTR(TypeInfo[i].queue_length_string);
-                        TypeInfo[i].queue_length_string = strdup(TypeInfo[i].default_length_string);
-                 }
-                if (TypeInfo[i].queue_size_string
-                 && TypeInfo[i].queue_size_string != TypeInfo[i].default_size_string) {
-                        FREEPTR(TypeInfo[i].queue_size_string);
-                        TypeInfo[i].queue_size_string = strdup(TypeInfo[i].default_size_string);
-                 }
-        }
-        for (i = 0; i < A_CNT(config_keywords); i++)
-                FREEPTR(*config_keywords[i].variable);
 
 #ifndef DISABLE_TLS
         /* init with new TLS_CTX
@@ -2968,176 +3157,13 @@ init(int fd, short event, void *ev)
         free_cred_SLIST(&tls_opt.cert_head);
         free_cred_SLIST(&tls_opt.fprint_head);
 #endif /* !DISABLE_TLS */
-        /* 
-         * global settings
-         * I introduced a second parsing loop, because I do not want
-         * errors caused by exotic line ordering.
-         */
-        while (fgets(cline, sizeof(cline), cf) != NULL) {
-                linenum++;
-                for (p = cline; isspace((unsigned char)*p); ++p)
-                        continue;
-                if ((*p == '\0') || (*p == '#'))
-                        continue;
 
-                for (i = 0; i < A_CNT(config_keywords); i++) {
-                        if (copy_config_value(config_keywords[i].keyword,
-                                                config_keywords[i].variable,
-                                                &p, ConfFile, linenum)) {
-                                DPRINTF((D_PARSE|D_MEM), "found option %s, saved @%p\n", config_keywords[i].keyword, *config_keywords[i].variable);
-#ifndef DISABLE_TLS
-                                /* special cases with multiple parameters */
-                                if (!strcmp("tls_allow_fingerprints", config_keywords[i].keyword))
-                                        credhead = &tls_opt.fprint_head;
-                                else if (!strcmp("tls_allow_clientcerts", config_keywords[i].keyword))
-                                        credhead = &tls_opt.cert_head;
-
-                                if (credhead) do {
-                                        if(!(cred = malloc(sizeof(*cred)))) {
-                                                logerror("Unable to allocate memory");
-                                                break;
-                                        }
-                                        cred->data = tmp_buf;
-                                        tmp_buf = NULL;
-                                        SLIST_INSERT_HEAD(credhead, cred, entries);
-                                } while /* additional values? */ (copy_config_value_word(&tmp_buf, &p));
-                                credhead = NULL;
-                                break;
-#endif /* !DISABLE_TLS */
-                        }
-                }
-        }
-        /* convert strings to integer values */
-        if (global_memory_limit.configstring
-         && !dehumanize_number(global_memory_limit.configstring, &global_memory_limit.numeric)) {
-                if (setrlimit(RLIMIT_DATA,
-                        &((struct rlimit) {global_memory_limit.numeric, global_memory_limit.numeric})) == -1)
-                        logerror("Unable to setrlimit()");
-        }
-        for (i = 0; i < A_CNT(TypeInfo); i++) {
-                if (!TypeInfo[i].queue_length_string
-                 || dehumanize_number(TypeInfo[i].queue_length_string, &TypeInfo[i].queue_length) == -1)
-                        TypeInfo[i].queue_length = strtol(TypeInfo[i].default_length_string, NULL, 10);
-                if (!TypeInfo[i].queue_size_string
-                 || dehumanize_number(TypeInfo[i].queue_size_string, &TypeInfo[i].queue_size) == -1)
-                        TypeInfo[i].queue_size = strtol(TypeInfo[i].default_size_string, NULL, 10);
-        }
-#ifndef DISABLE_TLS
-        /* either convert or set default values */
-        if (!tls_opt.reconnect_interval_str
-         || dehumanize_number(tls_opt.reconnect_interval_str, &tls_opt.reconnect_interval)) {
-                tls_opt.reconnect_interval = TLS_RECONNECT_SEC;
-        }
-        if (!tls_opt.reconnect_giveup_str
-         || dehumanize_number(tls_opt.reconnect_giveup_str, &tls_opt.reconnect_giveup)) {
-                tls_opt.reconnect_giveup = RECONNECT_GIVEUP;
-        }
-#endif /* !DISABLE_TLS */
-#ifndef DISABLE_SIGN
-        if (sign_sg_str) {
-                if (sign_sg_str[1] == '\0'
-                 && (sign_sg_str[0] == '0' || sign_sg_str[0] == '1'
-                  || /* sign_sg_str[0] == '2' || */ sign_sg_str[0] == '3'))
-                        sign_sg_int = sign_sg_str[0] - '0';
-                else {
-                        sign_sg_int = SIGN_SG;
-                        DPRINTF(D_MISC, "Invalid sign_sg value `%s', "
-                                "use default value `%d'\n",
-                                sign_sg_str, sign_sg_int);
-                }
-        }
-#endif /* !DISABLE_SIGN */
-
-        rewind(cf);
-        linenum = 0;
-
-        /*
-         *  Foreach line in the conf table, open that file.
-         */
-        f = NULL;
-        strcpy(prog, "*");
-        strcpy(host, "*");
-        while (fgets(cline, sizeof(cline), cf) != NULL) {
-                linenum++;
-                found_keyword = false;
-                /*
-                 * check for end-of-section, comments, strip off trailing
-                 * spaces and newline character.  #!prog is treated specially:
-                 * following lines apply only to that program.
-                 */
-                for (p = cline; isspace((unsigned char)*p); ++p)
-                        continue;
-                if (*p == '\0')
-                        continue;
-                if (*p == '#') {
-                        p++;
-                        if (*p != '!' && *p != '+' && *p != '-')
-                                continue;
-                }
-
-                for (i = 0; i < A_CNT(config_keywords); i++) {
-                        if (!strncasecmp(p, config_keywords[i].keyword, strlen(config_keywords[i].keyword))) {
-                                DPRINTF(D_PARSE, "skip cline %d with keyword %s\n", linenum, config_keywords[i].keyword);
-                                found_keyword = true;
-                        }
-                }
-                if (found_keyword)
-                        continue;
-
-                if (*p == '+' || *p == '-') {
-                        host[0] = *p++;
-                        while (isspace((unsigned char)*p))
-                                p++;
-                        if (*p == '\0' || *p == '*') {
-                                strcpy(host, "*");
-                                continue;
-                        }
-                        /* the +hostname expression will continue
-                         * to use the LocalHostName, not the FQDN */
-                        for (i = 1; i < MAXHOSTNAMELEN - 1; i++) {
-                                if (*p == '@') {
-                                        (void)strncpy(&host[i], LocalHostName,
-                                            sizeof(host) - 1 - i);
-                                        host[sizeof(host) - 1] = '\0';
-                                        i = strlen(host) - 1;
-                                        p++;
-                                        continue;
-                                }
-                                if (!isalnum((unsigned char)*p) &&
-                                    *p != '.' && *p != '-' && *p != ',')
-                                        break;
-                                host[i] = *p++;
-                        }
-                        host[i] = '\0';
-                        continue;
-                }
-                if (*p == '!') {
-                        p++;
-                        while (isspace((unsigned char)*p))
-                                p++;
-                        if (*p == '\0' || *p == '*') {
-                                strcpy(prog, "*");
-                                continue;
-                        }
-                        for (i = 0; i < NAME_MAX; i++) {
-                                if (!isprint((unsigned char)p[i]))
-                                        break;
-                                prog[i] = p[i];
-                        }
-                        prog[i] = '\0';
-                        continue;
-                }
-                for (p = strchr(cline, '\0'); isspace((unsigned char)*--p);)
-                        continue;
-                *++p = '\0';
-                f = (struct filed *)calloc(1, sizeof(*newf));
-                *nextp = f;
-                nextp = &f->f_next;
-                cfline(linenum, cline, f, prog, host);
-        }
-
-        /* close the configuration file */
+        /* read and close configuration file */
+        read_config_file(cf, &newf, &sign_sg_int);
+        newf = *nextp;
         (void)fclose(cf);
+        DPRINTF(D_MISC, "read_config_file() returned newf=%p and "
+                "sign_sg_int=%d\n", newf, sign_sg_int);
         
 #define MOVE_QUEUE(x, y) do {   (void)memcpy(&y->f_qhead, &x->f_qhead,  \
                                                 sizeof(x->f_qhead));    \

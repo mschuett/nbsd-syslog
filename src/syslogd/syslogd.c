@@ -1896,7 +1896,7 @@ format_buffer(struct buf_msg *buffer, char **line, size_t *ptr_linelen,
                              (buffer->msg ? buffer->msg: ""));
         /* add space for length prefix */
         tlsprefixlen = 0;
-        for (int j = msglen+1; j; j /= 10)
+        for (int j = msglen; j; j /= 10)
                 tlsprefixlen++;
         /* one more for the space */
         tlsprefixlen++;
@@ -1972,6 +1972,24 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
                 NEWREF(buffer);
         } else {
                 if (f->f_prevcount > 1) {
+                        /* possible syslog-sign incompatibility:
+                         * assume destinations f1 and f2 share one SG and
+                         * get the same message sequence.
+                         * 
+                         * now both f1 and f2 generate "repeated" messages
+                         * "repeated" messages are different due to different
+                         * timestamps
+                         * the SG will get hashes for the two "repeated" messages
+                         * 
+                         * now both f1 and f2 are just fine, but a verification
+                         * will report that each 'lost' a message, i.e. the
+                         * other's "repeated" message
+                         * 
+                         * conditions for 'safe configurations':
+                         * - use NoRepeat option,
+                         * - use SG 3, or
+                         * - have exactly one destination for every PRI
+                         */
                         buffer = buf_msg_new(REPBUFSIZE);
                         buffer->msglen = snprintf(buffer->msg, REPBUFSIZE,
                             "last message repeated %d times", f->f_prevcount);

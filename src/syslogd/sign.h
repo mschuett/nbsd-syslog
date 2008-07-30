@@ -21,7 +21,7 @@
  * 
  * We use '3' and assign one SG to every destination (=struct filed)
  */
-#define SIGN_SG 1
+#define SIGN_SG 3
 
 /* maximum value for several counters in -sign */
 #define SIGN_MAX_COUNT  9999999999
@@ -45,7 +45,7 @@
  *   * ...
  *   * the n-th hashcount/n hashes are sent for the n-th time and deleted thereafter
  */ 
-#define SIGN_RESENDCOUNT_CERTBLOCK  3
+#define SIGN_RESENDCOUNT_CERTBLOCK  1
 #define SIGN_RESENDCOUNT_HASHES     3
 
 /* maximum length of syslog-sign messages */
@@ -54,9 +54,9 @@
 //#define SIGN_MAX_LENGTH 512
 /* the length we can use for the SD and keep the
  * message length with header below 2048 octets */
-#define SIGN_MAX_SD_LENGTH (SIGN_MAX_LENGTH - 100)
+#define SIGN_MAX_SD_LENGTH (SIGN_MAX_LENGTH - 1 - HEADER_LEN_MAX)
 /* the maximum length of one payload fragment:
- * max.SD len - text - max. field lens - sig len */
+ * max.SD len - text - max. field lengths - sig len */
 #define SIGN_MAX_FRAG_LENGTH (SIGN_MAX_SD_LENGTH - 82 - 38 - GlobalSign.sig_len_b64)
 /* the maximum length of one signature block:
  * max.SD len - text - max. field lens - sig len */

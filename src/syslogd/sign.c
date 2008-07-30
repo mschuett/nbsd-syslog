@@ -377,11 +377,15 @@ sign_send_certificate_block(struct signature_group_t *sg)
         char *timestamp;
         char payload[SIGN_MAX_PAYLOAD_LENGTH];
         char sd[SIGN_MAX_SD_LENGTH];
-        int omask;
+        int omask, tmpcnt;
         size_t payload_len, sd_len, fragment_len;
         size_t payload_index = 0;
 
-        if (!sg->resendcount) return false;
+        /* do nothing if CBs already sent or if there was no message in SG */
+        if (!sg->resendcount
+         || ((sg->resendcount == SIGN_RESENDCOUNT_CERTBLOCK)
+             && TAILQ_EMPTY(&sg->hashes)))
+                return false;
 
         DPRINTF((D_CALL|D_SIGN), "sign_send_certificate_block(%p)\n", sg);
         timestamp = make_timestamp(NULL, true);
@@ -420,7 +424,10 @@ sign_send_certificate_block(struct signature_group_t *sg)
 
                 omask = sigblock(sigmask(SIGHUP)|sigmask(SIGALRM));
                 TAILQ_FOREACH(fq, &sg->files, entries) {
+                        /* we have to preserve the f_prevcount */
+                        tmpcnt = fq->f->f_prevcount;
                         fprintlog(fq->f, buffer, NULL);
+                        fq->f->f_prevcount = tmpcnt;
                 }
                 sign_inc_gbc();
                 DELREF(buffer);
@@ -470,7 +477,7 @@ sign_send_signature_block(struct signature_group_t *sg, bool force)
 {
         char sd[SIGN_MAX_SD_LENGTH];
         size_t sd_len;
-        int omask;
+        int omask, tmpcnt;
         unsigned sg_num_hashes = 0;     /* hashes in SG queue */
         unsigned hashes_in_sb = 0;      /* number of hashes to send in current SB */
         unsigned hashes_sent = 0;       /* count of hashes sent */
@@ -489,8 +496,7 @@ sign_send_signature_block(struct signature_group_t *sg, bool force)
         if (!sg_num_hashes || (!force && (sg_num_hashes % SIGN_HASH_DIVISION_NUM)))
                 return 0;
 
-        /* if no CB sent so far then do now, just before SB
-         * useful for SG 1 and 2 where some SPRIs are seldom used */
+        /* if no CB sent so far then do now, just before first SB */
         if (sg->resendcount == SIGN_RESENDCOUNT_CERTBLOCK)
                 sign_send_certificate_block(sg);
         
@@ -537,7 +543,9 @@ sign_send_signature_block(struct signature_group_t *sg, bool force)
 
         omask = sigblock(sigmask(SIGHUP)|sigmask(SIGALRM));
         TAILQ_FOREACH(fq, &sg->files, entries) {
+                tmpcnt = fq->f->f_prevcount;
                 fprintlog(fq->f, buffer, NULL);
+                fq->f->f_prevcount = tmpcnt;
         }
         sign_inc_gbc();
         DELREF(buffer);
@@ -600,20 +608,23 @@ sign_msg_hash(char *line, char **hash)
 bool
 sign_append_hash(char *hash, struct signature_group_t *sg)
 {
-        DPRINTF((D_CALL|D_SIGN), "sign_append_hash('%s', %p)\n",
-                hash, sg);
         struct string_queue *qentry;
 
         /* if one SG is shared by several destinations
          * prevent duplicate entries */
         if ((qentry = TAILQ_LAST(&sg->hashes, string_queue_head))
-          && !strcmp(qentry->data, hash))
+          && !strcmp(qentry->data, hash)) {
+                DPRINTF((D_CALL|D_SIGN), "sign_append_hash('%s', %p): "
+                        "hash already in queue\n", hash, sg);
                 return false;
+        }
 
         MALLOC(qentry, sizeof(*qentry));
         qentry->key = sign_assign_msg_num(sg);
         qentry->data = hash;
         TAILQ_INSERT_TAIL(&sg->hashes, qentry, entries);
+        DPRINTF((D_CALL|D_SIGN), "sign_append_hash('%s', %p): "
+                "#%lld\n", hash, sg, qentry->key);
         return true;
 }
 
@@ -630,7 +641,7 @@ bool
 sign_msg_sign(struct buf_msg **bufferptr, char *sd, size_t linesize)
 {
         char *signature, *line;
-        size_t linelen, tlsprefixlen, endptr;
+        size_t linelen, tlsprefixlen, endptr, newlinelen;
         struct buf_msg *buffer;
 
         DPRINTF((D_CALL|D_SIGN), "sign_msg_sign()\n");
@@ -655,13 +666,29 @@ sign_msg_sign(struct buf_msg **bufferptr, char *sd, size_t linesize)
                 &tlsprefixlen, NULL)) {
                 DPRINTF((D_CALL|D_SIGN), "sign_send_signature_block():"
                         " format_buffer() failed\n");
+                buffer->sd = NULL;
+                DELREF(buffer);
                 return false;
         }
         sign_string_sign(line+tlsprefixlen, &signature);
 
         sd[endptr-2] = '\0';
-        strlcat(sd, signature, linesize);
-        strlcat(sd, "\"]", linesize);
+        newlinelen = strlcat(sd, signature, linesize);
+        newlinelen = strlcat(sd, "\"]", linesize);
+        
+        if (newlinelen >= linesize) {
+                DPRINTF(D_SIGN, "sign_send_signature_block(): buffer too small\n");
+                buffer->sd = NULL;
+                DELREF(buffer);
+                return false;
+        }
+        assert(newlinelen < linesize);
+        DPRINTF(D_SIGN, "sign_send_signature_block(): endptr=%d, linesize=%d, newlinelen=%d, %s\n", endptr, linesize, newlinelen, sd);
+        
+        assert(sd[newlinelen] == '\0');
+        assert(sd[newlinelen-1] == ']');
+        assert(sd[newlinelen-2] == '"');
+
         buffer->sd = strdup(sd);
         *bufferptr = buffer;
         return true;
@@ -732,9 +759,6 @@ sign_new_reboot_session()
         TAILQ_FOREACH(sg, &GlobalSign.SigGroups, entries) {
                 sg->resendcount = SIGN_RESENDCOUNT_CERTBLOCK;
                 sg->last_msg_num = 1;
-                /* if only few SGs then send first CBs immediately */
-                if (GlobalSign.sg == 0 || GlobalSign.sg == 3)
-                        sign_send_certificate_block(sg);
         }
 }
 

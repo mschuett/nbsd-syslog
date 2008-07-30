@@ -136,7 +136,8 @@ char *strndup(const char *str, size_t n);
 #define D_MEM2  1024    /* every single malloc/free */
 #define D_SIGN  2048    /* -sign */
 #define D_MISC  4096    /* everything else */
-#define D_ALL   (D_CALL | D_DATA | D_NET | D_FILE | D_TLS | D_EVENT | D_BUFFER | D_SIGN | D_MISC | D_MEM2 | D_MEM) 
+//#define D_ALL   (D_CALL | D_DATA | D_NET | D_FILE | D_TLS | D_EVENT | D_BUFFER | D_SIGN | D_MISC) 
+#define D_ALL   (D_CALL | D_NET | D_FILE | D_EVENT | D_SIGN | D_MISC) 
 
 /* remove first printf for short debug messages */
 #define DPRINTF(x, ...) ((Debug & x) \
@@ -208,11 +209,14 @@ char *strndup(const char *str, size_t n);
 #define MAX_TIMESTAMPLEN    31+1
 
 /* maximum field lengths in syslog-protocol */
+#define PRI_MAX       5
 #define HOST_MAX    255
 #define APPNAME_MAX  48
 #define PROCID_MAX  128
 #define MSGID_MAX    32
-
+/* longest possible header length */
+#define HEADER_LEN_MAX (PRI_MAX + 1 + 1 + MAX_TIMESTAMPLEN + 1 + HOST_MAX \
+                        + 1 + APPNAME_MAX + 1 + PROCID_MAX + 1 + MSGID_MAX)
 /*
  * Flags to logmsg().
  */

@@ -71,6 +71,7 @@ sign_global_init(unsigned alg, struct filed *Files)
 
         assert(GlobalSign.keytype == 'C' || GlobalSign.keytype == 'K');
         assert(GlobalSign.pubkey_b64 && GlobalSign.privkey && GlobalSign.pubkey);
+        assert(GlobalSign.privkey->pkey.dsa->priv_key);
 
         GlobalSign.sg = alg;
         GlobalSign.gbc = 0;
@@ -115,6 +116,11 @@ sign_global_init(unsigned alg, struct filed *Files)
                 return false;
         sign_new_reboot_session();
         
+        DPRINTF(D_SIGN, "length values: SIGN_MAX_SD_LENGTH %d, "
+                "SIGN_MAX_FRAG_LENGTH %d, SIGN_MAX_SB_LENGTH %d, "
+                "SIGN_MAX_HASH_NUM %d\n", SIGN_MAX_SD_LENGTH,
+                SIGN_MAX_FRAG_LENGTH, SIGN_MAX_SB_LENGTH, SIGN_MAX_HASH_NUM);
+
         /* set just before return, so it indicates initialization */
         GlobalSign.rsid = now;
         return true;
@@ -139,6 +145,7 @@ sign_get_keys()
         unsigned char *der_pubkey = NULL, *ptr_der_pubkey = NULL;
         char *pubkey_b64 = NULL;
         int der_len;
+        errno = 0;
         
         /* try PKIX/TLS keys first */
 #ifndef DISABLE_TLS
@@ -147,6 +154,7 @@ sign_get_keys()
          && (certfile = fopen(tls_opt.certfile, "r"))) {
                 X509 *cert;
                 
+                DPRINTF(D_SIGN, "Try to get keys from X.509 ...\n");
                 cert = PEM_read_X509(certfile, NULL, NULL, 0);
                 (void)fclose(certfile);
                 PEM_read_PrivateKey(keyfile, &privkey, NULL, 0);
@@ -203,7 +211,7 @@ sign_get_keys()
                 dsa = DSA_generate_parameters(SIGN_GENCERT_BITS, NULL, 0,
                         NULL, NULL, NULL, NULL);
                 if (!DSA_generate_key(dsa)) {
-                        logerror("EVP_PKEY_assign_DSA() failed");
+                        logerror("DSA_generate_key() failed");
                         return false;
                 }
                 if (!EVP_PKEY_assign_DSA(privkey, dsa)) {
@@ -212,18 +220,18 @@ sign_get_keys()
                 }
                 GlobalSign.keytype = 'K';  /* public/private keys used */
                 GlobalSign.privkey = privkey;
-                GlobalSign.pubkey = pubkey;
+                GlobalSign.pubkey = privkey;
 
                 /* pubkey base64 encoding */
-                der_len = i2d_PUBKEY(pubkey, NULL);
+                der_len = i2d_DSA_PUBKEY(dsa, NULL);
                 if (!(ptr_der_pubkey = der_pubkey = malloc(der_len))
                  || !(pubkey_b64 = malloc(der_len*2))) {
                         free(der_pubkey);
                         logerror("malloc() failed");
                         return false;
                 }
-                if (i2d_PUBKEY(pubkey, &ptr_der_pubkey) <= 0) {
-                        logerror("i2d_PUBKEY() failed");
+                if (i2d_DSA_PUBKEY(dsa, &ptr_der_pubkey) <= 0) {
+                        logerror("i2d_DSA_PUBKEY() failed");
                         return false;
                 }
                 b64_ntop(der_pubkey, der_len, pubkey_b64, der_len*2);
@@ -345,11 +353,6 @@ sign_global_free()
         if (!GlobalSign.rsid)  /* never initialized */
                 return;
 
-        FREEPTR(GlobalSign.pubkey);
-        FREEPTR(GlobalSign.pubkey_b64);
-        FREEPTR(GlobalSign.privkey);
-        if(GlobalSign.mdctx) EVP_MD_CTX_destroy(GlobalSign.mdctx);        
-
         TAILQ_FOREACH_SAFE(sg, &GlobalSign.SigGroups, entries, tmp_sg) {
                 if (!TAILQ_EMPTY(&sg->hashes)) {
                         sign_send_signature_block(sg, true);
@@ -364,6 +367,14 @@ sign_global_free()
                 TAILQ_REMOVE(&GlobalSign.SigGroups, sg, entries);
                 free(sg);
         }
+        if (GlobalSign.pubkey != GlobalSign.privkey)
+                FREEPTR(GlobalSign.pubkey);
+        FREEPTR(GlobalSign.privkey);
+        FREEPTR(GlobalSign.pubkey_b64);
+        if(GlobalSign.mdctx)
+                EVP_MD_CTX_destroy(GlobalSign.mdctx);
+        if(GlobalSign.sigctx)
+                EVP_MD_CTX_destroy(GlobalSign.sigctx);
 }
 
 /*
@@ -506,11 +517,10 @@ sign_send_signature_block(struct signature_group_t *sg, bool force)
         DPRINTF(D_SIGN, "sign_send_signature_block(): "
                 "sg_num_hashes = %d, hashes_in_sb = %d, SIGN_HASH_NUM = %d\n",
                 sg_num_hashes, hashes_in_sb, SIGN_HASH_NUM);
-        if (sg_num_hashes > SIGN_HASH_NUM)
+        if (sg_num_hashes > SIGN_HASH_NUM) {
                 DPRINTF(D_SIGN, "sign_send_signature_block(): sg_num_hashes"
                         " > SIGN_HASH_NUM -- This should not happen!\n");
-
-        //[ssign VER="" RSID="" SG="" SPRI="" GBC="" FMN="" CNT="" HB="" SIGN=""]
+        }
 
         /* now the SD */
         qentry = TAILQ_FIRST(&sg->hashes);
@@ -535,22 +545,22 @@ sign_send_signature_block(struct signature_group_t *sg, bool force)
         sd[sd_len-1] = '\0';
         sd_len = strlcat(sd, "\" SIGN=\"\"]", sizeof(sd));
 
-        if (!sign_msg_sign(&buffer, sd, sizeof(sd)))
-                return 0;
-        DPRINTF((D_CALL|D_SIGN), "sign_send_signature_block(): calling"
-                " fprintlog(), sending %d out of %d hashes\n",
-                MIN(SIGN_MAX_HASH_NUM, sg_num_hashes), sg_num_hashes);
-
-        omask = sigblock(sigmask(SIGHUP)|sigmask(SIGALRM));
-        TAILQ_FOREACH(fq, &sg->files, entries) {
-                tmpcnt = fq->f->f_prevcount;
-                fprintlog(fq->f, buffer, NULL);
-                fq->f->f_prevcount = tmpcnt;
+        if (sign_msg_sign(&buffer, sd, sizeof(sd))) {
+                DPRINTF((D_CALL|D_SIGN), "sign_send_signature_block(): calling"
+                        " fprintlog(), sending %d out of %d hashes\n",
+                        MIN(SIGN_MAX_HASH_NUM, sg_num_hashes), sg_num_hashes);
+        
+                omask = sigblock(sigmask(SIGHUP)|sigmask(SIGALRM));
+                TAILQ_FOREACH(fq, &sg->files, entries) {
+                        tmpcnt = fq->f->f_prevcount;
+                        fprintlog(fq->f, buffer, NULL);
+                        fq->f->f_prevcount = tmpcnt;
+                }
+                sign_inc_gbc();
+                DELREF(buffer);
+                (void)sigsetmask(omask);
         }
-        sign_inc_gbc();
-        DELREF(buffer);
-
-        /* finally drop the oldest division of hashes */
+        /* always drop the oldest division of hashes */
         if (sg_num_hashes >= SIGN_HASH_NUM) {
                 qentry = TAILQ_FIRST(&sg->hashes);
                 for (int i = 0; i < SIGN_HASH_DIVISION_NUM; i++) {
@@ -561,7 +571,6 @@ sign_send_signature_block(struct signature_group_t *sg, bool force)
                         FREEPTR(old_qentry);
                 }
         }
-        (void)sigsetmask(omask);
         return hashes_sent;
 }
 
@@ -731,7 +740,9 @@ sign_string_sign(char *line, char **signature)
 
         SSL_CHECK_ONE(EVP_SignInit(GlobalSign.sigctx, GlobalSign.sig));
         SSL_CHECK_ONE(EVP_SignUpdate(GlobalSign.sigctx, buf, q-buf));
-        SSL_CHECK_ONE(EVP_DigestFinal_ex(GlobalSign.sigctx, sig_value, &sig_len));
+        assert(GlobalSign.privkey);
+        assert(EVP_MAX_MD_SIZE > EVP_PKEY_size(GlobalSign.privkey));
+        SSL_CHECK_ONE(EVP_SignFinal(GlobalSign.sigctx, sig_value, &sig_len, GlobalSign.privkey));
         
         b64_ntop(sig_value, sig_len, (char *)sig_b64, EVP_MAX_MD_SIZE*2);
         *signature = strdup((char *)sig_b64);

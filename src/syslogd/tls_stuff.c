@@ -1717,7 +1717,7 @@ mk_x509_cert(X509 **x509p, EVP_PKEY **pkeyp, int bits, int serial, int days)
 {
     X509           *x;
     EVP_PKEY       *pk;
-    RSA            *rsa;
+    DSA            *dsa;
     X509_NAME      *name = NULL;
     X509_EXTENSION *ex = NULL;
     char *hostname = LocalFQDN;
@@ -1740,18 +1740,27 @@ mk_x509_cert(X509 **x509p, EVP_PKEY **pkeyp, int bits, int serial, int days)
     } else
         x = *x509p;
 
-    rsa = RSA_generate_key(bits, RSA_F4, NULL, NULL);
-    if (!EVP_PKEY_assign_RSA(pk, rsa)) {
-        printf("EVP_PKEY_assign_RSA() failed\n");
+    dsa = DSA_generate_parameters(bits, NULL, 0,
+                        NULL, NULL, NULL, NULL);
+    if (!DSA_generate_key(dsa)) {
+        logerror("DSA_generate_key() failed");
         return false;
     }
-    rsa = NULL;
+    if (!EVP_PKEY_assign_DSA(pk, dsa)) {
+        printf("EVP_PKEY_assign_DSA() failed\n");
+        return false;
+    }
 
     X509_set_version(x, 3);
     ASN1_INTEGER_set(X509_get_serialNumber(x), serial);
     X509_gmtime_adj(X509_get_notBefore(x), 0);
     X509_gmtime_adj(X509_get_notAfter(x), (long)60 * 60 * 24 * days);
-    X509_set_pubkey(x, pk);
+    
+    if (!X509_set_pubkey(x, pk)) {
+        ERR_print_errors_fp(stderr);
+        printf("X509_set_pubkey() failed\n");
+        return false;
+    }
 
     name = X509_get_subject_name(x);
 
@@ -1790,7 +1799,8 @@ mk_x509_cert(X509 **x509p, EVP_PKEY **pkeyp, int bits, int serial, int days)
     X509_add_ext(x, ex, -1);
     X509_EXTENSION_free(ex);
 
-    if (!X509_sign(x, pk, EVP_md5())) {
+    if (!X509_sign(x, pk, EVP_dss1())) {
+        ERR_print_errors_fp(stderr);
         printf("X509_sign() failed\n");
         return false;
     }

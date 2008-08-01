@@ -67,18 +67,18 @@ if ($out) {
 print STDERR "reading input...\n" unless $quiet;
 while (<>) {
     chomp;
-    if (/^<\d+>1 \S+ (\S+) \S+ \S+ \S+ \[ssign-cert VER="(\d+)" RSID="(\d+)" SG="(\d+)" SPRI="(\d+)" TBPL="(\d+)" INDEX="(\d+)" FLEN="(\d+)" FRAG="([^"]+)" SIGN="(\S+)"\]/
+    if (/^<\d+>1 \S+ (\S+) \S+ \S+ \S+ \[ssign-cert VER="(\d+)" RSID="(\d+)" SG="(\d+)" SPRI="(\d+)" TBPL="(\d+)" INDEX="(\d+)" FLEN="(\d+)" FRAG="([^"]+)" SIGN="(\S+)"\]/o
       ) {
-		#(  $host,  $ver,  $rsid, $sg,   $spri, $tbpl,
-		#   $index, $flen, $frag, $sign, $text )
+        #(  $host,  $ver,  $rsid, $sg,   $spri, $tbpl,
+        #   $index, $flen, $frag, $sign, $text )
         push @CBlist, [ $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $_ ];
         print STDERR
           "--Found ssign-cert ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)\n"
           if $verbose;
     } elsif (
-        /^<\d+>1 \S+ (\S+) \S+ \S+ \S+ \[ssign VER="(\d+)" RSID="(\d+)" SG="(\d+)" SPRI="(\d+)" GBC="(\d+)" FMN="(\d+)" CNT="(\d+)" HB="([^"]+)" SIGN="(\S+)"\]/
+        /^<\d+>1 \S+ (\S+) \S+ \S+ \S+ \[ssign VER="(\d+)" RSID="(\d+)" SG="(\d+)" SPRI="(\d+)" GBC="(\d+)" FMN="(\d+)" CNT="(\d+)" HB="([^"]+)" SIGN="(\S+)"\]/o
       ) {
-		# ( $host, $ver, $rsid, $sg, $spri, $gbc, $fmn, $cnt, $hb, $sign, $text )
+        # ( $host, $ver, $rsid, $sg, $spri, $gbc, $fmn, $cnt, $hb, $sign, $text )
         push @SBlist, [ $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $_ ];
         print STDERR "--Found ssign ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)\n"
           if $verbose;
@@ -91,7 +91,7 @@ while (<>) {
             {
                 print STDERR
                   "Warning: found SHA-1 hash collision '$hash1' for lines:\n"
-				  ."$msglist_sha1{$hash1}\n$_\n"
+                  ."$msglist_sha1{$hash1}\n$_\n"
                   unless $quiet;
             }
             $msglist_sha1{$hash1} = $_;
@@ -103,7 +103,7 @@ while (<>) {
                  && ( $msglist_sha256{$hash2} cmp $_ ) ) {
                 print STDERR
                   "Warning: found SHA-256 hash collision '$hash2' for lines:\n"
-				  ."$msglist_sha256{$hash2}\n$_\n"
+                  ."$msglist_sha256{$hash2}\n$_\n"
                   unless $quiet;
             }
             $msglist_sha256{$hash2} = $_;
@@ -131,7 +131,7 @@ for my $i ( 0 .. $#CBlist ) {
           unless $quiet;
         next;
     }
-    my $key = "$host,$ver,$rsid,$sg,$spri";
+    my $key = "$host,$rsid,$ver,$sg,$spri";
     if ( $index == 1 ) {
         $SGfrags{$key} = { tbpl => $tbpl, frag => $frag };
     } else {
@@ -151,12 +151,11 @@ for my $i ( 0 .. $#CBlist ) {
 
 print STDERR "decoding SGs...\n" unless $quiet;
 foreach my $key ( keys %SGfrags ) {
-    if ( $SGfrags{$key}{frag} =~ /^(\S+) (\C) (\S+)/ ) {
+    if ( $SGfrags{$key}{frag} =~ /^(\S+) (\C) (\S+)/o ) {
         my $pubkey_der;
         if ( $2 eq "C" ) {    #PKIX
             read_PKIX( $1, $3, $key );
         } elsif ( $2 eq "K" ) {
-
             # without PKIX there is no real encoding rule.
             # I only try DER/DSA because my syslogd generates that
             read_DER_DSA( $1, $3, $key );
@@ -177,7 +176,7 @@ for my $i ( 0 .. $#CBlist ) {
     (  $host,  $ver,  $rsid, $sg,   $spri, $tbpl,
        $index, $flen, $frag, $sign, $text
     ) = @{ $CBlist[$i] };
-    my $key = "$host,$ver,$rsid,$sg,$spri";
+    my $key = "$host,$rsid,$ver,$sg,$spri";
     if ( !( defined $SG{$key} ) ) {
         print STDERR "do not verify incomplete CB for SG ($key)\n"
           unless $quiet;
@@ -191,7 +190,9 @@ for my $i ( 0 .. $#CBlist ) {
     }
 }
 foreach my $key ( keys %SG ) {
-    print STDERR "verified CB and got key for SG: $key\n" unless $quiet;
+    print STDERR
+        "verified CB and got key for SG: ($key), start: $SG{$key}{time}\n"
+        unless $quiet;
 }
 
 print STDERR "now process SBs\n" unless $quiet;
@@ -202,7 +203,7 @@ for my $i ( 0 .. $#SBlist ) {
     print STDERR
       "SB values: ($host, $ver, $rsid, $sg, $spri, $gbc, $fmn, $cnt, $hb, $sign, $text)\n"
       if $verbose;
-    my $key = "$host,$ver,$rsid,$sg,$spri";
+    my $key = "$host,$rsid,$ver,$sg,$spri";
     if ( !( defined $SG{$key} ) ) {
         print STDERR "Warning: SB for unknown SG ($key)\n" unless $quiet;
         next;
@@ -285,7 +286,7 @@ sub read_DER_DSA {
 
     my $b64oneline = $3;
     my $b64broken  = "";
-    while ( $b64oneline =~ /^(\S{64})(.*)$/ ) {
+    while ( $b64oneline =~ /^(\S{64})(.*)$/o ) {
         $b64broken .= $1 . "\n";
         $b64oneline = $2;
     }
@@ -353,9 +354,17 @@ sub check_sig {
     my $signtext  = "";
     my $signature = "";
 
-    if ( $type eq 'DSA' && $text =~ m/^(.+) SIGN="(\S+)"(\].*)$/ ) {
-        $signtext  = sha1( $1 . $3 );
-        $signature = decode_base64($2);
+    if ( $type eq 'DSA' && $text =~ m/^(.+VER="(\S+)".*) SIGN="(\S+)"(\].*)$/o ) {
+        if ($2 eq "0111") {
+            $signtext  = sha1( $1 . $4 );
+        } elsif ($2 eq "0121") {
+            $signtext  = sha256( $1 . $4 );
+        } else {
+           print STDERR
+               "check_sig(): invalid version string '$2'\n"
+               unless $quiet;
+        }
+        $signature = decode_base64($3);
         $rc        = $key->verify( $signtext, $signature );
     } else {
         print STDERR "check_sig() on invalid key type or wrong text: $text\n"
@@ -379,7 +388,8 @@ sub usage {
     print "  Every line starts with a comma-separated tuple: hostname, version,\n";
     print "  reboot session ID, SG value, SPRI value, and message number.\n";
     print "- If only one hash is used then all messages not signed are printed as well.\n\n";
-    print "Limitations: handles only key type 'C' (PKIX) with DSA key and DSA signatures\n\n";
+    print "Limitations: handles only key types 'C' (PKIX) and 'K' (public key)\n";
+    print "  with DSA keys and signatures\n\n";
     print "Command Line Options:\n";
     print "  -i  --in         input file (default: stdin)\n";
     print "  -o  --out        output file for verified messages (default: stdout)\n";
@@ -388,5 +398,5 @@ sub usage {
     print "      --sha256     use SHA-256 hashes\n";
     print "  -v  --verbose    shows some internals (every CB,SB,hash,...)\n";
     print "  -q  --quiet      no status messages to stderr\n";
-    print "  -h  --help       this help\n";
+    print "  -h  --help       this help\n\n";
 }

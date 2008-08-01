@@ -79,7 +79,7 @@ sign_global_init(unsigned alg, struct filed *Files)
         /* the signature algorithm depends on the type of key */
         if (EVP_PKEY_DSA == EVP_PKEY_type(GlobalSign.pubkey->type)) {
                 GlobalSign.sig = EVP_dss1();
-                GlobalSign.sig_len_b64 = SIGN_DSS_SIGLEN;
+                GlobalSign.sig_len_b64 = SIGN_B64SIGLEN_DSS;
 /*
         } else if (EVP_PKEY_RSA == EVP_PKEY_type(GlobalSign.pubkey->type)) {
                 GlobalSign.sig = EVP_sha1();
@@ -103,17 +103,10 @@ sign_global_init(unsigned alg, struct filed *Files)
         GlobalSign.mdctx = EVP_MD_CTX_create();
         EVP_MD_CTX_init(GlobalSign.mdctx);
 
-#ifndef SIGN_USE_SHA256
         /* values for SHA-1 */
-        GlobalSign.md = EVP_sha1();
+        GlobalSign.md = EVP_dss1();
         GlobalSign.md_len_b64 = 28;
         GlobalSign.ver = "0111";
-#else
-        /* values for SHA-256 */
-        GlobalSign.md = EVP_sha256();
-        GlobalSign.md_len_b64 = 44;
-        GlobalSign.ver = "0121";
-#endif
 
         if (!sign_sg_init(Files))
                 return false;
@@ -814,7 +807,13 @@ sign_msg_sign(struct buf_msg **bufferptr, char *sd, size_t linesize)
                 DELREF(buffer);
                 return false;
         }
-        sign_string_sign(line+tlsprefixlen, &signature);
+        if (!sign_string_sign(line+tlsprefixlen, &signature)) {
+                DPRINTF((D_CALL|D_SIGN), "sign_send_signature_block():"
+                        " sign_string_sign() failed\n");
+                buffer->sd = NULL;
+                DELREF(buffer);
+                return false;
+        }
 
         sd[endptr-2] = '\0';
         newlinelen = strlcat(sd, signature, linesize);
@@ -845,8 +844,8 @@ bool
 sign_string_sign(char *line, char **signature)
 {
         char buf[SIGN_MAX_LENGTH+1];
-        unsigned char sig_value[SIGN_DSS_SIGLEN];
-        unsigned char sig_b64[SIGN_DSS_SIGLEN];
+        unsigned char sig_value[SIGN_B64SIGLEN_DSS];
+        unsigned char sig_b64[SIGN_B64SIGLEN_DSS];
         unsigned int sig_len = 0;
         char *p, *q;
         /* 

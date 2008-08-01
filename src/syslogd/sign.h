@@ -62,13 +62,13 @@
  * message length with header below 2048 octets */
 #define SIGN_MAX_SD_LENGTH (SIGN_MAX_LENGTH - 1 - HEADER_LEN_MAX)
 /* length of signature, currently only for DSA */
-#define SIGN_DSS_SIGLEN 64+1
+#define SIGN_B64SIGLEN_DSS 64+1
 /* the maximum length of one payload fragment:
  * max.SD len - text - max. field lengths - sig len */
-#define SIGN_MAX_FRAG_LENGTH (SIGN_MAX_SD_LENGTH - 82 - 38 - SIGN_DSS_SIGLEN)
+#define SIGN_MAX_FRAG_LENGTH (SIGN_MAX_SD_LENGTH - 82 - 38 - SIGN_B64SIGLEN_DSS)
 /* the maximum length of one signature block:
  * max.SD len - text - max. field lens - sig len */
-#define SIGN_MAX_SB_LENGTH (SIGN_MAX_SD_LENGTH - 72 - 40 - SIGN_DSS_SIGLEN)
+#define SIGN_MAX_SB_LENGTH (SIGN_MAX_SD_LENGTH - 72 - 40 - SIGN_B64SIGLEN_DSS)
 /* the maximum number of hashes pec signature block */
 #define SIGN_MAX_HASH_NUM (SIGN_MAX_SB_LENGTH / (GlobalSign.md_len_b64+1))
 /* number of hashes in one signature block */

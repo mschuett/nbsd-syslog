@@ -123,14 +123,21 @@ struct signature_group_t {
 TAILQ_HEAD(signature_group_head, signature_group_t);
 
 /* all global variables for sign */
+/* note that there is one object of this type which might only be
+ * partially filled.
+ * The fields .sg and .sig2_delims are set by init() and are always
+ * valid. A value >0 in field .rsid indicates whether the rest of the
+ * structure was already set by sign_global_init().
+ */
 struct sign_global_t {
         /* params for signature block, named as in RFC nnnn */
         const char   *ver;
         uint_fast64_t rsid;
         unsigned int  sg;
         uint_fast64_t gbc;
-
         struct signature_group_head SigGroups;
+        struct string_queue_head    sig2_delims;
+
         EVP_PKEY     *privkey;
         EVP_PKEY     *pubkey;
         char         *pubkey_b64;
@@ -153,6 +160,7 @@ struct signature_group_t *sign_get_sg(int, struct filed*);
 bool sign_send_certificate_block(struct signature_group_t*);
 unsigned sign_send_signature_block(struct signature_group_t*, bool);
 void sign_free_hashes(struct signature_group_t*);
+void sign_free_string_queue(struct string_queue_head*);
 bool sign_msg_hash(char*, char**);
 bool sign_append_hash(char*, struct signature_group_t*);
 bool sign_msg_sign(struct buf_msg**, char*, size_t);

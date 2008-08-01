@@ -78,7 +78,11 @@ __RCSID("$NetBSD: syslogd.c,v 1.84 2006/11/13 20:24:00 christos Exp $");
 
 #ifndef DISABLE_SIGN
 #include "sign.h"
-struct sign_global_t GlobalSign;
+struct sign_global_t GlobalSign = {
+        .rsid = 0,
+        .sg = SIGN_SG,
+        .sig2_delims = TAILQ_HEAD_INITIALIZER(GlobalSign.sig2_delims)
+};
 #endif /* !DISABLE_SIGN */
 
 #ifndef DISABLE_TLS
@@ -218,7 +222,7 @@ void    fprintlog(struct filed *, struct buf_msg *, struct buf_queue *);
 int     getmsgbufsize(void);
 char   *getLocalFQDN(void);
 struct socketEvent* socksetup(int, const char *);
-void    read_config_file(FILE*, struct filed**, int*);
+void    read_config_file(FILE*, struct filed**);
 void    init(int fd, short event, void *ev);  /* SIGHUP kevent dispatch routine */
 void    logerror(const char *, ...);
 void    loginfo(const char *, ...);
@@ -1028,7 +1032,7 @@ printline(char *hname, char *msg, int flags)
                         } else if (*p == '[' || (*p == ':'
                                 && (*(p+1) == ' ' || *(p+1) == '\0'))) {
                                 /* no host in message */
-                                buffer->host = LocalHostName;
+                                buffer->host = LocalFQDN;
                                 buffer->prog = strndup(start, p - start);
                                 break;
                         } else {
@@ -2791,7 +2795,7 @@ die(int fd, short event, void *ev)
  * read syslog.conf
  */
 void
-read_config_file(FILE *cf, struct filed **f_ptr, int *sign_sg_int)
+read_config_file(FILE *cf, struct filed **f_ptr)
 {
         unsigned linenum = 0;
         size_t i;
@@ -2804,11 +2808,13 @@ read_config_file(FILE *cf, struct filed **f_ptr, int *sign_sg_int)
 #ifndef DISABLE_TLS
         struct peer_cred *cred = NULL;
         struct peer_cred_head *credhead = NULL;
-        char *tmp_buf = NULL;
 #endif /* !DISABLE_TLS */
 #ifndef DISABLE_SIGN
         char *sign_sg_str = NULL;
 #endif /* !DISABLE_SIGN */
+#if (!defined(DISABLE_TLS) && !defined(DISABLE_SIGN))
+        char *tmp_buf = NULL;
+#endif /* (!defined(DISABLE_TLS) && !defined(DISABLE_SIGN)) */
         /* central list of recognized configuration keywords
          * and an address for their values as strings */
         const struct config_keywords {
@@ -2843,6 +2849,8 @@ read_config_file(FILE *cf, struct filed **f_ptr, int *sign_sg_int)
 #ifndef DISABLE_SIGN
                 /* syslog-sign setting */
                 {"sign_sg",               &sign_sg_str},
+                /* also special case in parsing */
+                {"sign_sg2_delim",        &tmp_buf},
 #endif /* !DISABLE_SIGN */
         };
 
@@ -2879,6 +2887,37 @@ read_config_file(FILE *cf, struct filed **f_ptr, int *sign_sg_int)
                                                 config_keywords[i].variable,
                                                 &p, ConfFile, linenum)) {
                                 DPRINTF((D_PARSE|D_MEM), "found option %s, saved @%p\n", config_keywords[i].keyword, *config_keywords[i].variable);
+#ifndef DISABLE_SIGN
+                                if (!strcmp("sign_sg2_delim", config_keywords[i].keyword)) do {
+                                        struct string_queue *sqentry, *sqe1, *sqe2 ;
+
+                                        if(!(sqentry = malloc(sizeof(*sqentry)))) {
+                                                logerror("Unable to allocate memory");
+                                                break;
+                                        }
+                                        if (dehumanize_number(tmp_buf, (int64_t*) &(sqentry->key)) == -1
+                                         || sqentry->key <= 0
+                                         || sqentry->key > (LOG_NFACILITIES<<3)) {
+                                                DPRINTF(D_PARSE, "invalid sign_sg2_delim: %s\n", tmp_buf);
+                                                free(sqentry);
+                                        } else {
+                                                sqentry->data = tmp_buf;
+                                                /* keep delimiters sorted */
+                                                sqe1 = TAILQ_FIRST(&GlobalSign.sig2_delims);
+                                                while (sqe1
+                                                   && (sqe2 = TAILQ_NEXT(sqe1, entries))) {
+                                                        if (sqe2->key > sqentry->key)
+                                                                break;
+                                                        else if (sqe2->key == sqentry->key) {
+                                                                DPRINTF(D_PARSE, "duplicate sign_sg2_delim: %s\n", tmp_buf);
+                                                                TAILQ_REMOVE(&GlobalSign.sig2_delims, sqe2, entries);
+                                                                break;
+                                                        }
+                                                }
+                                                TAILQ_INSERT_AFTER(&GlobalSign.sig2_delims, sqe1, sqentry, entries);
+                                        }
+                                } while /* additional values? */ (copy_config_value_word(&tmp_buf, &p));
+#endif /* !DISABLE_SIGN */
 #ifndef DISABLE_TLS
                                 /* special cases with multiple parameters */
                                 if (!strcmp("tls_allow_fingerprints", config_keywords[i].keyword))
@@ -2931,16 +2970,16 @@ read_config_file(FILE *cf, struct filed **f_ptr, int *sign_sg_int)
         if (sign_sg_str) {
                 if (sign_sg_str[1] == '\0'
                  && (sign_sg_str[0] == '0' || sign_sg_str[0] == '1'
-                  || /* sign_sg_str[0] == '2' || */ sign_sg_str[0] == '3'))
-                        *sign_sg_int = sign_sg_str[0] - '0';
+                  || sign_sg_str[0] == '2' || sign_sg_str[0] == '3'))
+                        GlobalSign.sg = sign_sg_str[0] - '0';
                 else {
-                        *sign_sg_int = SIGN_SG;
+                        GlobalSign.sg = SIGN_SG;
                         DPRINTF(D_MISC, "Invalid sign_sg value `%s', "
                                 "use default value `%d'\n",
-                                sign_sg_str, *sign_sg_int);
+                                sign_sg_str, GlobalSign.sg);
                 }
         } else
-                *sign_sg_int = SIGN_SG;
+                GlobalSign.sg = SIGN_SG;
 #endif /* !DISABLE_SIGN */
 
         rewind(cf);
@@ -3047,9 +3086,6 @@ init(int fd, short event, void *ev)
 #ifndef DISABLE_TLS
         struct peer_cred *cred = NULL;
 #endif /* !DISABLE_TLS */
-#ifndef DISABLE_SIGN
-        int sign_sg_int;
-#endif /* !DISABLE_SIGN */
 
         DPRINTF((D_EVENT|D_CALL), "init\n");
 
@@ -3177,11 +3213,11 @@ init(int fd, short event, void *ev)
 #endif /* !DISABLE_TLS */
 
         /* read and close configuration file */
-        read_config_file(cf, &newf, &sign_sg_int);
+        read_config_file(cf, &newf);
         newf = *nextp;
         (void)fclose(cf);
         DPRINTF(D_MISC, "read_config_file() returned newf=%p and "
-                "sign_sg_int=%d\n", newf, sign_sg_int);
+                "sign_sg_int=%d\n", newf, GlobalSign.sg);
         
 #define MOVE_QUEUE(x, y) do {   (void)memcpy(&y->f_qhead, &x->f_qhead,  \
                                                 sizeof(x->f_qhead));    \
@@ -3321,9 +3357,10 @@ init(int fd, short event, void *ev)
 #ifndef DISABLE_SIGN
         /* only initialize -sign if actually used */
         for (f = Files; f; f = f->f_next) {
-                if ((f->f_flags & FFLAG_SIGN)
-                 && sign_global_init(sign_sg_int, Files))
+                if ((f->f_flags & FFLAG_SIGN) && (!GlobalSign.rsid)) {
+                        sign_global_init(GlobalSign.sg, Files);
                         break;
+                }
         }
 #endif /* !DISABLE_SIGN */
 }

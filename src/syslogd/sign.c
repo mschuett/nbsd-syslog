@@ -29,6 +29,7 @@
 #include "syslogd.h"
 #ifndef DISABLE_TLS
 #include "tls_stuff.h"
+extern struct tls_global_options_t tls_opt;
 #endif /* !DISABLE_TLS */
 #include "sign.h"
 
@@ -69,6 +70,26 @@ sign_global_init(unsigned alg, struct filed *Files)
         if (!sign_get_keys())
                 return false;
 
+        /* signature algorithm */
+        /* can probably be merged with the hash algorithm/context but
+         * I leave the optimization for later until the RFC is ready */
+        GlobalSign.sigctx = EVP_MD_CTX_create();
+        EVP_MD_CTX_init(GlobalSign.sigctx);
+
+        /* the signature algorithm depends on the type of key */
+        if (EVP_PKEY_DSA == EVP_PKEY_type(GlobalSign.pubkey->type)) {
+                GlobalSign.sig = EVP_dss1();
+                GlobalSign.sig_len_b64 = SIGN_DSS_SIGLEN;
+/*
+        } else if (EVP_PKEY_RSA == EVP_PKEY_type(GlobalSign.pubkey->type)) {
+                GlobalSign.sig = EVP_sha1();
+                GlobalSign.sig_len_b64 = 28;
+*/
+        } else {
+                logerror("key type not supported for syslog-sign");
+                return false;
+        }
+
         assert(GlobalSign.keytype == 'C' || GlobalSign.keytype == 'K');
         assert(GlobalSign.pubkey_b64 && GlobalSign.privkey && GlobalSign.pubkey);
         assert(GlobalSign.privkey->pkey.dsa->priv_key);
@@ -93,24 +114,6 @@ sign_global_init(unsigned alg, struct filed *Files)
         GlobalSign.md_len_b64 = 44;
         GlobalSign.ver = "0121";
 #endif
-
-        /* signature algorithm */
-        /* can probably be merged with the hash algorithm/context but
-         * I leave the optimization for later until the RFC is ready */
-        GlobalSign.sigctx = EVP_MD_CTX_create();
-        EVP_MD_CTX_init(GlobalSign.sigctx);
-
-        /* the signature algorithm depends on the type of key */
-        if (EVP_PKEY_DSA == EVP_PKEY_type(GlobalSign.pubkey->type)) {
-                GlobalSign.sig = EVP_dss1();
-                GlobalSign.sig_len_b64 = 28;
-        } else if (EVP_PKEY_RSA == EVP_PKEY_type(GlobalSign.pubkey->type)) {
-                GlobalSign.sig = EVP_sha1();
-                GlobalSign.sig_len_b64 = 28;
-        } else {
-                logerror("EVP_PKEY_type not supported for signing");
-                return false;
-        }
 
         if (!sign_sg_init(Files))
                 return false;
@@ -138,65 +141,95 @@ sign_global_init(unsigned alg, struct filed *Files)
 bool
 sign_get_keys()
 {
-#ifndef DISABLE_TLS
-        FILE  *keyfile, *certfile;
-#endif /* !DISABLE_TLS */
         EVP_PKEY *pubkey = NULL, *privkey = NULL;
         unsigned char *der_pubkey = NULL, *ptr_der_pubkey = NULL;
         char *pubkey_b64 = NULL;
         int der_len;
         errno = 0;
         
-        /* try PKIX/TLS keys first */
+        /* try PKIX/TLS key first */
 #ifndef DISABLE_TLS
-        if (tls_opt.keyfile && tls_opt.certfile
-         && (keyfile = fopen(tls_opt.keyfile, "r"))
-         && (certfile = fopen(tls_opt.certfile, "r"))) {
+        SSL *ssl;
+        if (tls_opt.global_TLS_CTX
+         && (ssl = SSL_new(tls_opt.global_TLS_CTX))) {
                 X509 *cert;
+                DPRINTF(D_SIGN, "Try to get keys from TLS X.509 cert...\n");
                 
-                DPRINTF(D_SIGN, "Try to get keys from X.509 ...\n");
-                cert = PEM_read_X509(certfile, NULL, NULL, 0);
-                (void)fclose(certfile);
-                PEM_read_PrivateKey(keyfile, &privkey, NULL, 0);
-                (void)fclose(keyfile);
-                if (!privkey) {
-                        logerror("PEM_read_PrivateKey() failed");
+                if (!(cert = SSL_get_certificate(ssl))) {
+                        logerror("SSL_get_certificate() failed");
+                        FREE_SSL(ssl);
                         return false;
                 }
-                if (!cert) {
-                        logerror("PEM_read_X509() failed");
+                if (!(privkey = SSL_get_privatekey(ssl))) {
+                        logerror("SSL_get_privatekey() failed");
+                        FREE_SSL(ssl);
                         return false;
                 }
                 if (!(pubkey = X509_get_pubkey(cert))) {
                         logerror("X509_get_pubkey() failed");
+                        FREE_SSL(ssl);
                         return false;
                 }
-                DPRINTF(D_SIGN, "Got public and private key from X.509 "
-                        "--> use type PKIX\n");
-                GlobalSign.keytype = 'C';
-                GlobalSign.privkey = privkey;
-                GlobalSign.pubkey = pubkey;   
-                
-                /* base64 certificate encoding */
-                int i2d_X509(X509 *x, unsigned char **out);
-                
-                der_len = i2d_X509(cert, NULL);
-                if (!(ptr_der_pubkey = der_pubkey = malloc(der_len))
-                 || !(pubkey_b64 = malloc(der_len*2))) {
+                FREE_SSL(ssl);
+
+                if (EVP_PKEY_DSA != EVP_PKEY_type(pubkey->type)) {
+                        DPRINTF(D_SIGN, "X.509 cert has no DSA key\n");
+                        privkey = NULL;
+                        pubkey = NULL;
+                } else {
+#ifdef SIGN_ALWAYS_TYPE_K
+                        DPRINTF(D_SIGN, "Got public and private key "
+                                "from X.509 --> but use type 'K' anyway\n");
+                        GlobalSign.keytype = 'K';
+                        GlobalSign.privkey = privkey;
+                        GlobalSign.pubkey = pubkey;
+                        
+                        der_len = i2d_DSA_PUBKEY(pubkey->pkey.dsa, NULL);
+                        if (!(ptr_der_pubkey = der_pubkey = malloc(der_len))
+                         || !(pubkey_b64 = malloc(der_len*2))) {
+                                free(der_pubkey);
+                                logerror("malloc() failed");
+                                return false;
+                        }
+                        if (i2d_DSA_PUBKEY(pubkey->pkey.dsa, &ptr_der_pubkey) <= 0) {
+                                logerror("i2d_DSA_PUBKEY() failed");
+                                return false;
+                        }
+                        b64_ntop(der_pubkey, der_len, pubkey_b64, der_len*2);
                         free(der_pubkey);
-                        logerror("malloc() failed");
-                        return false;
+                        /* try to resize memory object as needed */
+                        GlobalSign.pubkey_b64 = realloc(pubkey_b64,
+                                                        strlen(pubkey_b64)+1);
+                        if (!GlobalSign.pubkey_b64)
+                                GlobalSign.pubkey_b64 = pubkey_b64;
+#else
+                        DPRINTF(D_SIGN, "Got public and private key "
+                                "from X.509 --> use type PKIX\n");
+                        GlobalSign.keytype = 'C';
+                        GlobalSign.privkey = privkey;
+                        GlobalSign.pubkey = pubkey;
+                        
+                        /* base64 certificate encoding */
+                        der_len = i2d_X509(cert, NULL);
+                        if (!(ptr_der_pubkey = der_pubkey = malloc(der_len))
+                         || !(pubkey_b64 = malloc(der_len*2))) {
+                                free(der_pubkey);
+                                logerror("malloc() failed");
+                                return false;
+                        }
+                        if (i2d_X509(cert, &ptr_der_pubkey) <= 0) {
+                                logerror("i2d_X509() failed");
+                                return false;
+                        }
+                        b64_ntop(der_pubkey, der_len, pubkey_b64, der_len*2);
+                        free(der_pubkey);
+                        /* try to resize memory object as needed */
+                        GlobalSign.pubkey_b64 = realloc(pubkey_b64,
+                                                        strlen(pubkey_b64)+1);
+                        if (!GlobalSign.pubkey_b64)
+                                GlobalSign.pubkey_b64 = pubkey_b64;
+#endif /* SIGN_ALWAYS_TYPE_K */
                 }
-                if (i2d_X509(cert, &ptr_der_pubkey) <= 0) {
-                        logerror("i2d_X509() failed");
-                        return false;
-                }
-                b64_ntop(der_pubkey, der_len, pubkey_b64, der_len*2);
-                free(der_pubkey);
-                /* try to resize memory object as needed */
-                GlobalSign.pubkey_b64 = realloc(pubkey_b64, strlen(pubkey_b64)+1);
-                if (!GlobalSign.pubkey_b64)
-                        GlobalSign.pubkey_b64 = pubkey_b64;
         }
 #endif /* !DISABLE_TLS */
         if (!(privkey && pubkey)) { /* PKIX not available --> generate key */
@@ -367,14 +400,20 @@ sign_global_free()
                 TAILQ_REMOVE(&GlobalSign.SigGroups, sg, entries);
                 free(sg);
         }
-        if (GlobalSign.pubkey != GlobalSign.privkey)
-                FREEPTR(GlobalSign.pubkey);
-        FREEPTR(GlobalSign.privkey);
-        FREEPTR(GlobalSign.pubkey_b64);
+
+	/* TODO: in case these were read keys
+	 *       from SSL check if we may free them */
+        if (GlobalSign.privkey) {
+                GlobalSign.privkey = NULL;
+        }
+        if (GlobalSign.pubkey) {
+                GlobalSign.pubkey = NULL;
+        }                
         if(GlobalSign.mdctx)
                 EVP_MD_CTX_destroy(GlobalSign.mdctx);
         if(GlobalSign.sigctx)
                 EVP_MD_CTX_destroy(GlobalSign.sigctx);
+        FREEPTR(GlobalSign.pubkey_b64);
 }
 
 /*
@@ -710,11 +749,10 @@ bool
 sign_string_sign(char *line, char **signature)
 {
         char buf[SIGN_MAX_LENGTH+1];
-        unsigned char sig_value[EVP_MAX_MD_SIZE];
-        unsigned char sig_b64[EVP_MAX_MD_SIZE*2];
+        unsigned char sig_value[SIGN_DSS_SIGLEN];
+        unsigned char sig_b64[SIGN_DSS_SIGLEN];
         unsigned int sig_len = 0;
         char *p, *q;
-
         /* 
          * The signature is calculated over the completely formatted
          * syslog-message, including all of the PRI, HEADER, and hashes
@@ -741,10 +779,9 @@ sign_string_sign(char *line, char **signature)
         SSL_CHECK_ONE(EVP_SignInit(GlobalSign.sigctx, GlobalSign.sig));
         SSL_CHECK_ONE(EVP_SignUpdate(GlobalSign.sigctx, buf, q-buf));
         assert(GlobalSign.privkey);
-        assert(EVP_MAX_MD_SIZE > EVP_PKEY_size(GlobalSign.privkey));
         SSL_CHECK_ONE(EVP_SignFinal(GlobalSign.sigctx, sig_value, &sig_len, GlobalSign.privkey));
         
-        b64_ntop(sig_value, sig_len, (char *)sig_b64, EVP_MAX_MD_SIZE*2);
+        b64_ntop(sig_value, sig_len, (char *)sig_b64, sizeof(sig_b64));
         *signature = strdup((char *)sig_b64);
 
         DPRINTF((D_CALL|D_SIGN), "sign_string_sign('%s') --> '%s'\n", buf, *signature);

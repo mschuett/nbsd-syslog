@@ -45,18 +45,24 @@
  *   * ...
  *   * the n-th hashcount/n hashes are sent for the n-th time and deleted thereafter
  */ 
-#define SIGN_RESENDCOUNT_CERTBLOCK  1
+#define SIGN_RESENDCOUNT_CERTBLOCK  2
 #define SIGN_RESENDCOUNT_HASHES     3
 
-/* maximum length of syslog-sign messages */
+/* maximum length of syslog-sign messages 
+ * should be <= 2048 by standard and should
+ * be >= 1024 to be long enough.
+ * be careful with small values because there
+ * is no check for a lower bound and derived
+ * values below will underflow .
+ */
 #define SIGN_MAX_LENGTH 2048
 // 2048 by standard, I only use smaller values to test correct fragmentation
-//#define SIGN_MAX_LENGTH 512
+// #define SIGN_MAX_LENGTH 800
 /* the length we can use for the SD and keep the
  * message length with header below 2048 octets */
 #define SIGN_MAX_SD_LENGTH (SIGN_MAX_LENGTH - 1 - HEADER_LEN_MAX)
 /* length of signature, currently only for DSA */
-#define SIGN_DSS_SIGLEN 64
+#define SIGN_DSS_SIGLEN 64+1
 /* the maximum length of one payload fragment:
  * max.SD len - text - max. field lengths - sig len */
 #define SIGN_MAX_FRAG_LENGTH (SIGN_MAX_SD_LENGTH - 82 - 38 - SIGN_DSS_SIGLEN)

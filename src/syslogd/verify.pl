@@ -1,11 +1,8 @@
 #! /usr/bin/perl
 #
 # verify logfile with syslog-sign messages
-# reads logfile from STDIN
-# does not yet enforce valid signatures but only checks
-# and reports missing messages
 #
-# tested with PKIX DSA key
+# tested with PKIX DSA key (type 'C') and DER encoded DSA key (type 'K')
 
 use strict;
 use warnings "all";
@@ -24,6 +21,8 @@ my (@a, @b);
 my ($host, $ver, $rsid, $sg, $spri, $tbpl, $index, $flen, $frag, $sign, $gbc, $fmn, $cnt, $hb, $text);
 
 # subroutines
+sub read_PKIX;
+sub read_DER_DSA;
 sub check_sig;
 sub usage;
 
@@ -129,31 +128,11 @@ foreach my $key (keys %SGfrags) {
         if ($SGfrags{$key}{frag} =~ /^(\S+) (\C) (\S+)/) {
 			    my $pubkey_der;
                 if ($2 eq "C") {  #PKIX
-                        my $der = decode_base64($3);
-                        my $cert = Crypt::OpenSSL::X509->new_from_string($der,
-                            Crypt::OpenSSL::X509::FORMAT_ASN1);
-						$pubkey_der = $cert->pubkey();
+						read_PKIX($1, $3, $key);
 				} elsif ($2 eq "K") {
-						$pubkey_der = decode_base64($3);
-				}
-				if (($2 eq "C") || ($2 eq "K")) {
-                        # I cannot find a method to get the key type :-/
-                        if ($pubkey_der =~ /^-----BEGIN RSA PUBLIC KEY-----/) {
-                                $SG{$key} = {
-                                    type => "RSA",
-                                    key  => Crypt::OpenSSL::RSA->new_public_key($pubkey_der)
-                                };
-                                print STDERR "Warning: got RSA key, but cannot use it to verify signatures\n" unless $quiet;
-                        } elsif ($pubkey_der =~ /^-----BEGIN PUBLIC KEY-----/) {
-                                $SG{$key} = {
-                                    type => "DSA",
-                                    key  => Crypt::OpenSSL::DSA->read_pub_key_str($pubkey_der)
-                                };
-                                print STDERR "got DSA key\n" unless $quiet;
-                        } else {
-								print STDERR "cannot read key blob: $3\n" unless $quiet;
-								if ($pubkey_der =~ /---/) { print $pubkey_der."\n" }
-						}
+						# without PKIX there is no real encoding rule.
+						# I only try DER/DSA because my syslogd generates that
+						read_DER_DSA($1, $3, $key);
                 } else {
                         print STDERR "unsupported key type $2\n" unless $quiet;
                 }
@@ -227,7 +206,7 @@ for my $i ( 0 .. $#SBlist ) {
 
 print STDERR "signed messages:\n" unless $quiet;
 my $prevkey = 0;
-foreach my $sgkey (keys %authmsglist) {
+foreach my $sgkey (sort {$a cmp $b} keys %authmsglist) {
   foreach my $key (sort {$a <=> $b} keys %{$authmsglist{$sgkey}}) {
         if ($key != ($prevkey + 1)) {
                 for my $missing ( ($prevkey + 1) .. ($key-1)) {
@@ -251,6 +230,71 @@ if (!($sha1 && $sha256)) {
 		foreach my $key (keys %{$msglist}) {
 				if (!(defined($seenhashlish{$key}))) {
 		                print STDOUT "${$msglist}{$key}\n";
+				}
+		}
+}
+
+sub read_DER_DSA {
+		my ($timestamp, $blob, $key) = @_;
+
+		# WTF?
+		# openssl/crypto/evp/encode.c:253
+		# /* If the current line is > 80 characters, scream alot */
+
+		my $b64oneline = $3;
+		my $b64broken = "";
+		while ($b64oneline =~ /^(\S{64})(.*)$/) {
+			$b64broken .= $1."\n";
+			$b64oneline = $2;
+		}
+		my $pubkey_der = "-----BEGIN PUBLIC KEY-----\n"
+					  .$b64broken.$b64oneline."\n"
+					  ."-----END PUBLIC KEY-----\n";
+		my $dsakey = eval {
+			Crypt::OpenSSL::DSA->read_pub_key_str($pubkey_der)
+		};
+		if ($@) {
+				print STDERR "Unable to read DSA key: $@\n";
+		} else {
+				$SG{$key} = {
+						type => "DSA",
+						key  => $dsakey,
+						time => $timestamp
+				};
+				print STDERR "got DER DSA key\n" unless $quiet;
+		}
+}
+
+sub read_PKIX {
+		my ($timestamp, $blob, $key) = @_;
+
+		my $der = decode_base64($blob);
+        my $cert = Crypt::OpenSSL::X509->new_from_string($der, Crypt::OpenSSL::X509::FORMAT_ASN1);
+		my $pubkey_der = $cert->pubkey();
+        
+		# I cannot find a method to get the key type so I
+		# trust $cert->pubkey() to generate head/foot lines :-/
+		# tested for RSA and DSA keys
+        if ($pubkey_der =~ /^-----BEGIN RSA PUBLIC KEY-----/) {
+                $SG{$key} = {
+                    type => "RSA",
+                    key  => Crypt::OpenSSL::RSA->new_public_key($pubkey_der),
+					time => $timestamp
+                };
+                print STDERR "Warning: got PKIX RSA key, but cannot use it to verify signatures\n" unless $quiet;
+        } elsif ($pubkey_der =~ /^-----BEGIN PUBLIC KEY-----/) {
+                $SG{$key} = {
+                    type => "DSA",
+                    key  => Crypt::OpenSSL::DSA->read_pub_key_str($pubkey_der),
+					time => $timestamp
+                };
+				$SG{$key}{key}->write_pub_key("test.dsa");
+
+                print STDERR "got PKIX DSA key\n" unless $quiet;
+        } else {
+				print STDERR "cannot read PKIX key blob: $3\n" unless $quiet;
+				if ($pubkey_der =~ /---/) {
+						print STDERR $pubkey_der."\n" unless $quiet;
 				}
 		}
 }

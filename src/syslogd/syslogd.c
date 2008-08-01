@@ -67,12 +67,13 @@ __RCSID("$NetBSD: syslogd.c,v 1.84 2006/11/13 20:24:00 christos Exp $");
  *   by Peter da Silva.
  * -U and -v by Harlan Stenn.
  * Priority comparison code by Harlan Stenn.
- * TLS and syslog-protocol by Martin Schuette.
+ * TLS, syslog-protocol, and syslog-sign code by Martin Schuette.
  */
 #define SYSLOG_NAMES
 #include "syslogd.h"
 
 #if (!defined(DISABLE_SIGN) && defined(DISABLE_TLS))
+/* TODO: fix this */
 #error syslog-sign currently needs TLS code, cannot DISABLE_TLS without DISABLE_SIGN
 #endif /* (!defined(DISABLE_SIGN) && defined(DISABLE_TLS)) */
 
@@ -283,17 +284,6 @@ char timestamp[TIMESTAMPBUFSIZE];
 char *linebuf;
 size_t linebufsize;
 
-/*
- * New line buffer:
- * In normal operation this struct exists only once and is
- * reused for every new message.
- * If a received message is too large then a second buffer
- * can be allocated for that message.
- * If a message cannot be delivered, then its linebuf can be
- * queued and a new one has to be allocated
- */ 
-struct buf_msg *msgbuf;
-
 static const char *bindhostname = NULL;
 
 #define A_CNT(x)        (sizeof((x)) / sizeof((x)[0]))
@@ -468,8 +458,6 @@ getgroup:
                 logerror("Couldn't allocate buffer");
                 die(0, 0, NULL);
         }
-	/* TODO: remove global buffer? */
-        msgbuf = buf_msg_new(linebufsize);
 
 #ifndef SUN_LEN
 #define SUN_LEN(unp) (strlen((unp)->sun_path) + 2)
@@ -518,6 +506,12 @@ getgroup:
          * whether sign_global_init() was already called */
         GlobalSign.rsid = 0;
 #endif /* !DISABLE_SIGN */
+#if (IETF_NUM_PRIVALUES != (LOG_NFACILITIES<<3))
+        logerror("Warning: system defines %d priority values, but "
+                "syslog-protocol/syslog-sign specify %d values",
+                LOG_NFACILITIES, SIGN_NUM_PRIVALS);
+#endif
+
         /* 
          * All files are open, we can drop privileges and chroot
          */
@@ -2850,7 +2844,7 @@ read_config_file(FILE *cf, struct filed **f_ptr)
                 /* syslog-sign setting */
                 {"sign_sg",               &sign_sg_str},
                 /* also special case in parsing */
-                {"sign_sg2_delim",        &tmp_buf},
+                {"sign_delim_sg2",        &tmp_buf},
 #endif /* !DISABLE_SIGN */
         };
 
@@ -2888,33 +2882,38 @@ read_config_file(FILE *cf, struct filed **f_ptr)
                                                 &p, ConfFile, linenum)) {
                                 DPRINTF((D_PARSE|D_MEM), "found option %s, saved @%p\n", config_keywords[i].keyword, *config_keywords[i].variable);
 #ifndef DISABLE_SIGN
-                                if (!strcmp("sign_sg2_delim", config_keywords[i].keyword)) do {
+                                if (!strcmp("sign_delim_sg2", config_keywords[i].keyword)) do {
                                         struct string_queue *sqentry, *sqe1, *sqe2 ;
 
                                         if(!(sqentry = malloc(sizeof(*sqentry)))) {
                                                 logerror("Unable to allocate memory");
                                                 break;
                                         }
+                                        assert(sizeof(int64_t) == sizeof(uint_fast64_t));
                                         if (dehumanize_number(tmp_buf, (int64_t*) &(sqentry->key)) == -1
                                          || sqentry->key <= 0
                                          || sqentry->key > (LOG_NFACILITIES<<3)) {
-                                                DPRINTF(D_PARSE, "invalid sign_sg2_delim: %s\n", tmp_buf);
+                                                DPRINTF(D_PARSE, "invalid sign_delim_sg2: %s\n", tmp_buf);
                                                 free(sqentry);
                                         } else {
                                                 sqentry->data = tmp_buf;
-                                                /* keep delimiters sorted */
-                                                sqe1 = TAILQ_FIRST(&GlobalSign.sig2_delims);
-                                                while (sqe1
-                                                   && (sqe2 = TAILQ_NEXT(sqe1, entries))) {
-                                                        if (sqe2->key > sqentry->key)
-                                                                break;
-                                                        else if (sqe2->key == sqentry->key) {
-                                                                DPRINTF(D_PARSE, "duplicate sign_sg2_delim: %s\n", tmp_buf);
-                                                                TAILQ_REMOVE(&GlobalSign.sig2_delims, sqe2, entries);
-                                                                break;
+                                                if (TAILQ_EMPTY(&GlobalSign.sig2_delims))
+                                                        TAILQ_INSERT_HEAD(&GlobalSign.sig2_delims, sqentry, entries);
+                                                else {
+                                                        /* keep delimiters sorted */
+                                                        sqe1 = TAILQ_FIRST(&GlobalSign.sig2_delims);
+                                                        while (sqe1
+                                                           && (sqe2 = TAILQ_NEXT(sqe1, entries))) {
+                                                                if (sqe2->key > sqentry->key)
+                                                                        break;
+                                                                else if (sqe2->key == sqentry->key) {
+                                                                        DPRINTF(D_PARSE, "duplicate sign_delim_sg2: %s\n", tmp_buf);
+                                                                        TAILQ_REMOVE(&GlobalSign.sig2_delims, sqe2, entries);
+                                                                        break;
+                                                                }
                                                         }
+                                                        TAILQ_INSERT_AFTER(&GlobalSign.sig2_delims, sqe1, sqentry, entries);
                                                 }
-                                                TAILQ_INSERT_AFTER(&GlobalSign.sig2_delims, sqe1, sqentry, entries);
                                         }
                                 } while /* additional values? */ (copy_config_value_word(&tmp_buf, &p));
 #endif /* !DISABLE_SIGN */
@@ -3357,10 +3356,9 @@ init(int fd, short event, void *ev)
 #ifndef DISABLE_SIGN
         /* only initialize -sign if actually used */
         for (f = Files; f; f = f->f_next) {
-                if ((f->f_flags & FFLAG_SIGN) && (!GlobalSign.rsid)) {
-                        sign_global_init(GlobalSign.sg, Files);
+                if ((f->f_flags & FFLAG_SIGN)
+                 && sign_global_init(GlobalSign.sg, Files))
                         break;
-                }
         }
 #endif /* !DISABLE_SIGN */
 }

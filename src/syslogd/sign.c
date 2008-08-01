@@ -318,7 +318,7 @@ sign_sg_init(struct filed *Files)
                 break;
         case 1:
                 /* every PRI gets one SG */
-                for (int i = 0; i <= (LOG_NFACILITIES<<3); i++) {
+                for (int i = 0; i < IETF_NUM_PRIVALUES; i++) {
                         int fac, prilev;
                         fac = LOG_FAC(i);
                         prilev = LOG_PRI(i);
@@ -348,7 +348,7 @@ sign_sg_init(struct filed *Files)
                         TAILQ_INSERT_TAIL(&GlobalSign.SigGroups,
                                 newsg, entries);
                         /* possible optimization: use a
-                         * struct signature_group_t *newsg[LOG_NFACILITIES<<3]
+                         * struct signature_group_t *newsg[IETF_NUM_PRIVALUES]
                          * for direct group lookup */
                 }
                 for (struct filed *f = Files; f; f = f->f_next)
@@ -366,8 +366,7 @@ sign_sg_init(struct filed *Files)
                 
                 if (TAILQ_EMPTY(&GlobalSign.sig2_delims)) {
                         DPRINTF(D_SIGN, "sign_sg_init(): set default values for SG 2\n");
-                        /* <= LOG_NFACILITIES to include the mark "facility" */
-                        for (int i = 0; i <= LOG_NFACILITIES; i++) {
+                        for (int i = 0; i < (IETF_NUM_PRIVALUES>>3); i++) {
                                 if(!(sqentry = malloc(sizeof(*sqentry)))) {
                                         logerror("Unable to allocate memory");
                                         break;
@@ -378,6 +377,17 @@ sign_sg_init(struct filed *Files)
                         }
                 }
                 assert(!TAILQ_EMPTY(&GlobalSign.sig2_delims));
+                /* add one more group at the end */
+                if (TAILQ_LAST(&GlobalSign.sig2_delims, string_queue_head)->key < IETF_NUM_PRIVALUES) {
+                        if(!(sqentry = malloc(sizeof(*sqentry)))) {
+                                logerror("Unable to allocate memory");
+                                break;
+                        }
+                        sqentry->data = NULL;
+                        sqentry->key = IETF_NUM_PRIVALUES-1;
+                        TAILQ_INSERT_TAIL(&GlobalSign.sig2_delims, sqentry, entries);
+                }
+
                 TAILQ_FOREACH(sqentry, &GlobalSign.sig2_delims, entries) {
                         if(!(newsg = calloc(1, sizeof(*newsg)))) {
                                 logerror("Unable to allocate memory");
@@ -482,10 +492,14 @@ sign_global_free()
         if (GlobalSign.pubkey) {
                 GlobalSign.pubkey = NULL;
         }                
-        if(GlobalSign.mdctx)
+        if(GlobalSign.mdctx) {
                 EVP_MD_CTX_destroy(GlobalSign.mdctx);
-        if(GlobalSign.sigctx)
+                GlobalSign.mdctx = NULL;
+        }
+        if(GlobalSign.sigctx) {
                 EVP_MD_CTX_destroy(GlobalSign.sigctx);
+                GlobalSign.sigctx = NULL;
+        }
         FREEPTR(GlobalSign.pubkey_b64);
 }
 

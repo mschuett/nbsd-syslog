@@ -217,6 +217,10 @@ char *strndup(const char *str, size_t n);
 /* longest possible header length */
 #define HEADER_LEN_MAX (PRI_MAX + 1 + 1 + MAX_TIMESTAMPLEN + 1 + HOST_MAX \
                         + 1 + APPNAME_MAX + 1 + PROCID_MAX + 1 + MSGID_MAX)
+
+/* allowed number of priorities by IETF standards */
+#define IETF_NUM_PRIVALUES  192
+
 /*
  * Flags to logmsg().
  */

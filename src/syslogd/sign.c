@@ -163,10 +163,16 @@ sign_get_keys()
                         FREE_SSL(ssl);
                         return false;
                 }
+                /* note:
+                 * - privkey is just a pointer into SSL_CTX and
+                 *   must not be changed nor be free()d
+                 * - but pubkey has to be freed with EVP_PKEY_free()
+                 */
                 FREE_SSL(ssl);
 
                 if (EVP_PKEY_DSA != EVP_PKEY_type(pubkey->type)) {
                         DPRINTF(D_SIGN, "X.509 cert has no DSA key\n");
+                        EVP_PKEY_free(pubkey);
                         privkey = NULL;
                         pubkey = NULL;
                 } else {
@@ -288,23 +294,37 @@ sign_sg_init(struct filed *Files)
          * is called from fprintlog(), so only actually used
          * signature group get hashes and need memory for them
          */
+        /* possible optimization for SGs 1 and 2:
+         * use a struct signature_group_t *newsg[IETF_NUM_PRIVALUES]
+         * for direct group lookup
+         */
+
+#define ALLOC_OR_FALSE(x) do { if(!((x) = calloc(1, sizeof(*(x))))) {   \
+                                logerror("Unable to allocate memory");  \
+                                return false;                           \
+                          } } while (0)
+#define ALLOC_SG(x) do {ALLOC_OR_FALSE(x);                              \
+                        (x)->last_msg_num = 1; /* cf. section 4.2.5 */  \
+                        TAILQ_INIT(&(x)->hashes);                       \
+                        TAILQ_INIT(&(x)->files);                        \
+                } while (0)
+#define ASSIGN_FQ() do {ALLOC_OR_FALSE(fq);                             \
+                        fq->f = f;                                      \
+                        f->f_sg = newsg;                                \
+                        TAILQ_INSERT_TAIL(&newsg->files, fq, entries);  \
+                } while (0)
 
         switch (GlobalSign.sg) {
         case 0:
                 /* one SG, linked to all files */
-                newsg = calloc(1, sizeof(*newsg));
-                newsg->last_msg_num = 1; /* cf. section 4.2.5 */
-                TAILQ_INIT(&newsg->hashes);
-                TAILQ_INIT(&newsg->files);
+                ALLOC_SG(newsg);
+                newsg->spri = 0;
                 for (struct filed *f = Files; f; f = f->f_next) {
                         if (!(f->f_flags & FFLAG_SIGN)) {
                                 f->f_sg = NULL;
                                 continue;
                         }
-                        fq    = calloc(1, sizeof(*fq));
-                        fq->f = f;
-                        f->f_sg = newsg;
-                        TAILQ_INSERT_TAIL(&newsg->files, fq, entries);
+                        ASSIGN_FQ();
                 }
                 TAILQ_INSERT_TAIL(&GlobalSign.SigGroups,
                         newsg, entries);
@@ -315,38 +335,22 @@ sign_sg_init(struct filed *Files)
                         int fac, prilev;
                         fac = LOG_FAC(i);
                         prilev = LOG_PRI(i);
-                        
-                        if(!(newsg = calloc(1, sizeof(*newsg)))) {
-                                logerror("Unable to allocate memory");
-                                /* TODO: free() already allocated SGs */
-                                return false;
-                        }
+                        ALLOC_SG(newsg);
                         newsg->spri = i;
-                        newsg->last_msg_num = 1; /* cf. section 4.2.5 */
-                        TAILQ_INIT(&newsg->hashes);
-                        TAILQ_INIT(&newsg->files);
+
                         /* now find all destinations associated with this SG */
                         for (struct filed *f = Files; f; f = f->f_next) {
                                 if (!(f->f_flags & FFLAG_SIGN))
                                         continue;
                                 /* check priorities */
-                                if ((  ((f->f_pcmp[fac] & PRI_EQ) && (f->f_pmask[fac] == prilev))
+                                if (  ((f->f_pcmp[fac] & PRI_EQ) && (f->f_pmask[fac] == prilev))
                                      ||((f->f_pcmp[fac] & PRI_LT) && (f->f_pmask[fac] < prilev))
                                      ||((f->f_pcmp[fac] & PRI_GT) && (f->f_pmask[fac] > prilev)))
-                                    && (fq = malloc(sizeof(*fq)))) {
-                                        fq->f = f;
-                                        TAILQ_INSERT_TAIL(&newsg->files, fq, entries);
-                                }
+                                        ASSIGN_FQ();
                         }
                         TAILQ_INSERT_TAIL(&GlobalSign.SigGroups,
                                 newsg, entries);
-                        /* possible optimization: use a
-                         * struct signature_group_t *newsg[IETF_NUM_PRIVALUES]
-                         * for direct group lookup */
                 }
-                for (struct filed *f = Files; f; f = f->f_next)
-                        /* f_sg is useless here */
-                        f->f_sg = NULL;
                 break;
         case 2:
                 /* PRI ranges get one SG, boundaries given by the
@@ -360,10 +364,7 @@ sign_sg_init(struct filed *Files)
                 if (TAILQ_EMPTY(&GlobalSign.sig2_delims)) {
                         DPRINTF(D_SIGN, "sign_sg_init(): set default values for SG 2\n");
                         for (int i = 0; i < (IETF_NUM_PRIVALUES>>3); i++) {
-                                if(!(sqentry = malloc(sizeof(*sqentry)))) {
-                                        logerror("Unable to allocate memory");
-                                        break;
-                                }
+                                ALLOC_OR_FALSE(sqentry);
                                 sqentry->data = NULL;
                                 sqentry->key = (i<<3);
                                 TAILQ_INSERT_TAIL(&GlobalSign.sig2_delims, sqentry, entries);
@@ -372,25 +373,16 @@ sign_sg_init(struct filed *Files)
                 assert(!TAILQ_EMPTY(&GlobalSign.sig2_delims));
                 /* add one more group at the end */
                 if (TAILQ_LAST(&GlobalSign.sig2_delims, string_queue_head)->key < IETF_NUM_PRIVALUES) {
-                        if(!(sqentry = malloc(sizeof(*sqentry)))) {
-                                logerror("Unable to allocate memory");
-                                break;
-                        }
+                        ALLOC_OR_FALSE(sqentry);
                         sqentry->data = NULL;
                         sqentry->key = IETF_NUM_PRIVALUES-1;
                         TAILQ_INSERT_TAIL(&GlobalSign.sig2_delims, sqentry, entries);
                 }
 
                 TAILQ_FOREACH(sqentry, &GlobalSign.sig2_delims, entries) {
-                        if(!(newsg = calloc(1, sizeof(*newsg)))) {
-                                logerror("Unable to allocate memory");
-                                /* TODO: free() already allocated SGs */
-                                return false;
-                        }
+                        ALLOC_SG(newsg);
                         newsg->spri = sqentry->key;
-                        newsg->last_msg_num = 1; /* cf. section 4.2.5 */
-                        TAILQ_INIT(&newsg->hashes);
-                        TAILQ_INIT(&newsg->files);
+
                         /* now find all destinations associated with this SG */
                         for (struct filed *f = Files; f; f = f->f_next) {
                                 bool match = false;
@@ -404,7 +396,6 @@ sign_sg_init(struct filed *Files)
                                         int fac, prilev;
                                         fac = LOG_FAC(i);
                                         prilev = LOG_PRI(i);
-
                                         if (  ((f->f_pcmp[fac] & PRI_EQ) && (f->f_pmask[fac] == prilev))
                                             ||((f->f_pcmp[fac] & PRI_LT) && (f->f_pmask[fac] < prilev))
                                             ||((f->f_pcmp[fac] & PRI_GT) && (f->f_pmask[fac] > prilev))) {
@@ -412,11 +403,8 @@ sign_sg_init(struct filed *Files)
                                                 break;
                                         }
                                 }
-                                if (match
-                                 && (fq = malloc(sizeof(*fq)))) {
-                                        fq->f = f;
-                                        TAILQ_INSERT_TAIL(&newsg->files, fq, entries);
-                                }
+                                if (match)
+                                        ASSIGN_FQ();
                         }
                         DPRINTF(D_SIGN, "sign_sg_init(): add SG@%p: "
                                 "SG=\"2\", SPRI=\"%d\"\n", newsg, newsg->spri);
@@ -431,16 +419,9 @@ sign_sg_init(struct filed *Files)
                                 f->f_sg = NULL;
                                 continue;
                         }
-                        //CALLOC(newsg, sizeof(*newsg));
-                        newsg = calloc(1, sizeof(*newsg));
+                        ALLOC_SG(newsg);
                         newsg->spri = f->f_file; /* not needed but shows SGs */
-                        newsg->last_msg_num = 1; /* cf. section 4.2.5 */
-                        fq    = calloc(1, sizeof(*fq));
-                        fq->f = f;
-                        f->f_sg = newsg;
-                        TAILQ_INIT(&newsg->hashes);
-                        TAILQ_INIT(&newsg->files);
-                        TAILQ_INSERT_TAIL(&newsg->files, fq, entries);
+                        ASSIGN_FQ();
                         TAILQ_INSERT_TAIL(&GlobalSign.SigGroups,
                                 newsg, entries);
                 }
@@ -459,8 +440,6 @@ sign_global_free()
         struct filed_queue *fq, *tmp_fq;
 
         DPRINTF((D_CALL|D_SIGN), "sign_global_free()\n");
-        if (!GlobalSign.rsid)  /* never initialized */
-                return;
         TAILQ_FOREACH_SAFE(sg, &GlobalSign.SigGroups, entries, tmp_sg) {
                 if (!TAILQ_EMPTY(&sg->hashes)) {
                         sign_send_signature_block(sg, true);
@@ -483,6 +462,7 @@ sign_global_free()
                 GlobalSign.privkey = NULL;
         }
         if (GlobalSign.pubkey) {
+                EVP_PKEY_free(GlobalSign.pubkey);
                 GlobalSign.pubkey = NULL;
         }                
         if(GlobalSign.mdctx) {
@@ -547,12 +527,12 @@ sign_send_certificate_block(struct signature_group_t *sg)
                 assert(sd[sd_len-1] == ']');
                 assert(sd[sd_len-2] == '"');
                 
+                omask = sigblock(sigmask(SIGHUP)|sigmask(SIGALRM));
                 if (!sign_msg_sign(&buffer, sd, sizeof(sd)))
                         return 0;
                 DPRINTF((D_CALL|D_SIGN), "sign_send_certificate_block(): "
                         "calling fprintlog()\n");
 
-                omask = sigblock(sigmask(SIGHUP)|sigmask(SIGALRM));
                 TAILQ_FOREACH(fq, &sg->files, entries) {
                         /* we have to preserve the f_prevcount */
                         tmpcnt = fq->f->f_prevcount;
@@ -603,6 +583,13 @@ sign_get_sg(int pri, struct filed *f)
  * 
  * uses a sliding window for redundancy
  * if force==true then simply send all available hashes, e.g. on shutdown
+ * 
+ * sliding window checks implicitly assume that new hashes are appended
+ * to the SG between two calls. if that is not the case (e.g. with repeated
+ * messages) the queue size will shrink.
+ * this has no negative consequences except generating more and shorter SBs
+ * than expected and confusing the operator because two consecutive SBs will
+ * have same FMNn
  */
 unsigned
 sign_send_signature_block(struct signature_group_t *sg, bool force)
@@ -666,12 +653,12 @@ sign_send_signature_block(struct signature_group_t *sg, bool force)
         sd[sd_len-1] = '\0';
         sd_len = strlcat(sd, "\" SIGN=\"\"]", sizeof(sd));
 
+        omask = sigblock(sigmask(SIGHUP)|sigmask(SIGALRM));
         if (sign_msg_sign(&buffer, sd, sizeof(sd))) {
                 DPRINTF((D_CALL|D_SIGN), "sign_send_signature_block(): calling"
                         " fprintlog(), sending %d out of %d hashes\n",
                         MIN(SIGN_MAX_HASH_NUM, sg_num_hashes), sg_num_hashes);
         
-                omask = sigblock(sigmask(SIGHUP)|sigmask(SIGALRM));
                 TAILQ_FOREACH(fq, &sg->files, entries) {
                         tmpcnt = fq->f->f_prevcount;
                         fprintlog(fq->f, buffer, NULL);
@@ -679,7 +666,6 @@ sign_send_signature_block(struct signature_group_t *sg, bool force)
                 }
                 sign_inc_gbc();
                 DELREF(buffer);
-                (void)sigsetmask(omask);
         }
         /* always drop the oldest division of hashes */
         if (sg_num_hashes >= SIGN_HASH_NUM) {
@@ -692,6 +678,7 @@ sign_send_signature_block(struct signature_group_t *sg, bool force)
                         FREEPTR(old_qentry);
                 }
         }
+        (void)sigsetmask(omask);
         return hashes_sent;
 }
 

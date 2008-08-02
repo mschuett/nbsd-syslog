@@ -3,6 +3,8 @@
 # verify logfile with syslog-sign messages
 #
 # tested with PKIX DSA key (type 'C') and DER encoded DSA key (type 'K')
+#
+# Martin Schuette, 2008
 
 use strict;
 use warnings "all";
@@ -61,6 +63,7 @@ if ($in) {
     open( STDIN, "< $in" ) || die "can't open $in: $!";
 }
 if ($out) {
+	open( OLDOUT, ">& STDOUT" ) || die "Can't dup STDOUT: $!";
     open( STDOUT, ">> $out" ) || die "can't open $out: $!";
 }
 
@@ -264,6 +267,11 @@ foreach my $sgkey ( sort { $a cmp $b } keys %authmsglist ) {
 if ($unsigned_out) {
     open( STDOUT, ">> $unsigned_out" ) || die "can't open $unsigned_out: $!";
 }
+
+if ($out && !$unsigned_out) {
+    open( STDOUT, ">& OLDOUT" ) || die "can't open stdout: $!";
+}
+
 if ( !( $sha1 && $sha256 ) ) {
     my $msglist;
     if    ($sha1)   { $msglist = \%msglist_sha1; }

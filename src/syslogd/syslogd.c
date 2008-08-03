@@ -260,6 +260,7 @@ void send_queue(struct filed *);
 static struct buf_queue *find_qentry_to_delete(const struct buf_queue_head *, const int, const bool);
 struct buf_msg *buf_msg_new(const size_t);
 void buf_msg_free(struct buf_msg *msg);
+size_t buf_queue_obj_size(struct buf_queue*);
 bool message_queue_remove(struct filed *, struct buf_queue *);
 struct buf_queue *message_queue_add(struct filed *, struct buf_msg *);
 void message_queue_freeall(struct filed *);
@@ -2014,9 +2015,12 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
         }
 
 #ifndef DISABLE_SIGN
+        /* keep state between appending the hash (before buffer is sent)
+         * and possibly sending a SB (after buffer is sent): */
+        bool newhash = false;
         /* get hash */
         if ((f->f_flags & FFLAG_SIGN)
-         && !(buffer->flags & SIGNATURE)
+         && !(buffer->flags & SIGN_MSG)
          && !qentry) {
                 char *hash = NULL;
                 struct signature_group_t *sg;
@@ -2026,7 +2030,7 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
                         free(hash);
                         logerror("Unable to hash line \"%s\"", line);
                  } else
-                        sign_append_hash(hash, sg);
+                        newhash = sign_append_hash(hash, sg);
         }
 #endif /* !DISABLE_SIGN */
 
@@ -2289,7 +2293,7 @@ sendagain:
         if (error && !qentry)
                 message_queue_add(f, NEWREF(buffer));
 #ifndef DISABLE_SIGN
-        if (!(buffer->flags & SIGNATURE)) {
+        if (newhash) {
                 struct signature_group_t *sg;
                 sg = sign_get_sg(buffer->pri, f);
                 (void)sign_send_signature_block(sg, false);
@@ -2709,8 +2713,21 @@ die(int fd, short event, void *ev)
 {
         struct filed *f, *next;
         char **p;
+        sigset_t newmask, omask;
 
         ShuttingDown = 1;       /* Don't log SIGCHLDs. */
+        /* prevent recursive signals */
+        BLOCK_SIGNALS(omask, newmask);
+
+        /*
+         *  flush any pending output
+         */
+        for (f = Files; f != NULL; f = f->f_next) {
+                /* flush any pending output */
+                if (f->f_prevcount)
+                        fprintlog(f, NULL, NULL);
+                send_queue(f);
+        }
 
 #ifndef DISABLE_TLS
         free_incoming_tls_sockets();
@@ -2723,11 +2740,6 @@ die(int fd, short event, void *ev)
          *  Close all open log files.
          */
         for (f = Files; f != NULL; f = next) {
-                DPRINTF(D_MEM, "die() cleaning f@%p)\n", f);
-                /* flush any pending output */
-                if (f->f_prevcount)
-                        fprintlog(f, NULL, NULL);
-                send_queue(f);
                 message_queue_freeall(f);
 
                 switch (f->f_type) {
@@ -2917,6 +2929,7 @@ read_config_file(FILE *cf, struct filed **f_ptr)
                                         }
                                 } while /* additional values? */ (copy_config_value_word(&tmp_buf, &p));
 #endif /* !DISABLE_SIGN */
+
 #ifndef DISABLE_TLS
                                 /* special cases with multiple parameters */
                                 if (!strcmp("tls_allow_fingerprints", config_keywords[i].keyword))
@@ -2965,6 +2978,7 @@ read_config_file(FILE *cf, struct filed **f_ptr)
                 tls_opt.reconnect_giveup = RECONNECT_GIVEUP;
         }
 #endif /* !DISABLE_TLS */
+
 #ifndef DISABLE_SIGN
         if (sign_sg_str) {
                 if (sign_sg_str[1] == '\0'
@@ -3082,25 +3096,33 @@ init(int fd, short event, void *ev)
         size_t i;
         struct filed *f, *newf, **nextp;
         char *p;
+        sigset_t newmask, omask;
 #ifndef DISABLE_TLS
         struct peer_cred *cred = NULL;
 #endif /* !DISABLE_TLS */
 
+        /* prevent recursive signals */
+        BLOCK_SIGNALS(omask, newmask);
+        
         DPRINTF((D_EVENT|D_CALL), "init\n");
 
-        /* get FQDN and hostname/domain */
-        FREEPTR(oldLocalFQDN);
-        oldLocalFQDN = LocalFQDN;
-        LocalFQDN = getLocalFQDN();
-        if ((p = strchr(LocalFQDN, '.')) != NULL) {
-                LocalDomain = p;
-                (void)strlcpy(LocalHostName, LocalFQDN, 1+p-LocalFQDN);
-        } else {
-                LocalDomain = "";
-                (void)strlcpy(LocalHostName, LocalFQDN, sizeof(LocalHostName));
-        }
-        LocalDomainLen = strlen(LocalDomain);
+        /* 
+         * be careful about dependencies and order of actions:
+         * 1. flush buffer queues
+         * 2. flush -sign SBs
+         * 3. flush/delete buffer queue again, in case an SB got there
+         * 4. close files/connections
+         */
 
+        /*
+         *  flush any pending output
+         */
+        for (f = Files; f != NULL; f = f->f_next) {
+                /* flush any pending output */
+                if (f->f_prevcount)
+                        fprintlog(f, NULL, NULL);
+                send_queue(f);
+        }
         /* some actions only on SIGHUP and not on first start */
         if (Initialized) {
 #ifndef DISABLE_SIGN
@@ -3126,16 +3148,10 @@ init(int fd, short event, void *ev)
 #endif /* !DISABLE_TLS */
                 Initialized = 0;
         }
-        
         /*
          *  Close all open log files.
          */
         for (f = Files; f != NULL; f = f->f_next) {
-                /* flush any pending output */
-                if (f->f_prevcount)
-                        fprintlog(f, NULL, NULL);
-                send_queue(f);
-
                 switch (f->f_type) {
                 case F_FILE:
                 case F_TTY:
@@ -3161,7 +3177,7 @@ init(int fd, short event, void *ev)
 #endif /* !DISABLE_TLS */
                 }
         }
-
+        
         /*
          *  Close all open UDP sockets
          */
@@ -3178,6 +3194,19 @@ init(int fd, short event, void *ev)
                                 FREEPTR(finet[i+1].ev);
                 }
         }
+
+        /* get FQDN and hostname/domain */
+        FREEPTR(oldLocalFQDN);
+        oldLocalFQDN = LocalFQDN;
+        LocalFQDN = getLocalFQDN();
+        if ((p = strchr(LocalFQDN, '.')) != NULL) {
+                LocalDomain = p;
+                (void)strlcpy(LocalHostName, LocalFQDN, 1+p-LocalFQDN);
+        } else {
+                LocalDomain = "";
+                (void)strlcpy(LocalHostName, LocalFQDN, sizeof(LocalHostName));
+        }
+        LocalDomainLen = strlen(LocalDomain);
 
         /*
          *  Reset counter of forwarding actions
@@ -3198,6 +3227,7 @@ init(int fd, short event, void *ev)
                 (*nextp)->f_next = (struct filed *)calloc(1, sizeof(*f));
                 cfline(0, "*.PANIC\t*", (*nextp)->f_next, "*", "*");
                 Initialized = 1;
+                RESTORE_SIGNALS(omask);
                 return;
         }
 
@@ -3361,6 +3391,8 @@ init(int fd, short event, void *ev)
                         break;
         }
 #endif /* !DISABLE_SIGN */
+
+        RESTORE_SIGNALS(omask);
 }
 
 /*
@@ -3926,7 +3958,7 @@ allocev(void)
 {
         struct event *ev;
 
-        if (!(ev = malloc(sizeof(*ev))))
+        if (!(ev = calloc(1, sizeof(*ev))))
                 logerror("Unable to allocate memory");
         return ev;
 }
@@ -3944,6 +3976,7 @@ schedule_event(struct event **ev, struct timeval *tv, void (*cb)(int, short, voi
                 return;
         }
         event_set(*ev, 0, 0, cb, arg);
+        DPRINTF(D_EVENT, "event_add(%s@%p)\n", "schedule_ev", *ev); \
         if (event_add(*ev, tv) == -1) {
                 DPRINTF(D_EVENT, "Failure in event_add()\n");
         }
@@ -4110,18 +4143,49 @@ buf_msg_free(struct buf_msg *buf)
         if (!buf->refcount) {
                 /* small optimization: the host/recvhost may point to the
                  * global HostName/FQDN. of course this must not be free()d */
-                if (buf->recvhost != LocalHostName
+                if (buf->recvhost != buf->host
+                 && buf->recvhost != LocalHostName
                  && buf->recvhost != LocalFQDN
-                 && buf->recvhost != buf->host)
+                 && buf->recvhost != oldLocalFQDN)
                         FREEPTR(buf->recvhost);
                 if (buf->host != LocalHostName
-                 && buf->host != LocalFQDN)
+                 && buf->host != LocalFQDN
+                 && buf->host != oldLocalFQDN)
                         FREEPTR(buf->host);
                 FREEPTR(buf->msgorig);  /* instead of msg */
                 FREEPTR(buf->sd);
                 FREEPTR(buf->timestamp);
                 FREEPTR(buf);
         }
+}
+
+size_t
+buf_queue_obj_size(struct buf_queue *qentry)
+{
+        size_t sum = 0;
+        
+        if (!qentry)
+                return 0;
+        sum += sizeof(*qentry)
+              + sizeof(*qentry->msg)
+              + qentry->msg->msgsize
+              + SAFEstrlen(qentry->msg->timestamp)
+              + SAFEstrlen(qentry->msg->prog)
+              + SAFEstrlen(qentry->msg->pid)
+              + SAFEstrlen(qentry->msg->msgid);
+
+        if (qentry->msg->recvhost
+         && qentry->msg->recvhost != LocalHostName
+         && qentry->msg->recvhost != LocalFQDN
+         && qentry->msg->recvhost != oldLocalFQDN)
+                sum += strlen(qentry->msg->recvhost);
+        if (qentry->msg->host
+         && qentry->msg->host != LocalHostName
+         && qentry->msg->host != LocalFQDN
+         && qentry->msg->host != oldLocalFQDN)
+                sum += strlen(qentry->msg->host);
+
+        return sum;
 }
 
 bool
@@ -4132,21 +4196,8 @@ message_queue_remove(struct filed *f, struct buf_queue *qentry)
 
         TAILQ_REMOVE(&f->f_qhead, qentry, entries);
         f->f_qelements--;
-        f->f_qsize -= sizeof(*qentry)
-                      + sizeof(*qentry->msg)
-                      + qentry->msg->msgsize
-                      + SAFEstrlen(qentry->msg->timestamp)
-                      + SAFEstrlen(qentry->msg->prog)
-                      + SAFEstrlen(qentry->msg->pid)
-                      + SAFEstrlen(qentry->msg->msgid);
-        if (qentry->msg->recvhost
-         && qentry->msg->recvhost != LocalHostName
-         && qentry->msg->recvhost != LocalFQDN)
-                f->f_qsize -= strlen(qentry->msg->recvhost);
-        if (qentry->msg->host
-         && qentry->msg->host != LocalHostName
-         && qentry->msg->host != LocalFQDN)
-                f->f_qsize -= strlen(qentry->msg->host);
+        f->f_qsize -= buf_queue_obj_size(qentry);
+
         DPRINTF(D_BUFFER, "msg @%p removed from queue @%p, new qlen = %d\n",
                 qentry->msg, f, f->f_qelements);
         DELREF(qentry->msg);
@@ -4172,22 +4223,9 @@ message_queue_add(struct filed *f, struct buf_msg *buffer)
         } else {
                 qentry->msg = buffer;
                 f->f_qelements++;
-                f->f_qsize += sizeof(*qentry)
-                              + sizeof(*qentry->msg)
-                              + qentry->msg->msgsize
-                              + SAFEstrlen(qentry->msg->timestamp)
-                              + SAFEstrlen(qentry->msg->prog)
-                              + SAFEstrlen(qentry->msg->pid)
-                              + SAFEstrlen(qentry->msg->msgid);
-                if (qentry->msg->recvhost
-                 && qentry->msg->recvhost != LocalHostName
-                 && qentry->msg->recvhost != LocalFQDN)
-                        f->f_qsize += strlen(qentry->msg->recvhost);
-                if (qentry->msg->host
-                 && qentry->msg->host != LocalHostName
-                 && qentry->msg->host != LocalFQDN)
-                        f->f_qsize += strlen(qentry->msg->host);
+                f->f_qsize += buf_queue_obj_size(qentry);
                 TAILQ_INSERT_TAIL(&f->f_qhead, qentry, entries);
+
                 DPRINTF(D_BUFFER, "msg @%p queued @%p, qlen = %d\n",
                         buffer, f, f->f_qelements);
                 return qentry;

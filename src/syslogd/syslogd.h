@@ -140,36 +140,34 @@ char *strndup(const char *str, size_t n);
 #define D_ALL   (D_CALL | D_NET | D_FILE | D_EVENT | D_SIGN | D_MISC) 
 
 /* remove first printf for short debug messages */
-#define DPRINTF(x, ...) ((Debug & x) \
+#define DISABLE_DPRINTF 0
+#define DPRINTF(x, ...) (!DISABLE_DPRINTF && (Debug & x) \
                          ? (printf("%s:%s:%.4d\t", make_timestamp(NULL, true), \
                                 __FILE__, __LINE__), printf(__VA_ARGS__)) \
                          : 0)
 
 /* shortcuts for libevent */
-#define EVENT_ADD(x) do { \
+#define EVENT_ADD(x) do { DPRINTF(D_EVENT, "event_add(%s@%p)\n", #x, x); \
                         if (event_add(x, NULL) == -1) \
                                 DPRINTF(D_EVENT, "Failure in event_add()\n"); \
                         } while (0)
-#define RETRYEVENT_ADD(x) do { \
+#define RETRYEVENT_ADD(x) do { DPRINTF(D_EVENT, "retryevent_add(%s@%p)\n", #x, x); \
                         if (event_add(x, &((struct timeval){0, TLS_RETRY_EVENT_USEC})) == -1) \
                                 DPRINTF(D_EVENT, "Failure in event_add()\n"); \
                         } while (0)
 
 #define FREEPTR(x)      if (x)     { DPRINTF(D_MEM2, "free(%s@%p)\n", #x, x); \
                                      free(x);         x = NULL; }
-#define FREE_SSL(x)     if (x)     { SSL_free(x);     x = NULL; }
-#define FREE_SSL_CTX(x) if (x)     { SSL_CTX_free(x); x = NULL; }
-#define FREE_EVENT(x) do { \
-                        if (!(x)) { DPRINTF(D_EVENT, "FREE_EVENT(NULL)\n"); }  \
-                        else {                                                 \
-                                if (event_del(x) == -1) {                      \
-                                        /* will leak memory */                 \
-                                        DPRINTF(D_EVENT, "Failure in "         \
-                                                "event_del()\n");              \
-                                } else {                                       \
-                                        FREEPTR(x);                            \
-                        } } } while (0)
-                                
+#define FREE_SSL(x)     if (x)     { DPRINTF(D_MEM2, "SSL_free(%s@%p)\n", #x, x); \
+                                     SSL_free(x);     x = NULL; }
+#define FREE_SSL_CTX(x) if (x)     { DPRINTF(D_MEM2, "SSL_CTX_free(%s@%p)\n", #x, x); \
+                                     SSL_CTX_free(x); x = NULL; }
+
+#define DEL_EVENT(x) do { DPRINTF(D_MEM2, "DEL_EVENT(%s@%p)\n", #x, x);      \
+                           if ((x) && (event_del(x) == -1)) {                  \
+                               DPRINTF(D_EVENT, "Failure in event_del()\n");   \
+                      } } while (0)
+
 /* generic for all structs with refcount */ 
 #define NEWREF(x) ((x) ? (DPRINTF(D_BUFFER, "inc refcount of " #x \
                         " @ %p: %d --> %d\n", (x), (x)->refcount, \
@@ -191,7 +189,7 @@ char *strndup(const char *str, size_t n);
                                         message_queue_purge(f, \
                                                 f->f_qelements/10, \
                                                 PURGE_BY_PRIORITY); \
-                          }
+                          } DPRINTF(D_MEM2, "MALLOC(%s@%p, %d)\n", #ptr, ptr, size);
 #define CALLOC(ptr, size) while(!(ptr = calloc(1, size))) { \
                                 struct filed *f; \
                                 DPRINTF(D_MEM, "Unable to allocate memory"); \
@@ -203,6 +201,15 @@ char *strndup(const char *str, size_t n);
 
 /* strlen(NULL) does not work? */
 #define SAFEstrlen(x) ((x) ? strlen(x) : 0)
+
+/* shorthand to block/restore signals for the duration of one function */
+#define BLOCK_SIGNALS(omask, newmask) do {                      \
+                sigemptyset(&newmask);                          \
+                sigaddset(&newmask, SIGHUP);                    \
+                sigaddset(&newmask, SIGALRM);                   \
+                sigprocmask(SIG_BLOCK, &newmask, &omask);       \
+                } while (0)
+#define RESTORE_SIGNALS(omask) sigprocmask(SIG_SETMASK, &omask, NULL)
 
 #define MAXUNAMES       20      /* maximum number of user names */
 #define BSD_TIMESTAMPLEN    14+1
@@ -231,7 +238,7 @@ char *strndup(const char *str, size_t n);
 #define MARK            0x008   /* this message is a mark */
 #define ISKERNEL        0x010   /* kernel generated message */
 #define BSDSYSLOG       0x020   /* line in traditional BSD Syslog format */
-#define SIGNATURE       0x040   /* syslog-sign data, not signed again */
+#define SIGN_MSG        0x040   /* syslog-sign data, not signed again */
 
 /* strategies for message_queue_purge() */
 #define PURGE_OLDEST            1

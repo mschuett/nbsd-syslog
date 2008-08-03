@@ -442,6 +442,9 @@ sign_global_free()
         DPRINTF((D_CALL|D_SIGN), "sign_global_free()\n");
         TAILQ_FOREACH_SAFE(sg, &GlobalSign.SigGroups, entries, tmp_sg) {
                 if (!TAILQ_EMPTY(&sg->hashes)) {
+                        /* send SB twice to get minimal redundancy
+                         * for the last few message hashes */
+                        sign_send_signature_block(sg, true);
                         sign_send_signature_block(sg, true);
                         sign_free_hashes(sg);
                 }
@@ -487,7 +490,6 @@ sign_send_certificate_block(struct signature_group_t *sg)
         char *timestamp;
         char payload[SIGN_MAX_PAYLOAD_LENGTH];
         char sd[SIGN_MAX_SD_LENGTH];
-        int omask, tmpcnt;
         size_t payload_len, sd_len, fragment_len;
         size_t payload_index = 0;
 
@@ -527,7 +529,6 @@ sign_send_certificate_block(struct signature_group_t *sg)
                 assert(sd[sd_len-1] == ']');
                 assert(sd[sd_len-2] == '"');
                 
-                omask = sigblock(sigmask(SIGHUP)|sigmask(SIGALRM));
                 if (!sign_msg_sign(&buffer, sd, sizeof(sd)))
                         return 0;
                 DPRINTF((D_CALL|D_SIGN), "sign_send_certificate_block(): "
@@ -535,6 +536,7 @@ sign_send_certificate_block(struct signature_group_t *sg)
 
                 TAILQ_FOREACH(fq, &sg->files, entries) {
                         /* we have to preserve the f_prevcount */
+                        int tmpcnt;
                         tmpcnt = fq->f->f_prevcount;
                         fprintlog(fq->f, buffer, NULL);
                         fq->f->f_prevcount = tmpcnt;
@@ -542,7 +544,6 @@ sign_send_certificate_block(struct signature_group_t *sg)
                 sign_inc_gbc();
                 DELREF(buffer);
                 payload_index += fragment_len;
-                (void)sigsetmask(omask);
         }
         sg->resendcount--;
         return true;
@@ -596,7 +597,6 @@ sign_send_signature_block(struct signature_group_t *sg, bool force)
 {
         char sd[SIGN_MAX_SD_LENGTH];
         size_t sd_len;
-        int omask, tmpcnt;
         unsigned sg_num_hashes = 0;     /* hashes in SG queue */
         unsigned hashes_in_sb = 0;      /* number of hashes to send in current SB */
         unsigned hashes_sent = 0;       /* count of hashes sent */
@@ -653,13 +653,13 @@ sign_send_signature_block(struct signature_group_t *sg, bool force)
         sd[sd_len-1] = '\0';
         sd_len = strlcat(sd, "\" SIGN=\"\"]", sizeof(sd));
 
-        omask = sigblock(sigmask(SIGHUP)|sigmask(SIGALRM));
         if (sign_msg_sign(&buffer, sd, sizeof(sd))) {
                 DPRINTF((D_CALL|D_SIGN), "sign_send_signature_block(): calling"
                         " fprintlog(), sending %d out of %d hashes\n",
                         MIN(SIGN_MAX_HASH_NUM, sg_num_hashes), sg_num_hashes);
         
                 TAILQ_FOREACH(fq, &sg->files, entries) {
+                        int tmpcnt;
                         tmpcnt = fq->f->f_prevcount;
                         fprintlog(fq->f, buffer, NULL);
                         fq->f->f_prevcount = tmpcnt;
@@ -678,7 +678,6 @@ sign_send_signature_block(struct signature_group_t *sg, bool force)
                         FREEPTR(old_qentry);
                 }
         }
-        (void)sigsetmask(omask);
         return hashes_sent;
 }
 
@@ -782,7 +781,7 @@ sign_msg_sign(struct buf_msg **bufferptr, char *sd, size_t linesize)
         buffer->prog = strdup("syslogd");
         buffer->recvhost = buffer->host = LocalFQDN;
         buffer->pri = 110;
-        buffer->flags = IGN_CONS|SIGNATURE;
+        buffer->flags = IGN_CONS|SIGN_MSG;
         buffer->sd = sd;
 
         /* SD ready, now format and sign */

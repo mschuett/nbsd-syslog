@@ -859,10 +859,8 @@ tls_connect(struct tls_conn_settings *conn_info)
                 conn_info->sslptr = ssl;
 
                 assert(conn_info->state == ST_TCP_EST);
-                assert(!conn_info->event);
-                assert(!conn_info->retryevent);
-                conn_info->event = allocev();
-                conn_info->retryevent = allocev();
+                assert(conn_info->event);
+                assert(conn_info->retryevent);
 
                 freeaddrinfo(res);
                 dispatch_SSL_connect(sock, 0, conn_info);
@@ -943,7 +941,11 @@ parse_tls_destination(char *p, struct filed *f)
                 return false;
         }
 
-        if (!(f->f_un.f_tls.tls_conn = calloc(1, sizeof(*f->f_un.f_tls.tls_conn)))) {
+        if (!(f->f_un.f_tls.tls_conn = calloc(1, sizeof(*f->f_un.f_tls.tls_conn)))
+         || !(f->f_un.f_tls.tls_conn->event = allocev())
+         || !(f->f_un.f_tls.tls_conn->retryevent = allocev())) {
+                free(f->f_un.f_tls.tls_conn->event);
+                free(f->f_un.f_tls.tls_conn);
                 logerror("Couldn't allocate memory for TLS config");
                 return false;
         }
@@ -1013,8 +1015,6 @@ tls_reconnect(int fd, short event, void *arg)
         DPRINTF((D_TLS|D_CALL|D_EVENT), "tls_reconnect(conn_info@%p, "
                 "server %s)\n", conn_info, conn_info->hostname);
         assert(conn_info->state == ST_NONE);
-        FREE_EVENT(conn_info->event);
-        FREE_EVENT(conn_info->event);
 
         if (!tls_connect(conn_info)) {
                 if (conn_info->reconnect > tls_opt.reconnect_giveup) {
@@ -1052,9 +1052,13 @@ dispatch_tls_accept(int fd, short event, void *arg)
         struct tls_conn_settings *conn_info = (struct tls_conn_settings *) arg;
         int rc, error;
         struct TLS_Incoming_Conn *tls_in;
+        sigset_t newmask, omask;
 
-        DPRINTF((D_TLS|D_CALL), "dispatch_accept_tls(conn_info@%p, fd %d)\n", conn_info, fd);
-        
+        DPRINTF((D_TLS|D_CALL), "dispatch_tls_accept(conn_info@%p, fd %d)\n", conn_info, fd);
+        assert(conn_info->event);
+        assert(conn_info->retryevent);
+        BLOCK_SIGNALS(omask, newmask);
+
         ST_CHANGE(conn_info->state, ST_ACCEPTING);
         rc = SSL_accept(conn_info->sslptr);
         if (0 >= rc) {
@@ -1075,15 +1079,16 @@ dispatch_tls_accept(int fd, short event, void *arg)
                                 free_tls_conn(conn_info);
                                 break;
                 }
+                RESTORE_SIGNALS(omask);
                 return;
         }
         /* else */
-        ST_CHANGE(conn_info->state, ST_TLS_EST);
         if (!(tls_in = calloc(1, sizeof(*tls_in)))
          || !(tls_in->inbuf = malloc(TLS_MIN_LINELENGTH))) {
                 logerror("Unable to allocate memory for accepted connection");
                 free(tls_in);
                 free_tls_conn(conn_info);
+                RESTORE_SIGNALS(omask);
                 return;
         }        
         tls_in->tls_conn = conn_info;
@@ -1094,10 +1099,12 @@ dispatch_tls_accept(int fd, short event, void *arg)
 
         event_set(conn_info->event, tls_in->socket, EV_READ | EV_PERSIST, dispatch_tls_read, tls_in);
         EVENT_ADD(conn_info->event);
+        ST_CHANGE(conn_info->state, ST_TLS_EST);
 
         loginfo("established TLS connection from %s with certificate "
                 "%s (%s)", conn_info->hostname, conn_info->subject,
                 conn_info->fingerprint);
+        RESTORE_SIGNALS(omask);
         /*
          * We could also listen to EOF kevents -- but I do not think
          * that would be useful, because we still had to read() the buffer
@@ -1118,6 +1125,7 @@ dispatch_socket_accept(int fd, short event, void *ev)
         struct sockaddr_storage frominet;
         socklen_t addrlen;
         int newsock, rc;
+        sigset_t newmask, omask;
         SSL *ssl;
         struct tls_conn_settings *conn_info;
         char hbuf[NI_MAXHOST];
@@ -1129,9 +1137,11 @@ dispatch_socket_accept(int fd, short event, void *ev)
                 return;
         }
 
+        BLOCK_SIGNALS(omask, newmask);
         addrlen = sizeof(frominet);
         if ((newsock = accept(fd, (struct sockaddr *)&frominet, &addrlen)) == -1) {
                 logerror("Error in accept(): %s", strerror(errno));
+                RESTORE_SIGNALS(omask);
                 return;
         }
         /* TODO: do we want an IP or a hostname? maybe even both? */
@@ -1144,6 +1154,7 @@ dispatch_socket_accept(int fd, short event, void *ev)
                         logerror("Unable to allocate memory");
                         shutdown(newsock, SHUT_RDWR);
                         close(newsock);
+                        RESTORE_SIGNALS(omask);
                         return;
                 }
                 (void)strlcpy(peername, hbuf, strlen(hbuf)+1);
@@ -1156,16 +1167,10 @@ dispatch_socket_accept(int fd, short event, void *ev)
                 logerror("access from %s denied by hosts_access", peername);
                 shutdown(newsock, SHUT_RDWR);
                 close(newsock);
+                RESTORE_SIGNALS(omask);
                 return;
         }
 #endif
-
-        if (!(conn_info = calloc(1, sizeof(*conn_info)))
-         || !(conn_info->event = calloc(1, sizeof(*conn_info->event)))) {
-                free(conn_info);
-                logerror("Unable to allocate memory");
-                return;
-        }
 
         if ((fcntl(newsock, F_SETFL, O_NONBLOCK)) == -1) {
                 DPRINTF(D_NET, "Unable to fcntl(sock, O_NONBLOCK): %s\n", strerror(errno));
@@ -1174,29 +1179,46 @@ dispatch_socket_accept(int fd, short event, void *ev)
         if (!(ssl = SSL_new(tls_opt.global_TLS_CTX))) {
                 DPRINTF(D_TLS, "Unable to establish TLS: %s\n", ERR_error_string(ERR_get_error(), NULL));
                 close(newsock);
+                RESTORE_SIGNALS(omask);
                 return;                                
         }
         if (!SSL_set_fd(ssl, newsock)) {
                 DPRINTF(D_TLS, "Unable to connect TLS to socket %d: %s\n", newsock, ERR_error_string(ERR_get_error(), NULL));
                 SSL_free(ssl);
                 close(newsock);
+                RESTORE_SIGNALS(omask);
                 return;
         }
+
+        if (!(conn_info = calloc(1, sizeof(*conn_info)))
+         || !(conn_info->event = allocev())
+         || !(conn_info->retryevent = allocev())) {
+                free(conn_info->event);
+                free(conn_info);
+                SSL_free(ssl);
+                close(newsock);
+                logerror("Unable to allocate memory to accept incoming TLS connection from %s", peername);
+                RESTORE_SIGNALS(omask);
+                return;
+        }
+        ST_CHANGE(conn_info->state, ST_NONE);
         /* store connection details inside ssl object, used to verify
          * cert and immediately match against hostname */
         conn_info->hostname = peername;
         conn_info->sslptr = ssl;
         conn_info->x509verify = getVerifySetting(tls_opt.x509verify);
         conn_info->incoming = true;
-        conn_info->event = allocev();
-        conn_info->retryevent = allocev();
         SSL_set_app_data(ssl, conn_info);
         SSL_set_accept_state(ssl);
 
+        assert(conn_info->event);
+        assert(conn_info->retryevent);
+        
         ST_CHANGE(conn_info->state, ST_TCP_EST);
         DPRINTF(D_TLS, "socket connection from %s accept()ed with fd %d, " \
                 "calling SSL_accept()...\n",  peername, newsock);
         dispatch_tls_accept(newsock, 0, conn_info);
+        RESTORE_SIGNALS(omask);
 }
 
 /*
@@ -1216,6 +1238,7 @@ dispatch_tls_eof(int fd, short event, void *arg)
         DPRINTF((D_TLS|D_EVENT|D_CALL), "dispatch_eof_tls(%d, %d, %p)\n", fd, event, arg);
         assert(conn_info->state == ST_TLS_EST);
         ST_CHANGE(conn_info->state, ST_EOF);
+        DEL_EVENT(conn_info->event);
 
         free_tls_sslptr(conn_info);
         assert(conn_info->state == ST_NONE);
@@ -1233,7 +1256,6 @@ dispatch_tls_eof(int fd, short event, void *arg)
  *     we can call SSL_read() on it. But that does not mean the SSL buffer
  *     holds a complete record and SSL_read() lets us read any data now.
  */
-/* uses the fd as passed with ev */
 void
 dispatch_tls_read(int fd_lib, short event, void *arg)
 {
@@ -1574,15 +1596,19 @@ free_tls_conn(struct tls_conn_settings *conn_info)
         FREEPTR(conn_info->hostname);
         FREEPTR(conn_info->certfile);
         FREEPTR(conn_info->fingerprint);
-        FREE_EVENT(conn_info->event);
-        FREE_EVENT(conn_info->retryevent);
+        DEL_EVENT(conn_info->event);
+        DEL_EVENT(conn_info->retryevent);
+        FREEPTR(conn_info->event);
+        FREEPTR(conn_info->retryevent);
         FREEPTR(conn_info);
+        DPRINTF(D_MEM2, "free_tls_conn(conn_info@%p) returns\n", conn_info);
 }
 
 /*
  * Dispatch routine for non-blocking TLS shutdown
  */
-void dispatch_SSL_shutdown(int fd, short event, void *arg)
+void
+dispatch_SSL_shutdown(int fd, short event, void *arg)
 {
         struct tls_conn_settings *conn_info = (struct tls_conn_settings *) arg;
         int rc, error;
@@ -1656,8 +1682,8 @@ void dispatch_SSL_shutdown(int fd, short event, void *arg)
                 
                 if (shutdown(sock, SHUT_RDWR) == -1)
                         logerror("Cannot shutdown socket");
-                FREE_EVENT(conn_info->event);
-                FREE_EVENT(conn_info->retryevent);
+                DEL_EVENT(conn_info->retryevent);
+                DEL_EVENT(conn_info->event);
 
                 if (close(sock) == -1)
                         logerror("Cannot close socket");

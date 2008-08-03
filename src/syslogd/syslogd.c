@@ -3247,15 +3247,18 @@ init(int fd, short event, void *ev)
         (void)fclose(cf);
         DPRINTF(D_MISC, "read_config_file() returned newf=%p and "
                 "sign_sg_int=%d\n", newf, GlobalSign.sg);
-        
-#define MOVE_QUEUE(x, y) do {   (void)memcpy(&y->f_qhead, &x->f_qhead,  \
-                                                sizeof(x->f_qhead));    \
-                                TAILQ_INIT(&x->f_qhead);                \
-                                y->f_qsize = x->f_qsize;                \
-                                x->f_qsize = 0;                         \
-                                y->f_qelements = x->f_qelements;        \
-                                x->f_qelements = 0;                     \
-                        } while (0)
+
+#define MOVE_QUEUE(dst, src) do {                                       \
+                struct buf_queue *buf;                                  \
+                TAILQ_CONCAT(&dst->f_qhead, &src->f_qhead, entries);    \
+                TAILQ_FOREACH(buf, &dst->f_qhead, entries) {            \
+                      dst->f_qelements++;                               \
+                      dst->f_qsize += buf_queue_obj_size(buf);          \
+                }                                                       \
+                src->f_qsize = 0;                                       \
+                src->f_qelements = 0;                                   \
+        } while (0)
+
         /*
          *  Free old log files.
          */
@@ -3263,13 +3266,22 @@ init(int fd, short event, void *ev)
                 /* check if a new logfile is equal, if so pass the queue */
                 for (struct filed *f2 = newf; f2 != NULL; f2 = f2->f_next) {
                         if (f->f_type == f2->f_type
-                         && (f->f_type == F_PIPE && !strcmp(f->f_un.f_pipe.f_pname, f2->f_un.f_pipe.f_pname))
+                         && ((f->f_type == F_PIPE 
+                                && !strcmp(f->f_un.f_pipe.f_pname,
+                                        f2->f_un.f_pipe.f_pname))
 #ifndef DISABLE_TLS
-                         && (f->f_type == F_TLS  && !strcmp(f->f_un.f_tls.tls_conn->hostname, f2->f_un.f_tls.tls_conn->hostname))
+                         || (f->f_type == F_TLS 
+                                && !strcmp(f->f_un.f_tls.tls_conn->hostname,
+                                          f2->f_un.f_tls.tls_conn->hostname)
+                                && !strcmp(f->f_un.f_tls.tls_conn->port,
+                                          f2->f_un.f_tls.tls_conn->port))
 #endif /* !DISABLE_TLS */
-                         && (f->f_type == F_FORW && !strcmp(f->f_un.f_forw.f_hname, f2->f_un.f_forw.f_hname))) {
-                                DPRINTF(D_BUFFER, "move queue from f@%p to p@%p", f, f2);
-                                MOVE_QUEUE(f, f2);
+                         || (f->f_type == F_FORW
+                                && !strcmp(f->f_un.f_forw.f_hname,
+                                          f2->f_un.f_forw.f_hname)))) {
+                                DPRINTF(D_BUFFER, "move queue from f@%p "
+                                                        "to f2@%p\n", f, f2);
+                                MOVE_QUEUE(f2, f);
                          }
                 }
                 message_queue_freeall(f);
@@ -4014,8 +4026,10 @@ send_queue(struct filed *f)
          * unconnected destination and all calls to fprintlog() will fail.
          * this check is a shortcut to skip these unnecessary calls */
         if (f->f_type == F_TLS
-         && f->f_un.f_tls.tls_conn->state != ST_TLS_EST)
+         && f->f_un.f_tls.tls_conn->state != ST_TLS_EST) {
+                DPRINTF(D_TLS, "leave send_queue()on unconnected connection\n");
                 return;
+         }
 #endif /* !DISABLE_TLS */
         
         TAILQ_FOREACH_SAFE(qentry, &f->f_qhead, entries, tqentry) {

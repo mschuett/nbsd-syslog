@@ -2,7 +2,7 @@
  * sd.c
  * test function check_sd() and check_msgid()
  *
- * Martin Schütte
+ * Martin SchÃ¼tte
  */
  
 #include <stdio.h>
@@ -43,8 +43,12 @@ char* sds[] = {
 "[exampleSDID@0 iut=\"3\\3\"]",
 "[exampleSDID@0 iut=\" \\[\\] \"]",
 "[exampleSDID@0 iut=\"\\[3\"]",
-"[exampleSDID@0 iut=\"énçøded\"]",
-"[exampleSDID@0 iut=\"énçøded\"][example] message4",
+"[exampleSDID@0 iut=\"Ã©nÃ§Ã¸ded\"]",
+"[exampleSDID@0 iut=\"Ã©nÃ§Ã¸ded\"][example] message4",
+"[123456] message",
+"[10.1.2.3] message",
+"[10.1.2.3:654] message",
+"[2000::ff] message",
 NULL,
 /* not valid */
 "[]",
@@ -53,6 +57,7 @@ NULL,
 "[ exampleSDID@0]",
 "[ exampleSDID@0 ]",
 "[exampleSDID@0 iut]",
+"[exampleSDID@0 iut=2]",
 "[exampleSDID@0 iut=\"]",
 "[exampleSDID@0 iut=\"3]",
 "[exampleSDID@0 iut=\"3\"\"]",
@@ -60,7 +65,7 @@ NULL,
 "[exampleSDID@0 iut=\"3\\",
 "[exampleSDID@0 iut=\"3\\\\\\\"]",
 "[exampleSDID@0 iut=\"3\\\\\\\\\\\"]",
-"[exampleSDID@0 iut=\"énç",
+"[exampleSDID@0 iut=\"Ã©nÃ§",
 NULL,
 };
 
@@ -82,7 +87,7 @@ NULL,
 "[e]",
 "\tab ",
 "-\tab ",
-"abcdë some",
+"abcdÃ« some",
 "nomsgidbecauseoftoomanycharacters msg",
 "123456789012345678901234567890123 msg ",
 "1234567890123456789012345678901234 msg ",

@@ -100,16 +100,16 @@
 struct string_queue {
         uint_fast64_t  key;
         char          *data;
-        TAILQ_ENTRY(string_queue) entries;
+        STAILQ_ENTRY(string_queue) entries;
 };
-TAILQ_HEAD(string_queue_head, string_queue);
+STAILQ_HEAD(string_queue_head, string_queue);
 
 /* queue of destinations (used associate SGs and fileds) */
 struct filed_queue {
         struct filed             *f;
-        TAILQ_ENTRY(filed_queue) entries;
+        STAILQ_ENTRY(filed_queue) entries;
 };
-TAILQ_HEAD(filed_queue_head, filed_queue);
+STAILQ_HEAD(filed_queue_head, filed_queue);
 
 /* queue of Signature Groups */
 struct signature_group_t {
@@ -118,9 +118,9 @@ struct signature_group_t {
         uint_fast64_t                  last_msg_num;
         struct string_queue_head       hashes;
         struct filed_queue_head        files;
-        TAILQ_ENTRY(signature_group_t) entries;
+        STAILQ_ENTRY(signature_group_t) entries;
 };
-TAILQ_HEAD(signature_group_head, signature_group_t);
+STAILQ_HEAD(signature_group_head, signature_group_t);
 
 /* all global variables for sign */
 /* note that there is one object of this type which might only be

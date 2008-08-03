@@ -60,19 +60,26 @@
 #include <sys/stdint.h>
 #include <sys/resource.h>
 
-/* copied from FreeBSD -- makes some loops shorter */
+/* additional queue macros copied from FreeBSD  */
 #ifndef SLIST_FOREACH_SAFE
 #define SLIST_FOREACH_SAFE(var, head, field, tvar)          \
     for ((var) = SLIST_FIRST((head));               \
         (var) && ((tvar) = SLIST_NEXT((var), field), 1);        \
         (var) = (tvar))
 #endif /* !SLIST_FOREACH_SAFE */
-#ifndef TAILQ_FOREACH_SAFE
-#define TAILQ_FOREACH_SAFE(var, head, field, tvar)          \
-    for ((var) = TAILQ_FIRST((head));               \
-        (var) && ((tvar) = TAILQ_NEXT((var), field), 1);        \
+#ifndef STAILQ_FOREACH_SAFE
+#define STAILQ_FOREACH_SAFE(var, head, field, tvar)         \
+    for ((var) = STAILQ_FIRST((head));              \
+        (var) && ((tvar) = STAILQ_NEXT((var), field), 1);       \
         (var) = (tvar))
-#endif /* !TAILQ_FOREACH_SAFE */
+#endif /* !STAILQ_FOREACH_SAFE */
+#ifndef STAILQ_LAST
+#define STAILQ_LAST(head, type, field)                  \
+    (STAILQ_EMPTY((head)) ?                     \
+        NULL :                          \
+            ((struct type *)                    \
+        ((char *)((head)->stqh_last) - __offsetof(struct type, field))))
+#endif /* !STAILQ_LAST */
 #ifndef TAILQ_CONCAT
 #define TAILQ_CONCAT(head1, head2, field) do {              \
     if (!TAILQ_EMPTY(head2)) {                  \
@@ -108,9 +115,9 @@ struct buf_msg {
 /* queue of messages */
 struct buf_queue {
         struct buf_msg* msg;
-        TAILQ_ENTRY(buf_queue) entries;
+        STAILQ_ENTRY(buf_queue) entries;
 };
-TAILQ_HEAD(buf_queue_head, buf_queue);
+STAILQ_HEAD(buf_queue_head, buf_queue);
 
 /* keeps track of UDP sockets and event objects */
 struct socketEvent {

@@ -96,7 +96,7 @@ sign_global_init(unsigned alg, struct filed *Files)
 
         GlobalSign.sg = alg;
         GlobalSign.gbc = 0;
-        TAILQ_INIT(&GlobalSign.SigGroups);
+        STAILQ_INIT(&GlobalSign.SigGroups);
 
         /* hash algorithm */
         OpenSSL_add_all_digests();
@@ -305,13 +305,13 @@ sign_sg_init(struct filed *Files)
                           } } while (0)
 #define ALLOC_SG(x) do {ALLOC_OR_FALSE(x);                              \
                         (x)->last_msg_num = 1; /* cf. section 4.2.5 */  \
-                        TAILQ_INIT(&(x)->hashes);                       \
-                        TAILQ_INIT(&(x)->files);                        \
+                        STAILQ_INIT(&(x)->hashes);                       \
+                        STAILQ_INIT(&(x)->files);                        \
                 } while (0)
 #define ASSIGN_FQ() do {ALLOC_OR_FALSE(fq);                             \
                         fq->f = f;                                      \
                         f->f_sg = newsg;                                \
-                        TAILQ_INSERT_TAIL(&newsg->files, fq, entries);  \
+                        STAILQ_INSERT_TAIL(&newsg->files, fq, entries);  \
                 } while (0)
 
         switch (GlobalSign.sg) {
@@ -326,7 +326,7 @@ sign_sg_init(struct filed *Files)
                         }
                         ASSIGN_FQ();
                 }
-                TAILQ_INSERT_TAIL(&GlobalSign.SigGroups,
+                STAILQ_INSERT_TAIL(&GlobalSign.SigGroups,
                         newsg, entries);
                 break;
         case 1:
@@ -348,7 +348,7 @@ sign_sg_init(struct filed *Files)
                                      ||((f->f_pcmp[fac] & PRI_GT) && (f->f_pmask[fac] > prilev)))
                                         ASSIGN_FQ();
                         }
-                        TAILQ_INSERT_TAIL(&GlobalSign.SigGroups,
+                        STAILQ_INSERT_TAIL(&GlobalSign.SigGroups,
                                 newsg, entries);
                 }
                 break;
@@ -361,25 +361,25 @@ sign_sg_init(struct filed *Files)
                  * and set up one SG per facility
                  */
                 
-                if (TAILQ_EMPTY(&GlobalSign.sig2_delims)) {
+                if (STAILQ_EMPTY(&GlobalSign.sig2_delims)) {
                         DPRINTF(D_SIGN, "sign_sg_init(): set default values for SG 2\n");
                         for (int i = 0; i < (IETF_NUM_PRIVALUES>>3); i++) {
                                 ALLOC_OR_FALSE(sqentry);
                                 sqentry->data = NULL;
                                 sqentry->key = (i<<3);
-                                TAILQ_INSERT_TAIL(&GlobalSign.sig2_delims, sqentry, entries);
+                                STAILQ_INSERT_TAIL(&GlobalSign.sig2_delims, sqentry, entries);
                         }
                 }
-                assert(!TAILQ_EMPTY(&GlobalSign.sig2_delims));
+                assert(!STAILQ_EMPTY(&GlobalSign.sig2_delims));
                 /* add one more group at the end */
-                if (TAILQ_LAST(&GlobalSign.sig2_delims, string_queue_head)->key < IETF_NUM_PRIVALUES) {
+                if (STAILQ_LAST(&GlobalSign.sig2_delims, string_queue, entries)->key < IETF_NUM_PRIVALUES) {
                         ALLOC_OR_FALSE(sqentry);
                         sqentry->data = NULL;
                         sqentry->key = IETF_NUM_PRIVALUES-1;
-                        TAILQ_INSERT_TAIL(&GlobalSign.sig2_delims, sqentry, entries);
+                        STAILQ_INSERT_TAIL(&GlobalSign.sig2_delims, sqentry, entries);
                 }
 
-                TAILQ_FOREACH(sqentry, &GlobalSign.sig2_delims, entries) {
+                STAILQ_FOREACH(sqentry, &GlobalSign.sig2_delims, entries) {
                         ALLOC_SG(newsg);
                         newsg->spri = sqentry->key;
 
@@ -390,8 +390,8 @@ sign_sg_init(struct filed *Files)
                                 if (!(f->f_flags & FFLAG_SIGN))
                                         continue;
                                 /* check _all_ priorities in SG */
-                                if (TAILQ_LAST(&GlobalSign.SigGroups, string_queue_head))
-                                        min_pri = (TAILQ_LAST(&GlobalSign.SigGroups, string_queue_head))->key;
+                                if (STAILQ_LAST(&GlobalSign.SigGroups, string_queue, entries))
+                                        min_pri = (STAILQ_LAST(&GlobalSign.SigGroups, string_queue, entries))->key;
                                 for (int i = min_pri; i <= newsg->spri; i++) {
                                         int fac, prilev;
                                         fac = LOG_FAC(i);
@@ -408,7 +408,7 @@ sign_sg_init(struct filed *Files)
                         }
                         DPRINTF(D_SIGN, "sign_sg_init(): add SG@%p: "
                                 "SG=\"2\", SPRI=\"%d\"\n", newsg, newsg->spri);
-                        TAILQ_INSERT_TAIL(&GlobalSign.SigGroups,
+                        STAILQ_INSERT_TAIL(&GlobalSign.SigGroups,
                                 newsg, entries);
                 }
                 break;
@@ -422,7 +422,7 @@ sign_sg_init(struct filed *Files)
                         ALLOC_SG(newsg);
                         newsg->spri = f->f_file; /* not needed but shows SGs */
                         ASSIGN_FQ();
-                        TAILQ_INSERT_TAIL(&GlobalSign.SigGroups,
+                        STAILQ_INSERT_TAIL(&GlobalSign.SigGroups,
                                 newsg, entries);
                 }
                 break;
@@ -440,8 +440,8 @@ sign_global_free()
         struct filed_queue *fq, *tmp_fq;
 
         DPRINTF((D_CALL|D_SIGN), "sign_global_free()\n");
-        TAILQ_FOREACH_SAFE(sg, &GlobalSign.SigGroups, entries, tmp_sg) {
-                if (!TAILQ_EMPTY(&sg->hashes)) {
+        STAILQ_FOREACH_SAFE(sg, &GlobalSign.SigGroups, entries, tmp_sg) {
+                if (!STAILQ_EMPTY(&sg->hashes)) {
                         /* send CB and SB twice to get minimal redundancy
                          * for the last few message hashes */
                         sign_send_certificate_block(sg);
@@ -450,13 +450,14 @@ sign_global_free()
                         sign_send_signature_block(sg, true);
                         sign_free_hashes(sg);
                 }
-                fq = TAILQ_FIRST(&sg->files);
+                fq = STAILQ_FIRST(&sg->files);
                 while (fq != NULL) {
-                        tmp_fq = TAILQ_NEXT(fq, entries);
+                        tmp_fq = STAILQ_NEXT(fq, entries);
                         free(fq);
                         fq = tmp_fq;
                 }
-                TAILQ_REMOVE(&GlobalSign.SigGroups, sg, entries);
+                STAILQ_REMOVE(&GlobalSign.SigGroups,
+                        sg, signature_group_t, entries);
                 free(sg);
         }
         sign_free_string_queue(&GlobalSign.sig2_delims);
@@ -498,7 +499,7 @@ sign_send_certificate_block(struct signature_group_t *sg)
         /* do nothing if CBs already sent or if there was no message in SG */
         if (!sg->resendcount
          || ((sg->resendcount == SIGN_RESENDCOUNT_CERTBLOCK)
-             && TAILQ_EMPTY(&sg->hashes)))
+             && STAILQ_EMPTY(&sg->hashes)))
                 return false;
 
         DPRINTF((D_CALL|D_SIGN), "sign_send_certificate_block(%p)\n", sg);
@@ -536,7 +537,7 @@ sign_send_certificate_block(struct signature_group_t *sg)
                 DPRINTF((D_CALL|D_SIGN), "sign_send_certificate_block(): "
                         "calling fprintlog()\n");
 
-                TAILQ_FOREACH(fq, &sg->files, entries) {
+                STAILQ_FOREACH(fq, &sg->files, entries) {
                         /* we have to preserve the f_prevcount */
                         int tmpcnt;
                         tmpcnt = fq->f->f_prevcount;
@@ -568,7 +569,7 @@ sign_get_sg(int pri, struct filed *f)
                         break;
                 case 1:
                 case 2:
-                        TAILQ_FOREACH(sg, &GlobalSign.SigGroups, entries) {
+                        STAILQ_FOREACH(sg, &GlobalSign.SigGroups, entries) {
                                 if (sg->spri >= pri) {
                                         rc = sg;
                                         break;
@@ -610,7 +611,7 @@ sign_send_signature_block(struct signature_group_t *sg, bool force)
         DPRINTF((D_CALL|D_SIGN), "sign_send_signature_block(%p, %d)\n",
                 sg, force);
 
-        TAILQ_FOREACH(qentry, &sg->hashes, entries)
+        STAILQ_FOREACH(qentry, &sg->hashes, entries)
                 sg_num_hashes++;
 
         /* only act if a division is full */
@@ -633,7 +634,7 @@ sign_send_signature_block(struct signature_group_t *sg, bool force)
         }
 
         /* now the SD */
-        qentry = TAILQ_FIRST(&sg->hashes);
+        qentry = STAILQ_FIRST(&sg->hashes);
         sd_len = snprintf(sd, sizeof(sd), "[ssign "
                 "VER=\"%s\" RSID=\"%lld\" SG=\"%d\" "
                 "SPRI=\"%d\" GBC=\"%lld\" FMN=\"%lld\" "
@@ -646,7 +647,7 @@ sign_send_signature_block(struct signature_group_t *sg, bool force)
                 sd_len += snprintf(sd+sd_len, sizeof(sd)-sd_len,
                         "%s ", qentry->data);
                 hashes_sent++;
-                qentry = TAILQ_NEXT(qentry, entries);
+                qentry = STAILQ_NEXT(qentry, entries);
         }
         /* overwrite last space and close SD */
         assert(sd_len < sizeof(sd));
@@ -660,7 +661,7 @@ sign_send_signature_block(struct signature_group_t *sg, bool force)
                         " fprintlog(), sending %d out of %d hashes\n",
                         MIN(SIGN_MAX_HASH_NUM, sg_num_hashes), sg_num_hashes);
         
-                TAILQ_FOREACH(fq, &sg->files, entries) {
+                STAILQ_FOREACH(fq, &sg->files, entries) {
                         int tmpcnt;
                         tmpcnt = fq->f->f_prevcount;
                         fprintlog(fq->f, buffer, NULL);
@@ -671,11 +672,12 @@ sign_send_signature_block(struct signature_group_t *sg, bool force)
         }
         /* always drop the oldest division of hashes */
         if (sg_num_hashes >= SIGN_HASH_NUM) {
-                qentry = TAILQ_FIRST(&sg->hashes);
+                qentry = STAILQ_FIRST(&sg->hashes);
                 for (int i = 0; i < SIGN_HASH_DIVISION_NUM; i++) {
                         old_qentry = qentry;
-                        qentry = TAILQ_NEXT(old_qentry, entries);
-                        TAILQ_REMOVE(&sg->hashes, old_qentry, entries);
+                        qentry = STAILQ_NEXT(old_qentry, entries);
+                        STAILQ_REMOVE(&sg->hashes, old_qentry,
+                                string_queue, entries);
                         FREEPTR(old_qentry->data);
                         FREEPTR(old_qentry);
                 }
@@ -696,12 +698,12 @@ sign_free_string_queue(struct string_queue_head *sqhead)
         struct string_queue *qentry, *tmp_qentry;
         
         DPRINTF((D_CALL|D_SIGN), "sign_free_string_queue(%p)\n", sqhead);
-        TAILQ_FOREACH_SAFE(qentry, sqhead, entries, tmp_qentry) {
-                TAILQ_REMOVE(sqhead, qentry, entries);
+        STAILQ_FOREACH_SAFE(qentry, sqhead, entries, tmp_qentry) {
+                STAILQ_REMOVE(sqhead, qentry, string_queue, entries);
                 FREEPTR(qentry->data);
                 free(qentry);
         }
-        assert(TAILQ_EMPTY(sqhead));
+        assert(STAILQ_EMPTY(sqhead));
 }
 
 /*
@@ -737,7 +739,7 @@ sign_append_hash(char *hash, struct signature_group_t *sg)
 
         /* if one SG is shared by several destinations
          * prevent duplicate entries */
-        if ((qentry = TAILQ_LAST(&sg->hashes, string_queue_head))
+        if ((qentry = STAILQ_LAST(&sg->hashes, string_queue, entries))
           && !strcmp(qentry->data, hash)) {
                 DPRINTF((D_CALL|D_SIGN), "sign_append_hash('%s', %p): "
                         "hash already in queue\n", hash, sg);
@@ -747,7 +749,7 @@ sign_append_hash(char *hash, struct signature_group_t *sg)
         MALLOC(qentry, sizeof(*qentry));
         qentry->key = sign_assign_msg_num(sg);
         qentry->data = hash;
-        TAILQ_INSERT_TAIL(&sg->hashes, qentry, entries);
+        STAILQ_INSERT_TAIL(&sg->hashes, qentry, entries);
         DPRINTF((D_CALL|D_SIGN), "sign_append_hash('%s', %p): "
                 "#%lld\n", hash, sg, qentry->key);
         return true;
@@ -887,7 +889,7 @@ sign_new_reboot_session()
 
         assert(GlobalSign.sg <= 3);
         /* reset SGs */
-        TAILQ_FOREACH(sg, &GlobalSign.SigGroups, entries) {
+        STAILQ_FOREACH(sg, &GlobalSign.SigGroups, entries) {
                 sg->resendcount = SIGN_RESENDCOUNT_CERTBLOCK;
                 sg->last_msg_num = 1;
         }

@@ -82,7 +82,7 @@ __RCSID("$NetBSD: syslogd.c,v 1.84 2006/11/13 20:24:00 christos Exp $");
 struct sign_global_t GlobalSign = {
         .rsid = 0,
         .sg = SIGN_SG,
-        .sig2_delims = TAILQ_HEAD_INITIALIZER(GlobalSign.sig2_delims)
+        .sig2_delims = STAILQ_HEAD_INITIALIZER(GlobalSign.sig2_delims)
 };
 #endif /* !DISABLE_SIGN */
 
@@ -2612,7 +2612,7 @@ domark(int fd, short event, void *ev)
 #ifndef DISABLE_SIGN
         if (GlobalSign.rsid) {  /* check if initialized */
                 struct signature_group_t *sg;
-                TAILQ_FOREACH(sg, &GlobalSign.SigGroups, entries) {
+                STAILQ_FOREACH(sg, &GlobalSign.SigGroups, entries) {
                         sign_send_certificate_block(sg);
                 }
         }
@@ -2909,22 +2909,22 @@ read_config_file(FILE *cf, struct filed **f_ptr)
                                                 free(sqentry);
                                         } else {
                                                 sqentry->data = tmp_buf;
-                                                if (TAILQ_EMPTY(&GlobalSign.sig2_delims))
-                                                        TAILQ_INSERT_HEAD(&GlobalSign.sig2_delims, sqentry, entries);
+                                                if (STAILQ_EMPTY(&GlobalSign.sig2_delims))
+                                                        STAILQ_INSERT_HEAD(&GlobalSign.sig2_delims, sqentry, entries);
                                                 else {
                                                         /* keep delimiters sorted */
-                                                        sqe1 = TAILQ_FIRST(&GlobalSign.sig2_delims);
+                                                        sqe1 = STAILQ_FIRST(&GlobalSign.sig2_delims);
                                                         while (sqe1
-                                                           && (sqe2 = TAILQ_NEXT(sqe1, entries))) {
+                                                           && (sqe2 = STAILQ_NEXT(sqe1, entries))) {
                                                                 if (sqe2->key > sqentry->key)
                                                                         break;
                                                                 else if (sqe2->key == sqentry->key) {
                                                                         DPRINTF(D_PARSE, "duplicate sign_delim_sg2: %s\n", tmp_buf);
-                                                                        TAILQ_REMOVE(&GlobalSign.sig2_delims, sqe2, entries);
+                                                                        STAILQ_REMOVE(&GlobalSign.sig2_delims, sqe2, string_queue, entries);
                                                                         break;
                                                                 }
                                                         }
-                                                        TAILQ_INSERT_AFTER(&GlobalSign.sig2_delims, sqe1, sqentry, entries);
+                                                        STAILQ_INSERT_AFTER(&GlobalSign.sig2_delims, sqe1, sqentry, entries);
                                                 }
                                         }
                                 } while /* additional values? */ (copy_config_value_word(&tmp_buf, &p));
@@ -3250,8 +3250,8 @@ init(int fd, short event, void *ev)
 
 #define MOVE_QUEUE(dst, src) do {                                       \
                 struct buf_queue *buf;                                  \
-                TAILQ_CONCAT(&dst->f_qhead, &src->f_qhead, entries);    \
-                TAILQ_FOREACH(buf, &dst->f_qhead, entries) {            \
+                STAILQ_CONCAT(&dst->f_qhead, &src->f_qhead);    \
+                STAILQ_FOREACH(buf, &dst->f_qhead, entries) {            \
                       dst->f_qelements++;                               \
                       dst->f_qsize += buf_queue_obj_size(buf);          \
                 }                                                       \
@@ -3426,9 +3426,7 @@ cfline(const unsigned int linenum, char *line, struct filed *f, char *prog, char
         memset(f, 0, sizeof(*f));
         for (i = 0; i <= LOG_NFACILITIES; i++)
                 f->f_pmask[i] = INTERNAL_NOPRI;
-        f->f_qhead = ((struct buf_queue_head)
-                        TAILQ_HEAD_INITIALIZER(f->f_qhead));
-        TAILQ_INIT(&f->f_qhead); 
+        STAILQ_INIT(&f->f_qhead); 
         
         /* 
          * There should not be any space before the log facility.
@@ -4032,7 +4030,7 @@ send_queue(struct filed *f)
          }
 #endif /* !DISABLE_TLS */
         
-        TAILQ_FOREACH_SAFE(qentry, &f->f_qhead, entries, tqentry) {
+        STAILQ_FOREACH_SAFE(qentry, &f->f_qhead, entries, tqentry) {
                 DPRINTF((D_DATA|D_CALL), "send_queue() calls fprintlog()\n");
                 fprintlog(f, qentry->msg, qentry);
         }
@@ -4053,20 +4051,20 @@ find_qentry_to_delete(const struct buf_queue_head *head, const int strategy, con
  
         struct buf_queue *qentry_tmp;
  
-        if (reset || TAILQ_EMPTY(head)) {
+        if (reset || STAILQ_EMPTY(head)) {
                 pri = LOG_DEBUG;
-                qentry_static = TAILQ_FIRST(head);
+                qentry_static = STAILQ_FIRST(head);
                 return NULL;
         }
 
         /* find elements to delete */
         if (strategy == PURGE_BY_PRIORITY) {
                 qentry_tmp = qentry_static;
-                while ((qentry_tmp = TAILQ_NEXT(qentry_tmp, entries))) {
+                while ((qentry_tmp = STAILQ_NEXT(qentry_tmp, entries))) {
                         if (LOG_PRI(qentry_tmp->msg->pri) == pri) {
                                 /* save the successor, because qentry_tmp
                                  * is probably deleted by the caller */
-                                qentry_static = TAILQ_NEXT(qentry_tmp, entries);
+                                qentry_static = STAILQ_NEXT(qentry_tmp, entries);
                                 return qentry_tmp;
                         }
                 }
@@ -4077,7 +4075,7 @@ find_qentry_to_delete(const struct buf_queue_head *head, const int strategy, con
                         return NULL;
         } else /* strategy == PURGE_OLDEST or other value */ {
                 qentry_tmp = qentry_static;
-                qentry_static = TAILQ_NEXT(qentry_tmp, entries);
+                qentry_static = STAILQ_NEXT(qentry_tmp, entries);
                 return qentry_tmp;  /* is NULL on empty queue */
         }
 }
@@ -4207,7 +4205,7 @@ message_queue_remove(struct filed *f, struct buf_queue *qentry)
         if (!f || !qentry || !qentry->msg)
                 return false;
 
-        TAILQ_REMOVE(&f->f_qhead, qentry, entries);
+        STAILQ_REMOVE(&f->f_qhead, qentry, buf_queue, entries);
         f->f_qelements--;
         f->f_qsize -= buf_queue_obj_size(qentry);
 
@@ -4237,7 +4235,7 @@ message_queue_add(struct filed *f, struct buf_msg *buffer)
                 qentry->msg = buffer;
                 f->f_qelements++;
                 f->f_qsize += buf_queue_obj_size(qentry);
-                TAILQ_INSERT_TAIL(&f->f_qhead, qentry, entries);
+                STAILQ_INSERT_TAIL(&f->f_qhead, qentry, entries);
 
                 DPRINTF(D_BUFFER, "msg @%p queued @%p, qlen = %d\n",
                         buffer, f, f->f_qelements);
@@ -4253,9 +4251,9 @@ message_queue_freeall(struct filed *f)
         if (!f) return;
         DPRINTF(D_MEM, "message_queue_freeall(f@%p) with f_qhead@%p\n", f, &f->f_qhead);
 
-        while (!TAILQ_EMPTY(&f->f_qhead)) {
-                qentry = TAILQ_FIRST(&f->f_qhead);
-                TAILQ_REMOVE(&f->f_qhead, qentry, entries);
+        while (!STAILQ_EMPTY(&f->f_qhead)) {
+                qentry = STAILQ_FIRST(&f->f_qhead);
+                STAILQ_REMOVE(&f->f_qhead, qentry, buf_queue, entries);
                 DELREF(qentry->msg);
                 FREEPTR(qentry);                
         }

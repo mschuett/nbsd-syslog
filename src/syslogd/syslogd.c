@@ -813,24 +813,31 @@ logpath_fileadd(char ***lp, int *szp, int *maxszp, char *file)
 /* 
  * checks UTF-8 codepoint
  * returns either its length in bytes or 0 if *input is invalid
+ * 
+ * note: this only checks for technically correct encoding.
+ * it does not check for shortest form encoding!
  */
 static inline unsigned
 valid_utf8(const char *c) {
-    unsigned rc, nb = 0;
+        unsigned rc, nb;
 
-    if (!(*c & 0x80)) nb = 1;
-    else if ((*c & 0xc0) == 0x80) return 0;
-    else if ((*c & 0xe0) == 0xc0) nb = 2;
-    else if ((*c & 0xf0) == 0xe0) nb = 3;
-    else if ((*c & 0xf8) == 0xf0) nb = 4;
-    else if ((*c & 0xfc) == 0xf8) nb = 5;
-    else if ((*c & 0xfe) == 0xfc) nb = 6;
+        /* first byte gives sequence length */
+             if ((*c & 0x80) == 0x00) return 1; /* 0bbbbbbb -- ASCII */
+        else if ((*c & 0xc0) == 0x80) nb = 0;   /* 10bbbbbb -- trailing byte */
+        else if ((*c & 0xe0) == 0xc0) nb = 2;   /* 110bbbbb */
+        else if ((*c & 0xf0) == 0xe0) nb = 3;   /* 1110bbbb */
+        else if ((*c & 0xf8) == 0xf0) nb = 4;   /* 11110bbb */
+        else return 0; /* UTF-8 allows only up to 4 bytes */ 
 
-    rc = nb;
-    while (nb-- > 1)
-      if ((*(c + nb-1) & 0xc0) != 0x80) return 0;
-
-    return rc;
+        rc = nb;
+        /* check trailing bytes */
+        switch (nb) {
+        default: return 0;
+        case 4: if ((*(c+3) & 0xc0) != 0x80) return 0;
+        case 3: if ((*(c+2) & 0xc0) != 0x80) return 0;
+        case 2: if ((*(c+1) & 0xc0) != 0x80) return 0;
+        }
+        return rc;
 }
 
 /* note previous versions transscribe
@@ -950,12 +957,10 @@ check_sd(char* p, const bool ascii)
                                                 REPL_CNTRL(*q);
                                         } else {
                                                 int i;
-                                                i = valid_utf8(p);
-                                                if (i) while(--i) { /* multi byte char */
-                                                        q++; i--;
-                                                       } 
-                                                else
-                                                        *q = '?';
+                                                i = valid_utf8(q);
+                                                if (i == 0) *q = '?';
+                                                else if (i == 1) REPL_CNTRL(*q);
+                                                else q += (i-1); /* multi byte char */
                                         }
                                 }
                                 q++;
@@ -1158,12 +1163,16 @@ printline(char *hname, char *msg, int flags)
 all_bsd_msg:
                 for (;; p++) {
                         if (*p == '\0') {
-                                buffer->msg = strndup(start, p - start);
                                 break;
                         } else {
                                 *p &= 0177;
                                 REPL_CNTRL(*p);
                         }
+                }
+                if (p - start) {
+                        buffer->msg = strndup(start, p - start);
+                        buffer->msgorig = buffer->msg;
+                        buffer->msglen = buffer->msgsize = 1 + p - start;
                 }
                 DPRINTF(D_DATA, "Got msg \"%s\"\n", buffer->msg);
         } else /* syslog-protocol */ {
@@ -1283,32 +1292,31 @@ all_syslog_msg:
                  && *(p+2) != '\0' && *(p+2) == (char) 0xBF) {
                         DPRINTF(D_DATA, "UTF-8 BOM\n");
                         utf8allowed = true;
-                        start = p = p+3;
+                        p += 3;
                 }
-                /* enter for loop only if bytes are left */
-                if (*p != '\0') for (;; p++) {
+                assert(!buffer->msg);
+                for (;; p++) {
                         if (*p == '\0') {
-                                buffer->msg = strndup(start, p - start);
                                 break;
                         } else if (utf8allowed) {
                                 i = valid_utf8(p);
-                                if (i) while(i) { /* multi byte char */
-                                        q++; i--;
-                                       } 
-                                else
-                                        *q = '?';
-                                /* else i == 1 --> *p \in ASCII */
+                                if (i == 0) *p = '?';
+                                else if (i == 1) REPL_CNTRL(*p);
+                                else p += (i-1); /* multi byte char */
                         } else {
                                 *p &= 0177;
                                 REPL_CNTRL(*p);
                         }
                 }
+                if (p - start) {
+                        buffer->msg = strndup(start, p - start);
+                        buffer->msgorig = buffer->msg;
+                        buffer->msglen = buffer->msgsize = 1 + p - start;
+                }
                 DPRINTF(D_DATA, "Got msg \"%s\"\n", buffer->msg);
         }
 
         buffer->recvhost = strdup(hname);
-        buffer->msglen = buffer->msgsize = 1 + p - start;
-        buffer->msgorig = buffer->msg;
         buffer->pri = pri;
         if (bsdsyslog)
                 buffer->flags = flags |= BSDSYSLOG;
@@ -1658,21 +1666,13 @@ logmsg(struct buf_msg *buffer)
         omask = sigblock(sigmask(SIGHUP)|sigmask(SIGALRM));
 
         /* sanity check */
-        if (Debug) {
-                if (buffer->refcount != 1)
-                        DPRINTF(D_BUFFER,
-                                "buffer->refcount != 1 -- memory leak?\n");
-                if ((buffer->msg) && (buffer->msglen != strlen(buffer->msg)+1))
-                        DPRINTF((D_BUFFER|D_DATA),
-                                "buffer->msglen = %d != %d = "
-                                "strlen(buffer->msg)+1\n",
-                                buffer->msglen, strlen(buffer->msg)+1);
-                if (!buffer->msg && !buffer->sd && !buffer->msgid)
-                        DPRINTF(D_BUFFER, "Empty message?\n");
-                /* basic invariants */
-                assert(buffer->msglen <= buffer->msgsize);
-                assert(buffer->msgorig <= buffer->msg);
-        }
+        assert(buffer->refcount == 1);
+        assert(buffer->msglen <= buffer->msgsize);
+        assert(buffer->msgorig <= buffer->msg);
+        assert((buffer->msg && buffer->msglen == strlen(buffer->msg)+1)
+              || (!buffer->msg && !buffer->msglen));
+        if (!buffer->msg && !buffer->sd && !buffer->msgid)
+                DPRINTF(D_BUFFER, "Empty message?\n");
 
         /* extract facility and priority level */
         if (buffer->flags & MARK)
@@ -4133,8 +4133,7 @@ buf_msg_new(const size_t len)
 {
         struct buf_msg *newbuf;
 
-        MALLOC(newbuf, sizeof(*newbuf));
-        memset(newbuf, 0, sizeof(*newbuf));
+        CALLOC(newbuf, sizeof(*newbuf));
 
         if (len) {/* len = 0 is valid */         
                 if (!(newbuf->msg = malloc(len))) {

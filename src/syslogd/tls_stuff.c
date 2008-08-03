@@ -1550,7 +1550,7 @@ dispatch_tls_send(int fd, short event, void *arg)
                                 free_tls_sslptr(conn_info);
                                 schedule_event(&conn_info->event,
                                         &((struct timeval){conn_info->reconnect, 0}),
-                                        tls_reconnect, sendmsg->f);
+                                        tls_reconnect, conn_info);
                                 RECONNECT_BACKOFF(conn_info->reconnect);
                                 break;
                         default:break;

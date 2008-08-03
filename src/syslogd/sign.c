@@ -442,8 +442,10 @@ sign_global_free()
         DPRINTF((D_CALL|D_SIGN), "sign_global_free()\n");
         TAILQ_FOREACH_SAFE(sg, &GlobalSign.SigGroups, entries, tmp_sg) {
                 if (!TAILQ_EMPTY(&sg->hashes)) {
-                        /* send SB twice to get minimal redundancy
+                        /* send CB and SB twice to get minimal redundancy
                          * for the last few message hashes */
+                        sign_send_certificate_block(sg);
+                        sign_send_certificate_block(sg);
                         sign_send_signature_block(sg, true);
                         sign_send_signature_block(sg, true);
                         sign_free_hashes(sg);

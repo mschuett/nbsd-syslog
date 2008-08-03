@@ -22,18 +22,6 @@
 #define TLS_PERSIST_LINELENGTH   32768
 /* TODO: keep simple statistics with a moving average linelength? */
 
-/* copied from FreeBSD -- makes some loops shorter */
-#ifndef SLIST_FOREACH_SAFE
-#define SLIST_FOREACH_SAFE(var, head, field, tvar)          \
-    for ((var) = SLIST_FIRST((head));               \
-        (var) && ((tvar) = SLIST_NEXT((var), field), 1);        \
-        (var) = (tvar))
-#define TAILQ_FOREACH_SAFE(var, head, field, tvar)          \
-    for ((var) = TAILQ_FIRST((head));               \
-        (var) && ((tvar) = TAILQ_NEXT((var), field), 1);        \
-        (var) = (tvar))
-#endif /* !SLIST_FOREACH_SAFE */
-
 /* timeout to call non-blocking TLS operations again */
 #define TLS_RETRY_EVENT_USEC 20000
 

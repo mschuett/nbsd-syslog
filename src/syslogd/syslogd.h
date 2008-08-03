@@ -60,6 +60,30 @@
 #include <sys/stdint.h>
 #include <sys/resource.h>
 
+/* copied from FreeBSD -- makes some loops shorter */
+#ifndef SLIST_FOREACH_SAFE
+#define SLIST_FOREACH_SAFE(var, head, field, tvar)          \
+    for ((var) = SLIST_FIRST((head));               \
+        (var) && ((tvar) = SLIST_NEXT((var), field), 1);        \
+        (var) = (tvar))
+#endif /* !SLIST_FOREACH_SAFE */
+#ifndef TAILQ_FOREACH_SAFE
+#define TAILQ_FOREACH_SAFE(var, head, field, tvar)          \
+    for ((var) = TAILQ_FIRST((head));               \
+        (var) && ((tvar) = TAILQ_NEXT((var), field), 1);        \
+        (var) = (tvar))
+#endif /* !TAILQ_FOREACH_SAFE */
+#ifndef TAILQ_CONCAT
+#define TAILQ_CONCAT(head1, head2, field) do {              \
+    if (!TAILQ_EMPTY(head2)) {                  \
+        *(head1)->tqh_last = (head2)->tqh_first;        \
+        (head2)->tqh_first->field.tqe_prev = (head1)->tqh_last; \
+        (head1)->tqh_last = (head2)->tqh_last;          \
+        TAILQ_INIT((head2));                    \
+    }                               \
+} while (0)
+#endif /* !TAILQ_CONCAT */
+
 /* message buffer container used for processing, formatting, and queueing */
 struct buf_msg {
         unsigned int refcount;

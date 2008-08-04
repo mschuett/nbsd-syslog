@@ -50,6 +50,7 @@ extern size_t linebufsize;
 extern int    RemoteAddDate; 
 extern char  *timestamp;
 extern char  *LocalFQDN;
+extern char   appname[];
 
 extern void    logerror(const char *, ...);
 extern void    loginfo(const char *, ...);
@@ -1161,7 +1162,7 @@ dispatch_socket_accept(int fd, short event, void *ev)
         }
 
 #ifdef LIBWRAP
-        request_init(&req, RQ_DAEMON, "syslogd", RQ_FILE, newsock, NULL);
+        request_init(&req, RQ_DAEMON, appname, RQ_FILE, newsock, NULL);
         fromhost(&req);
         if (!hosts_access(&req)) {
                 logerror("access from %s denied by hosts_access", peername);

@@ -210,6 +210,8 @@ bool    ChainRelays = false;    /* preserves the names of all relays
                                  * 
                                  * TODO: implement
                                  */
+char  appname[]   = "syslogd";         /* the APPNAME for own messages */
+char *include_pid = NULL; /* include PID for own messages, NULL disables */
 
 void    cfline(const unsigned int, char *, struct filed *, char *, char *);
 char   *cvthname(struct sockaddr_storage *);
@@ -546,6 +548,10 @@ getgroup:
 #endif /* __NetBSD_Version__ */
         }
 
+#define MAX_PID_LEN 5
+        include_pid = malloc(MAX_PID_LEN+1);
+        snprintf(include_pid, MAX_PID_LEN+1, "%d", getpid());
+
         /*
          * Create the global kernel event descriptor.
          *
@@ -727,7 +733,7 @@ dispatch_read_finet(int fd, short event, void *ev)
                 fd, event, ev, linebuf, linebufsize-1);
 
 #ifdef LIBWRAP
-        request_init(&req, RQ_DAEMON, "syslogd", RQ_FILE, fd, NULL);
+        request_init(&req, RQ_DAEMON, appname, RQ_FILE, fd, NULL);
         fromhost(&req);
         reject = !hosts_access(&req);
         if (reject)
@@ -1444,7 +1450,8 @@ logmsg_async(const int pri, const char *sd, const char *msg, const int flags)
         }
         if (sd) buffer->sd = strdup(sd);
         buffer->timestamp = strdup(make_timestamp(NULL, !BSDOutputFormat));
-        buffer->prog = strdup("syslogd");
+        buffer->prog = appname;
+        buffer->pid = include_pid;
         buffer->recvhost = buffer->host = LocalFQDN;
         buffer->pri = pri;
         buffer->flags = flags;
@@ -1612,8 +1619,8 @@ logmsg_async_f(const int pri, const char *sd, const char *msg, const int flags, 
         }
         if (sd) buffer->sd = strdup(sd);
         buffer->timestamp = strdup(make_timestamp(NULL, true));
-        buffer->prog = strdup("syslogd");
-
+        buffer->prog = appname;
+        buffer->pid = include_pid;
         buffer->recvhost = buffer->host = LocalFQDN;
         buffer->pri = pri;
         buffer->flags = flags;
@@ -1996,7 +2003,9 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
                                 strdup(make_timestamp(NULL, !BSDOutputFormat));
                         buffer->pri = f->f_prevmsg->pri;
                         buffer->host = LocalFQDN;
-                        buffer->prog = strdup("syslogd");
+                        buffer->prog = appname;
+                        buffer->pid = include_pid;
+                        
                 } else {
                         buffer = NEWREF(f->f_prevmsg);
                 }
@@ -2526,33 +2535,51 @@ domark(int fd, short event, void *ev)
         dq_t q, nextq;
         struct rlimit rlp;
         struct rusage ru;
+        struct clockinfo ci;
+        size_t ci_len = sizeof(ci);
+        int ci_mib[2] = {CTL_KERN, KERN_CLOCKRATE};
 #define MARKLINELENGTH 120
         char markline[MARKLINELENGTH];
         char maxmem[12];
         char usemem[12];
 #define MEMORY_HIGH_PERC 95
         bool sweep_queues = false;
-        
+
         schedule_event(&ev_pass,
                 &((struct timeval){TIMERINTVL, 0}),
                 domark, ev_pass);
         DPRINTF((D_CALL|D_EVENT), "domark()\n");
+
+
+        if (sysctl(ci_mib, 2, &ci, &ci_len, NULL, 0) == -1) {
+                DPRINTF(D_MISC, "Couldn't get kern.clockrate\n");
+                ci.tick = 10000;
+        }
 
         if ((getrusage(RUSAGE_SELF, &ru) == -1)
          || (getrlimit(RLIMIT_DATA, &rlp) == -1)) {
                 logerror("Unable to get ressource usage/limits");
                 snprintf(markline, MARKLINELENGTH, "-- MARK --");
         } else {
-                /* TODO: the memory usage reporting is not accurate */
-                humanize_number(usemem, sizeof(usemem),
-                        (ru.ru_idrss+ru.ru_isrss+ru.ru_ixrss),
+                /* I hope this is accurate enough to be usable */
+                u_int64_t ticks;
+                u_int64_t mem;
+                
+                /* execution time in usec */
+                ticks = ru.ru_stime.tv_sec + ru.ru_utime.tv_sec; /* sec */
+                ticks *= 1000000;                               /* usec */
+                ticks += ru.ru_stime.tv_usec + ru.ru_utime.tv_usec;
+                ticks /= ci.tick;                              /* ticks */
+                mem = ru.ru_idrss+ru.ru_isrss+ru.ru_ixrss * 1024; /* bytes */
+
+                humanize_number(usemem, sizeof(usemem), mem/ticks,
                         "bytes", HN_AUTOSCALE, 0);
                 humanize_number(maxmem, sizeof(maxmem),
                         rlp.rlim_max, "bytes", HN_AUTOSCALE, 0);
                 
                 snprintf(markline, MARKLINELENGTH,
-                        "-- MARK -- (mem usage: %s/%s)",
-                        usemem, maxmem);
+                        "-- MARK -- (mem usage: %s/%s, raw: mem/ticks = %llu/%llu)",
+                        usemem, maxmem, mem, ticks);
                 /* negative numbers imply overflow. check necessary? */
                 if ((ru.ru_idrss+ru.ru_isrss+ru.ru_ixrss > 0)
                  && ((MEMORY_HIGH_PERC * rlp.rlim_max) > 0)
@@ -2640,10 +2667,10 @@ logerror(const char *fmt, ...)
         va_end(ap);
 
         if (errno)
-                (void)snprintf(buf, sizeof(buf), "syslogd: %s: %s", 
-                    tmpbuf, strerror(errno));
+                (void)snprintf(buf, sizeof(buf), "%s: %s: %s", 
+                    appname, tmpbuf, strerror(errno));
         else
-                (void)snprintf(buf, sizeof(buf), "syslogd: %s", tmpbuf);
+                (void)snprintf(buf, sizeof(buf), "%s: %s", appname, tmpbuf);
 
         if (daemonized) 
                 logmsg_async(LOG_SYSLOG|LOG_ERR, NULL, buf, ADDDATE);
@@ -2668,7 +2695,7 @@ loginfo(const char *fmt, ...)
         va_start(ap, fmt);
         (void)vsnprintf(tmpbuf, sizeof(tmpbuf), fmt, ap);
         va_end(ap);
-        (void)snprintf(buf, sizeof(buf), "syslogd: %s", tmpbuf);
+        (void)snprintf(buf, sizeof(buf), "%s: %s", appname, tmpbuf);
 
         if (daemonized) 
                 logmsg_async(LOG_SYSLOG|LOG_INFO, NULL, buf, ADDDATE);
@@ -4152,8 +4179,11 @@ buf_msg_free(struct buf_msg *buf)
 
         buf->refcount--;
         if (!buf->refcount) {
-                /* small optimization: the host/recvhost may point to the
-                 * global HostName/FQDN. of course this must not be free()d */
+                FREEPTR(buf->timestamp);
+                /* small optimizations: the host/recvhost may point to the
+                 * global HostName/FQDN. of course this must not be free()d
+                 * same goes for appname and include_pid
+                 */
                 if (buf->recvhost != buf->host
                  && buf->recvhost != LocalHostName
                  && buf->recvhost != LocalFQDN
@@ -4163,9 +4193,13 @@ buf_msg_free(struct buf_msg *buf)
                  && buf->host != LocalFQDN
                  && buf->host != oldLocalFQDN)
                         FREEPTR(buf->host);
-                FREEPTR(buf->msgorig);  /* instead of msg */
+                if (buf->prog != appname)
+                        FREEPTR(buf->prog);
+                if (buf->pid != include_pid)
+                        FREEPTR(buf->pid);
+                FREEPTR(buf->msgid);
                 FREEPTR(buf->sd);
-                FREEPTR(buf->timestamp);
+                FREEPTR(buf->msgorig);  /* instead of msg */
                 FREEPTR(buf);
         }
 }
@@ -4180,21 +4214,24 @@ buf_queue_obj_size(struct buf_queue *qentry)
         sum += sizeof(*qentry)
               + sizeof(*qentry->msg)
               + qentry->msg->msgsize
-              + SAFEstrlen(qentry->msg->timestamp)
-              + SAFEstrlen(qentry->msg->prog)
-              + SAFEstrlen(qentry->msg->pid)
-              + SAFEstrlen(qentry->msg->msgid);
-
+              + SAFEstrlen(qentry->msg->timestamp)+1
+              + SAFEstrlen(qentry->msg->msgid)+1;
+        if (qentry->msg->prog
+         && qentry->msg->prog != include_pid)
+                sum += strlen(qentry->msg->prog)+1;
+        if (qentry->msg->pid
+         && qentry->msg->pid != appname)
+                sum += strlen(qentry->msg->pid)+1;
         if (qentry->msg->recvhost
          && qentry->msg->recvhost != LocalHostName
          && qentry->msg->recvhost != LocalFQDN
          && qentry->msg->recvhost != oldLocalFQDN)
-                sum += strlen(qentry->msg->recvhost);
+                sum += strlen(qentry->msg->recvhost)+1;
         if (qentry->msg->host
          && qentry->msg->host != LocalHostName
          && qentry->msg->host != LocalFQDN
          && qentry->msg->host != oldLocalFQDN)
-                sum += strlen(qentry->msg->host);
+                sum += strlen(qentry->msg->host)+1;
 
         return sum;
 }

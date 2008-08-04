@@ -38,7 +38,9 @@ extern short    Debug;
 extern unsigned GlobalMsgCounter;
 extern time_t   now;
 extern char     timestamp[];
+extern char     appname[];
 extern char    *LocalFQDN;
+extern char    *include_pid;
 extern struct filed               *Files;
 extern struct sign_global_t        GlobalSign;
 extern struct tls_global_options_t tls_opt;
@@ -782,7 +784,8 @@ sign_msg_sign(struct buf_msg **bufferptr, char *sd, size_t linesize)
         /* set up buffer */
         buffer = buf_msg_new(0);
         buffer->timestamp = strdup(make_timestamp(NULL, true));
-        buffer->prog = strdup("syslogd");
+        buffer->prog = appname;
+        buffer->pid = include_pid;
         buffer->recvhost = buffer->host = LocalFQDN;
         buffer->pri = 110;
         buffer->flags = IGN_CONS|SIGN_MSG;

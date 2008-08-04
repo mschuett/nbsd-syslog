@@ -1501,6 +1501,7 @@ dispatch_tls_send(int fd, short event, void *arg)
 {
         struct tls_send_msg *sendmsg = (struct tls_send_msg *) arg;
         struct tls_conn_settings *conn_info = sendmsg->f->f_un.f_tls.tls_conn;
+        struct filed *f = sendmsg->f;
         int rc, error;
         bool retrying;
         
@@ -1569,11 +1570,13 @@ dispatch_tls_send(int fd, short event, void *arg)
                 DPRINTF((D_TLS|D_DATA), "TLS: SSL_write() complete\n");
                 ST_CHANGE(conn_info->state, ST_TLS_EST);
                 free_tls_send_msg(sendmsg);
+                send_queue(f);
         } else {
                 /* should not be reached */
                 DPRINTF((D_TLS|D_DATA), "unreachable code after SSL_write()\n");
                 ST_CHANGE(conn_info->state, ST_TLS_EST);
                 free_tls_send_msg(sendmsg);
+                send_queue(f);
         }
         if (retrying && conn_info->event->ev_events)
                 EVENT_ADD(conn_info->event);

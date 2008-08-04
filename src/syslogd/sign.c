@@ -61,11 +61,12 @@ extern unsigned int
  * init all SGs for a given algorithm 
  */
 bool
-sign_global_init(unsigned alg, struct filed *Files)
+sign_global_init(struct filed *Files)
 {
         DPRINTF((D_CALL|D_SIGN), "sign_global_init()\n");
-        if (alg > 3) {
-                logerror("sign_init(): invalid alg %d", alg);
+        if (!(GlobalSign.sg == 0 || GlobalSign.sg == 1
+           || GlobalSign.sg == 2 || GlobalSign.sg == 3)) {
+                logerror("sign_init(): invalid SG %d", GlobalSign.sg);
                 return false;
         }
 
@@ -95,8 +96,7 @@ sign_global_init(unsigned alg, struct filed *Files)
         assert(GlobalSign.keytype == 'C' || GlobalSign.keytype == 'K');
         assert(GlobalSign.pubkey_b64 && GlobalSign.privkey && GlobalSign.pubkey);
         assert(GlobalSign.privkey->pkey.dsa->priv_key);
-
-        GlobalSign.sg = alg;
+        
         GlobalSign.gbc = 0;
         STAILQ_INIT(&GlobalSign.SigGroups);
 

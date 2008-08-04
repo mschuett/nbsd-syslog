@@ -11,7 +11,7 @@
 #define MAXSVLINE       120             /* maximum saved line length */
 #define DEFUPRI         (LOG_USER|LOG_NOTICE)
 #define DEFSPRI         (LOG_KERN|LOG_NOTICE)
-#define TIMERINTVL      30              /* interval for checking flush, mark */
+#define TIMERINTVL      5              /* interval for checking flush, mark */
 #define TTYMSGTIME      1               /* timeout passed to ttymsg */
 
 #include <sys/param.h>
@@ -167,8 +167,7 @@ char *strndup(const char *str, size_t n);
 #define D_MEM2  1024    /* every single malloc/free */
 #define D_SIGN  2048    /* -sign */
 #define D_MISC  4096    /* everything else */
-//#define D_ALL   (D_CALL | D_DATA | D_NET | D_FILE | D_TLS | D_EVENT | D_BUFFER | D_SIGN | D_MISC) 
-#define D_ALL   (D_CALL | D_NET | D_FILE | D_EVENT | D_SIGN | D_MISC) 
+#define D_ALL   (D_CALL | D_MEM | D_MEM2 | D_DATA | D_NET | D_FILE | D_TLS | D_EVENT | D_BUFFER | D_SIGN | D_MISC) 
 
 /* remove first printf for short debug messages */
 #define DISABLE_DPRINTF 0

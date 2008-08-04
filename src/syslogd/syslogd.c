@@ -81,7 +81,7 @@ __RCSID("$NetBSD: syslogd.c,v 1.84 2006/11/13 20:24:00 christos Exp $");
 #include "sign.h"
 struct sign_global_t GlobalSign = {
         .rsid = 0,
-        .sg = SIGN_SG,
+        .sg = -1,       /* disable by default */
         .sig2_delims = STAILQ_HEAD_INITIALIZER(GlobalSign.sig2_delims)
 };
 #endif /* !DISABLE_SIGN */
@@ -2913,7 +2913,9 @@ read_config_file(FILE *cf, struct filed **f_ptr)
         }
         for (i = 0; i < A_CNT(config_keywords); i++)
                 FREEPTR(*config_keywords[i].variable);
-
+#ifndef DISABLE_SIGN
+        GlobalSign.sg = -1;
+#endif /* !DISABLE_SIGN */
         /* 
          * global settings
          */
@@ -3433,11 +3435,14 @@ init(int fd, short event, void *ev)
 
 #ifndef DISABLE_SIGN
         /* only initialize -sign if actually used */
-        for (f = Files; f; f = f->f_next) {
-                if ((f->f_flags & FFLAG_SIGN)
-                 && sign_global_init(GlobalSign.sg, Files))
-                        break;
-        }
+        if (GlobalSign.sg == 0 || GlobalSign.sg == 1 || GlobalSign.sg == 2)
+                (void)sign_global_init(Files);
+        else if (GlobalSign.sg == 3)
+                for (f = Files; f; f = f->f_next)
+                        if (f->f_flags & FFLAG_SIGN) {
+                                (void)sign_global_init(Files);
+                                break;
+                        }
 #endif /* !DISABLE_SIGN */
 
         RESTORE_SIGNALS(omask);

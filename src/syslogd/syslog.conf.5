@@ -438,6 +438,31 @@ Defaults are
 .Sq 1M
 .Sq 16M .
 .El
+.Sh SIGNING
+.Xr syslogd 8
+is able to digitally sign all processed messages.
+.Bl -hang
+.It Em sign_sg
+Enables signing. Set this option to enable syslog-sign and select how to assign
+messages to signature groups. Four possible options are:
+.Bl -ohang
+.It Em 0
+Use one global signature group for all messages.
+.It Em 1
+Use one signature group per priority.
+.It Em 2
+Use signature groups for ranges of priorities.
+.It Em 3
+Use one signature group per destination. This is a custom strategy not
+defined by the standard.
+.It Em sign_delim_sg2
+This Option is only evaluated with "sign_sg=2" and allows to configure the
+priority ranges for signature groups. The parameters are numerical values
+used as the maximum priority for one group.
+The default is to use one signature groups per facility, which is equal to
+setting "7 15 23 31 39 ...".
+.El
+.El
 .Sh FILES
 .Bl -tag -width /etc/syslog.conf -compact
 .It Pa /etc/syslog.conf

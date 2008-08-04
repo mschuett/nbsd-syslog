@@ -212,22 +212,20 @@ char *strndup(const char *str, size_t n);
 /* assumption: once init() has set up all global variables etc.
  * the bulk of available memory is used for buffer and can be freed
  * if necessary */
-#define MALLOC(ptr, size) while(!(ptr = malloc(size))) { \
-                                struct filed *f; \
-                                DPRINTF(D_MEM, "Unable to allocate memory"); \
-                                for (f = Files; f; f = f->f_next) \
-                                        message_queue_purge(f, \
-                                                f->f_qelements/10, \
-                                                PURGE_BY_PRIORITY); \
-                          } DPRINTF(D_MEM2, "MALLOC(%s@%p, %d)\n", #ptr, ptr, size);
-#define CALLOC(ptr, size) while(!(ptr = calloc(1, size))) { \
-                                struct filed *f; \
-                                DPRINTF(D_MEM, "Unable to allocate memory"); \
-                                for (f = Files; f; f = f->f_next) \
-                                        message_queue_purge(f, \
-                                                f->f_qelements/10, \
-                                                PURGE_BY_PRIORITY); \
-                          }
+#define MALLOC(ptr, size) \
+        do { while(!(ptr = malloc(size))) {                             \
+                DPRINTF(D_MEM, "Unable to allocate memory");            \
+                message_allqueues_purge();                              \
+           }                                                            \
+           DPRINTF(D_MEM2, "MALLOC(%s@%p, %d)\n", #ptr, ptr, size);     \
+        } while (0)
+#define CALLOC(ptr, size) \
+        do { while(!(ptr = calloc(1, size))) {                          \
+                DPRINTF(D_MEM, "Unable to allocate memory");            \
+                message_allqueues_purge();                              \
+           }                                                            \
+           DPRINTF(D_MEM2, "CALLOC(%s@%p, %d)\n", #ptr, ptr, size);     \
+        } while (0)
 
 /* strlen(NULL) does not work? */
 #define SAFEstrlen(x) ((x) ? strlen(x) : 0)

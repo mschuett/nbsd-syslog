@@ -133,7 +133,7 @@ struct sign_global_t {
         /* params for signature block, named as in RFC nnnn */
         const char   *ver;
         uint_fast64_t rsid;
-        unsigned int  sg;
+        int           sg;
         uint_fast64_t gbc;
         struct signature_group_head SigGroups;
         struct string_queue_head    sig2_delims;
@@ -152,7 +152,7 @@ struct sign_global_t {
         unsigned int  sig_len_b64; /* length of b64 signature */
 };
 
-bool sign_global_init(unsigned, struct filed*);
+bool sign_global_init(struct filed*);
 bool sign_sg_init(struct filed*);
 bool sign_get_keys();
 void sign_global_free();

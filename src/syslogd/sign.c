@@ -41,7 +41,6 @@ extern char     timestamp[];
 extern char     appname[];
 extern char    *LocalFQDN;
 extern char    *include_pid;
-extern struct filed               *Files;
 extern struct sign_global_t        GlobalSign;
 extern struct tls_global_options_t tls_opt;
 
@@ -54,8 +53,7 @@ extern void  buf_msg_free(struct buf_msg *msg);
 extern char *make_timestamp(time_t*, bool);
 extern struct buf_msg 
             *buf_msg_new(const size_t);
-extern unsigned int
-             message_queue_purge(struct filed*, const unsigned int, const int);
+extern unsigned int message_allqueues_purge(void);
 
 /*
  * init all SGs for a given algorithm 

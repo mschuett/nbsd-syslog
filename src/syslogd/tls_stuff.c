@@ -66,7 +66,7 @@ extern void buf_msg_free(struct buf_msg *msg);
 extern void message_queue_freeall(struct filed *);
 extern bool copy_string(char **, const char *, const char *);
 extern bool copy_config_value_quoted(const char *, char **, char **);
-
+extern unsigned int message_allqueues_purge(void);
 static unsigned int getVerifySetting(const char *x509verifystring);
 
 static unsigned int
@@ -250,10 +250,7 @@ get_fingerprint(const X509 *cert, char **returnstring, const char *alg_name)
         /* needed memory. 3 string bytes for every binary byte with delimiter
          * + alg_name with delimiter */
         memsize = (len * 3) + strlen(OBJ_nid2sn(EVP_MD_type(digest))) + 1;
-        if (!(*returnstring = malloc(memsize))) {
-                logerror("Unable to allocate memory");
-                return false;
-        }
+        MALLOC(*returnstring, memsize);
         /* 'normalise' the algorithm name */
         (void)strlcpy(*returnstring, OBJ_nid2sn(EVP_MD_type(digest)), memsize);
         (void)strlcat(*returnstring, ":", memsize);
@@ -282,8 +279,8 @@ get_commonname(X509 *cert, char **returnstring)
         if (i != -1) {
                 entry = X509_NAME_get_entry(x509name, i);
                 len = ASN1_STRING_to_UTF8(&ubuf, X509_NAME_ENTRY_get_data(entry));
-                if (len > 0
-                 && (*returnstring = malloc(len+1))) {
+                if (len > 0) {
+                        MALLOC(*returnstring, len+1);
                         strlcpy(*returnstring, (const char*)ubuf, len+1);
                         OPENSSL_free(ubuf);
                         return true;
@@ -1084,14 +1081,9 @@ dispatch_tls_accept(int fd, short event, void *arg)
                 return;
         }
         /* else */
-        if (!(tls_in = calloc(1, sizeof(*tls_in)))
-         || !(tls_in->inbuf = malloc(TLS_MIN_LINELENGTH))) {
-                logerror("Unable to allocate memory for accepted connection");
-                free(tls_in);
-                free_tls_conn(conn_info);
-                RESTORE_SIGNALS(omask);
-                return;
-        }        
+        MALLOC(tls_in, sizeof(*tls_in));
+        CALLOC(tls_in->inbuf, TLS_MIN_LINELENGTH);
+
         tls_in->tls_conn = conn_info;
         tls_in->socket = SSL_get_fd(conn_info->sslptr);
         tls_in->inbuf[0] = '\0';
@@ -1151,13 +1143,7 @@ dispatch_socket_accept(int fd, short event, void *ev)
                 peername = NULL;
         }
         else {
-                if (!(peername = malloc(strlen(hbuf)+1))) {
-                        logerror("Unable to allocate memory");
-                        shutdown(newsock, SHUT_RDWR);
-                        close(newsock);
-                        RESTORE_SIGNALS(omask);
-                        return;
-                }
+                MALLOC(peername, strlen(hbuf)+1);
                 (void)strlcpy(peername, hbuf, strlen(hbuf)+1);
         }
 

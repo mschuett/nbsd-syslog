@@ -258,6 +258,7 @@ static void dispatch_read_finet(int fd, short event, void *ev);
 static void dispatch_read_funix(int fd, short event, void *ev);
 
 unsigned int message_queue_purge(struct filed *f, const unsigned int, const int);
+unsigned int message_allqueues_purge(void);
 void send_queue(struct filed *);
 static struct buf_queue *find_qentry_to_delete(const struct buf_queue_head *, const int, const bool);
 struct buf_msg *buf_msg_new(const size_t);
@@ -4169,6 +4170,18 @@ message_queue_purge(struct filed *f, const unsigned int del_entries, const int s
         return removed;
 }
 
+/* run message_queue_purge() for all destinations to free memory */
+unsigned int
+message_allqueues_purge()
+{
+        unsigned int sum = 0;
+
+        for (struct filed *f = Files; f; f = f->f_next)
+                sum += message_queue_purge(f,
+                        f->f_qelements/10, PURGE_BY_PRIORITY);
+        return sum;
+}
+                          
 struct buf_msg *
 buf_msg_new(const size_t len)
 {

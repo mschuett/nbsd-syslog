@@ -2539,14 +2539,15 @@ domark(int fd, short event, void *ev)
                 domark, ev_pass);
         DPRINTF((D_CALL|D_EVENT), "domark()\n");
 
+        BLOCK_SIGNALS(omask, newmask);
         now = time((time_t *)NULL);
         MarkSeq += TIMERINTVL;
         if (MarkSeq >= MarkInterval) {
                 logmsg_async(LOG_INFO, NULL, "-- MARK --", ADDDATE|MARK);
                 MarkSeq = 0;
+                monitor_mem_usage();
         }
 
-        BLOCK_SIGNALS(omask, newmask);
         for (f = Files; f; f = f->f_next) {
                 if (f->f_prevcount && now >= REPEATTIME(f)) {
                         DPRINTF(D_DATA, "Flush %s: repeated %d times, %d sec.\n",

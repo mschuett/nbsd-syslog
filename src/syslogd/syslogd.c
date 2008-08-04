@@ -227,6 +227,7 @@ char   *getLocalFQDN(void);
 struct socketEvent* socksetup(int, const char *);
 void    read_config_file(FILE*, struct filed**);
 void    init(int fd, short event, void *ev);  /* SIGHUP kevent dispatch routine */
+void    monitor_mem_usage(void);
 void    logerror(const char *, ...);
 void    loginfo(const char *, ...);
 void    logmsg_async(const int, const char *, const char *, const int);
@@ -2466,30 +2467,21 @@ trim_anydomain(char *host)
 }
 
 void
-domark(int fd, short event, void *ev)
+monitor_mem_usage()
 {
-        struct event *ev_pass = (struct event *)ev;
-        struct filed *f;
-        dq_t q, nextq;
-        sigset_t newmask, omask;
         struct rlimit rlp;
         struct rusage ru;
         static u_int64_t last_ticks = 0;
         static u_int64_t last_mem   = 0;
+        u_int64_t ticks, delta_ticks, mem, delta_mem, currentmem;
         static struct clockinfo ci = {.tick = 0};
         size_t ci_len = sizeof(ci);
         int ci_mib[2] = {CTL_KERN, KERN_CLOCKRATE};
-#define MARKLINELENGTH 120
-        char markline[MARKLINELENGTH];
         char maxmem[12];
         char usemem[12];
-#define MEMORY_HIGH_PERC 95
-        bool sweep_queues = false;
-
-        schedule_event(&ev_pass,
-                &((struct timeval){TIMERINTVL, 0}),
-                domark, ev_pass);
-        DPRINTF((D_CALL|D_EVENT), "domark()\n");
+        const int memory_high_percent = 95;
+        char statusline[128];
+        
 
         /* ci.tick will not change, so read only once */
         if (!ci.tick && sysctl(ci_mib, 2, &ci, &ci_len, NULL, 0) == -1) {
@@ -2500,12 +2492,7 @@ domark(int fd, short event, void *ev)
         if ((getrusage(RUSAGE_SELF, &ru) == -1)
          || (getrlimit(RLIMIT_DATA, &rlp) == -1)) {
                 logerror("Unable to get ressource usage/limits");
-                snprintf(markline, MARKLINELENGTH, "-- MARK --");
         } else {
-                /* I hope this is accurate enough to be usable */
-                u_int64_t ticks, delta_ticks;
-                u_int64_t mem,   delta_mem;
-                
                 /* execution time */
                 ticks = ru.ru_stime.tv_sec + ru.ru_utime.tv_sec;      /* sec */
                 ticks *= 1000000;                                    /* usec */
@@ -2518,27 +2505,44 @@ domark(int fd, short event, void *ev)
                 mem *= 1024;                                        /* bytes */
                 delta_mem = mem - last_mem;
                 last_mem = mem;
-
+                currentmem = (delta_ticks ? delta_mem/delta_ticks : mem);
+#ifdef LOG_MEM_USAGE
                 humanize_number(usemem, sizeof(usemem),
-                        (delta_ticks ? delta_mem/delta_ticks : delta_mem),
-                        "bytes", HN_AUTOSCALE, 0);
+                        currentmem, "bytes", HN_AUTOSCALE, 0);
                 humanize_number(maxmem, sizeof(maxmem),
                         rlp.rlim_max, "bytes", HN_AUTOSCALE, 0);
                 
-                snprintf(markline, MARKLINELENGTH,
-                        "-- MARK -- (mem usage: %s/%s, raw: dmem/dticks = %llu/%llu)",
-                        usemem, maxmem, delta_mem, delta_ticks);
-                /* negative numbers imply overflow. check necessary? */
-                if ((ru.ru_idrss+ru.ru_isrss+ru.ru_ixrss > 0)
-                 && ((MEMORY_HIGH_PERC * rlp.rlim_max) > 0)
-                 && (ru.ru_idrss+ru.ru_isrss+ru.ru_ixrss >=
-                        (MEMORY_HIGH_PERC * rlp.rlim_max) / 100))
-                        sweep_queues = true;
+                snprintf(statusline, sizeof(statusline),
+                        "Status: mem usage %s/%s, raw values %llu/%llu, "
+                        "deltas dmem/dticks = %llu/%llu",
+                        usemem, maxmem, mem, ticks, delta_mem, delta_ticks);
+                logmsg_async(LOG_DEBUG, NULL, statusline, ADDDATE);
+#endif /* LOG_MEM_USAGE */
+
+                if ((currentmem > 0)
+                 && ((memory_high_percent * rlp.rlim_max) > 0)
+                 && (currentmem >= (memory_high_percent * rlp.rlim_max) / 100))
+                        message_allqueues_purge();
         }
+}
+
+void
+domark(int fd, short event, void *ev)
+{
+        struct event *ev_pass = (struct event *)ev;
+        struct filed *f;
+        dq_t q, nextq;
+        sigset_t newmask, omask;
+
+        schedule_event(&ev_pass,
+                &((struct timeval){TIMERINTVL, 0}),
+                domark, ev_pass);
+        DPRINTF((D_CALL|D_EVENT), "domark()\n");
+
         now = time((time_t *)NULL);
         MarkSeq += TIMERINTVL;
         if (MarkSeq >= MarkInterval) {
-                logmsg_async(LOG_INFO, NULL, markline, ADDDATE|MARK);
+                logmsg_async(LOG_INFO, NULL, "-- MARK --", ADDDATE|MARK);
                 MarkSeq = 0;
         }
 
@@ -2552,8 +2556,7 @@ domark(int fd, short event, void *ev)
                         BACKOFF(f);
                 }
         }
-        if (sweep_queues)
-                message_allqueues_purge();
+        monitor_mem_usage();
         RESTORE_SIGNALS(omask);
 
         /* Walk the dead queue, and see if we should signal somebody. */

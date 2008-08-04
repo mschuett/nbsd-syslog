@@ -11,7 +11,7 @@
 #define MAXSVLINE       120             /* maximum saved line length */
 #define DEFUPRI         (LOG_USER|LOG_NOTICE)
 #define DEFSPRI         (LOG_KERN|LOG_NOTICE)
-#define TIMERINTVL      5              /* interval for checking flush, mark */
+#define TIMERINTVL      30              /* interval for checking flush, mark */
 #define TTYMSGTIME      1               /* timeout passed to ttymsg */
 
 #include <sys/param.h>

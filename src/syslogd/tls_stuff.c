@@ -724,7 +724,9 @@ dispatch_SSL_connect(int fd, short event, void *arg)
         struct tls_conn_settings *conn_info = (struct tls_conn_settings *) arg;
         SSL *ssl = conn_info->sslptr;
         int rc, error;
+        sigset_t newmask, omask;
 
+        BLOCK_SIGNALS(omask, newmask);
         DPRINTF((D_TLS|D_CALL), "dispatch_SSL_connect(conn_info@%p, fd %d)\n", conn_info, fd);
         assert(conn_info->state == ST_TCP_EST
             || conn_info->state == ST_CONNECTING);
@@ -758,19 +760,19 @@ dispatch_SSL_connect(int fd, short event, void *arg)
                                         tls_reconnect, conn_info);
                                 break;
                 }
+                RESTORE_SIGNALS(omask);
                 return;
         }
         /* else */
-        ST_CHANGE(conn_info->state, ST_TLS_EST);
         conn_info->reconnect = tls_opt.reconnect_interval;
         event_set(conn_info->event, fd, EV_READ, dispatch_tls_eof, conn_info);
         EVENT_ADD(conn_info->event);
-        
-        DPRINTF(D_TLS, "TLS connection established.\n");
 
-        /* not very elegant but maybe better than
-         * using filed pointers everywhere (?) */
+        DPRINTF(D_TLS, "TLS connection established.\n");
+        ST_CHANGE(conn_info->state, ST_TLS_EST);
+
         send_queue(get_f_by_conninfo(conn_info));
+        RESTORE_SIGNALS(omask);
 }
 
 /*
@@ -1221,7 +1223,9 @@ void
 dispatch_tls_eof(int fd, short event, void *arg)
 {
         struct tls_conn_settings *conn_info = (struct tls_conn_settings *) arg;
-
+        sigset_t newmask, omask;
+        
+        BLOCK_SIGNALS(omask, newmask);
         DPRINTF((D_TLS|D_EVENT|D_CALL), "dispatch_eof_tls(%d, %d, %p)\n", fd, event, arg);
         assert(conn_info->state == ST_TLS_EST);
         ST_CHANGE(conn_info->state, ST_EOF);
@@ -1235,6 +1239,7 @@ dispatch_tls_eof(int fd, short event, void *arg)
                 &((struct timeval){conn_info->reconnect, 0}),
                 tls_reconnect, conn_info);
         RECONNECT_BACKOFF(conn_info->reconnect);
+        RESTORE_SIGNALS(omask);
 }
 
 /*
@@ -1250,8 +1255,10 @@ dispatch_tls_read(int fd_lib, short event, void *arg)
         int fd = c->socket;
         int error;
         int_fast16_t rc;
+        sigset_t newmask, omask;
         bool retrying;
 
+        BLOCK_SIGNALS(omask, newmask);
         DPRINTF((D_TLS|D_EVENT|D_CALL), "active TLS socket %d\n", fd);
         DPRINTF(D_TLS, "calling SSL_read(%p, %p, %d)\n", c->tls_conn->sslptr,
                 &(c->inbuf[c->read_pos]), c->inbuflen - c->read_pos);
@@ -1272,6 +1279,7 @@ dispatch_tls_read(int fd_lib, short event, void *arg)
                                 event_set(c->tls_conn->retryevent, fd,
                                         EV_WRITE, dispatch_tls_read, c);
                                 EVENT_ADD(c->tls_conn->retryevent);
+                                RESTORE_SIGNALS(omask);
                                 return;
                                 break;
                         case TLS_TEMP_ERROR:
@@ -1300,6 +1308,7 @@ dispatch_tls_read(int fd_lib, short event, void *arg)
                 free(c);
         } else
                 ST_CHANGE(c->tls_conn->state, ST_TLS_EST);
+        RESTORE_SIGNALS(omask);
 }
 
 /* moved message splitting out of dispatching function.
@@ -1489,8 +1498,10 @@ dispatch_tls_send(int fd, short event, void *arg)
         struct tls_conn_settings *conn_info = sendmsg->f->f_un.f_tls.tls_conn;
         struct filed *f = sendmsg->f;
         int rc, error;
+        sigset_t newmask, omask;
         bool retrying;
         
+        BLOCK_SIGNALS(omask, newmask);
         DPRINTF((D_TLS|D_CALL), "dispatch_tls_send(f=%p, buffer=%p, "
                 "line@%p, len=%d, offset=%d) to %sconnected dest.\n",
                 sendmsg->f, sendmsg->buffer, sendmsg->line,
@@ -1524,13 +1535,11 @@ dispatch_tls_send(int fd, short event, void *arg)
                                 event_set(conn_info->retryevent, fd, EV_READ,
                                         dispatch_tls_send, sendmsg);
                                 RETRYEVENT_ADD(conn_info->retryevent);
-                                return;
                                 break;
                         case TLS_RETRY_WRITE:
                                 event_set(conn_info->retryevent, fd, EV_WRITE,
                                         dispatch_tls_send, sendmsg);
                                 RETRYEVENT_ADD(conn_info->retryevent);
-                                return;
                                 break;
                         case TLS_PERM_ERROR:
                                 /* no need to check active events */
@@ -1543,6 +1552,8 @@ dispatch_tls_send(int fd, short event, void *arg)
                                 break;
                         default:break;
                 }
+                RESTORE_SIGNALS(omask);
+                return;
         } else if (rc < sendmsg->linelen) {
                 DPRINTF((D_TLS|D_DATA), "TLS: SSL_write() wrote %d out of %d "
                         "bytes\n", rc, (sendmsg->linelen - sendmsg->offset));
@@ -1566,6 +1577,7 @@ dispatch_tls_send(int fd, short event, void *arg)
         }
         if (retrying && conn_info->event->ev_events)
                 EVENT_ADD(conn_info->event);
+        RESTORE_SIGNALS(omask);
 }
 
 /*
@@ -1602,8 +1614,10 @@ dispatch_SSL_shutdown(int fd, short event, void *arg)
 {
         struct tls_conn_settings *conn_info = (struct tls_conn_settings *) arg;
         int rc, error;
+        sigset_t newmask, omask;
         bool retrying;
         
+        BLOCK_SIGNALS(omask, newmask);
         DPRINTF((D_TLS|D_CALL), "dispatch_SSL_shutdown(conn_info@%p, fd %d)\n", conn_info, fd);
         retrying = ((conn_info->state == ST_CLOSING0)
                  || (conn_info->state == ST_CLOSING1)
@@ -1647,7 +1661,6 @@ dispatch_SSL_shutdown(int fd, short event, void *arg)
                                         EV_READ, dispatch_SSL_shutdown,
                                         conn_info);
                                 EVENT_ADD(conn_info->retryevent);
-                                return;
                                 break;
                         case TLS_RETRY_WRITE:
                                 if (!retrying)
@@ -1656,13 +1669,14 @@ dispatch_SSL_shutdown(int fd, short event, void *arg)
                                         EV_WRITE, dispatch_SSL_shutdown,
                                         conn_info);
                                 EVENT_ADD(conn_info->retryevent);
-                                return;
                                 break;
                         default:
                                 /* we cannot shutdown after an error in
                                  * shutdown, can we?   %-)           */
                                 break;
                 }
+                RESTORE_SIGNALS(omask);
+                return;
         }
         if ((conn_info->state != ST_TLS_EST)
          && (conn_info->state != ST_NONE)
@@ -1681,6 +1695,7 @@ dispatch_SSL_shutdown(int fd, short event, void *arg)
                 ST_CHANGE(conn_info->state, ST_NONE);
                 FREE_SSL(conn_info->sslptr);
          }
+        RESTORE_SIGNALS(omask);
 }
 
 /*

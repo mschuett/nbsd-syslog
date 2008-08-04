@@ -46,7 +46,6 @@ extern struct tls_global_options_t tls_opt;
 
 extern void  logerror(const char *, ...);
 extern void  loginfo(const char *, ...);
-extern void  logmsg_async_f(const int, const char *, const char *, const int, struct filed*);
 extern bool  format_buffer(struct buf_msg*, char**, size_t*, size_t*, size_t*, size_t*);
 extern void  fprintlog(struct filed *, struct buf_msg *, struct buf_queue *);
 extern void  buf_msg_free(struct buf_msg *msg);

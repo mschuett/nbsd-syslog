@@ -1594,69 +1594,6 @@ check_timestamp(unsigned char *from_buf, char **to_buf, const bool from_iso, con
 }
 
 /*
- * Log a message to one specific filed
- * used to send signatures independent from priorities
- */
-void
-logmsg_async_f(const int pri, const char *sd, const char *msg, const int flags, struct filed *f)
-{
-        int omask;
-        struct buf_msg *buffer;
-        size_t msglen;
-
-        DPRINTF((D_CALL|D_BUFFER), "logmsg_async_f: pri 0%o/%d,"
-                " sd '%s', msg '%s', flags 0x%x, f@%p\n",
-                pri, pri, sd, msg, flags, f);
-
-        omask = sigblock(sigmask(SIGHUP)|sigmask(SIGALRM));
-
-        if (msg) {
-                msglen = strlen(msg);
-                msglen++;               /* adds \0 */
-                buffer = buf_msg_new(msglen);
-                buffer->msglen = strlcpy(buffer->msg, msg, msglen) + 1;
-        } else {
-                buffer = buf_msg_new(0);
-        }
-        if (sd) buffer->sd = strdup(sd);
-        buffer->timestamp = strdup(make_timestamp(NULL, true));
-        buffer->prog = appname;
-        buffer->pid = include_pid;
-        buffer->recvhost = buffer->host = LocalFQDN;
-        buffer->pri = pri;
-        buffer->flags = flags;
-
-        /* sanity check */
-        if (Debug) {
-                if (buffer->refcount != 1)
-                        DPRINTF(D_BUFFER,
-                                "buffer->refcount != 1 -- memory leak?\n");
-                if ((buffer->msg) && (buffer->msglen != strlen(buffer->msg)+1))
-                        DPRINTF((D_BUFFER|D_DATA),
-                                "buffer->msglen = %d != %d = "
-                                "strlen(buffer->msg)+1\n",
-                                buffer->msglen, strlen(buffer->msg)+1);
-                if (!buffer->msg && !buffer->sd && !buffer->msgid)
-                        DPRINTF(D_BUFFER, "Empty message?\n");
-                /* basic invariants */
-                assert(buffer->msglen <= buffer->msgsize);
-                assert(buffer->msgorig <= buffer->msg);
-                assert(f);
-        }
-
-        /* log the message to the particular output */
-        if (f->f_prevcount)
-                fprintlog(f, NULL, NULL);
-        f->f_repeatcount = 0;
-        DELREF(f->f_prevmsg);
-        f->f_prevmsg = NEWREF(buffer);
-        fprintlog(f, NEWREF(buffer), NULL);
-        DELREF(buffer);
-        DELREF(buffer);
-        (void)sigsetmask(omask);
-}
-
-/*
  * Log a message to the appropriate log files, users, etc. based on
  * the priority.
  */
@@ -2534,6 +2471,7 @@ domark(int fd, short event, void *ev)
         struct event *ev_pass = (struct event *)ev;
         struct filed *f;
         dq_t q, nextq;
+        sigset_t newmask, omask;
         struct rlimit rlp;
         struct rusage ru;
         static u_int64_t last_ticks = 0;
@@ -2604,6 +2542,7 @@ domark(int fd, short event, void *ev)
                 MarkSeq = 0;
         }
 
+        BLOCK_SIGNALS(omask, newmask);
         for (f = Files; f; f = f->f_next) {
                 if (f->f_prevcount && now >= REPEATTIME(f)) {
                         DPRINTF(D_DATA, "Flush %s: repeated %d times, %d sec.\n",
@@ -2612,10 +2551,10 @@ domark(int fd, short event, void *ev)
                         fprintlog(f, NULL, NULL);
                         BACKOFF(f);
                 }
-                if (sweep_queues)
-                        message_queue_purge(f, f->f_qelements/10,
-                                PURGE_BY_PRIORITY);
         }
+        if (sweep_queues)
+                message_allqueues_purge();
+        RESTORE_SIGNALS(omask);
 
         /* Walk the dead queue, and see if we should signal somebody. */
         for (q = TAILQ_FIRST(&deadq_head); q != NULL; q = nextq) {

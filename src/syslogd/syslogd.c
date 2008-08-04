@@ -2535,7 +2535,9 @@ domark(int fd, short event, void *ev)
         dq_t q, nextq;
         struct rlimit rlp;
         struct rusage ru;
-        struct clockinfo ci;
+        static u_int64_t last_ticks = 0;
+        static u_int64_t last_mem   = 0;
+        static struct clockinfo ci = {.tick = 0};
         size_t ci_len = sizeof(ci);
         int ci_mib[2] = {CTL_KERN, KERN_CLOCKRATE};
 #define MARKLINELENGTH 120
@@ -2550,8 +2552,8 @@ domark(int fd, short event, void *ev)
                 domark, ev_pass);
         DPRINTF((D_CALL|D_EVENT), "domark()\n");
 
-
-        if (sysctl(ci_mib, 2, &ci, &ci_len, NULL, 0) == -1) {
+        /* ci.tick will not change, so read only once */
+        if (!ci.tick && sysctl(ci_mib, 2, &ci, &ci_len, NULL, 0) == -1) {
                 DPRINTF(D_MISC, "Couldn't get kern.clockrate\n");
                 ci.tick = 10000;
         }
@@ -2562,24 +2564,31 @@ domark(int fd, short event, void *ev)
                 snprintf(markline, MARKLINELENGTH, "-- MARK --");
         } else {
                 /* I hope this is accurate enough to be usable */
-                u_int64_t ticks;
-                u_int64_t mem;
+                u_int64_t ticks, delta_ticks;
+                u_int64_t mem,   delta_mem;
                 
-                /* execution time in usec */
-                ticks = ru.ru_stime.tv_sec + ru.ru_utime.tv_sec; /* sec */
-                ticks *= 1000000;                               /* usec */
+                /* execution time */
+                ticks = ru.ru_stime.tv_sec + ru.ru_utime.tv_sec;      /* sec */
+                ticks *= 1000000;                                    /* usec */
                 ticks += ru.ru_stime.tv_usec + ru.ru_utime.tv_usec;
-                ticks /= ci.tick;                              /* ticks */
-                mem = ru.ru_idrss+ru.ru_isrss+ru.ru_ixrss * 1024; /* bytes */
+                ticks /= ci.tick;                                   /* ticks */
+                delta_ticks = ticks - last_ticks;
+                last_ticks = ticks;
+                /* memory usage */
+                mem = (ru.ru_ixrss + ru.ru_idrss + ru.ru_isrss);   /* Kbytes */
+                mem *= 1024;                                        /* bytes */
+                delta_mem = mem - last_mem;
+                last_mem = mem;
 
-                humanize_number(usemem, sizeof(usemem), mem/ticks,
+                humanize_number(usemem, sizeof(usemem),
+                        (delta_ticks ? delta_mem/delta_ticks : delta_mem),
                         "bytes", HN_AUTOSCALE, 0);
                 humanize_number(maxmem, sizeof(maxmem),
                         rlp.rlim_max, "bytes", HN_AUTOSCALE, 0);
                 
                 snprintf(markline, MARKLINELENGTH,
-                        "-- MARK -- (mem usage: %s/%s, raw: mem/ticks = %llu/%llu)",
-                        usemem, maxmem, mem, ticks);
+                        "-- MARK -- (mem usage: %s/%s, raw: dmem/dticks = %llu/%llu)",
+                        usemem, maxmem, delta_mem, delta_ticks);
                 /* negative numbers imply overflow. check necessary? */
                 if ((ru.ru_idrss+ru.ru_isrss+ru.ru_ixrss > 0)
                  && ((MEMORY_HIGH_PERC * rlp.rlim_max) > 0)
@@ -4041,23 +4050,25 @@ free_cred_SLIST(struct peer_cred_head *head)
 void
 send_queue(struct filed *f)
 {
-        struct buf_queue *qentry, *tqentry;
+        struct buf_queue *qentry;
         
         DPRINTF((D_DATA|D_CALL), "send_queue(f@%p with %d msgs)\n",
                 f, f->f_qelements);
 
+        while ((qentry = STAILQ_FIRST(&f->f_qhead))) {
 #ifndef DISABLE_TLS
-        /* in init() or die() send_queue() might be called with an
-         * unconnected destination and all calls to fprintlog() will fail.
-         * this check is a shortcut to skip these unnecessary calls */
-        if (f->f_type == F_TLS
-         && f->f_un.f_tls.tls_conn->state != ST_TLS_EST) {
-                DPRINTF(D_TLS, "leave send_queue()on unconnected connection\n");
-                return;
-         }
+                /* send_queue() might be called with an unconnected destination
+                 * from init() or die() or one message might take longer,
+                 * leaving the connection in state ST_WAITING and thus not ready
+                 * for the next message. 
+                 * this check is a shortcut to skip these unnecessary calls */
+                if (f->f_type == F_TLS
+                 && f->f_un.f_tls.tls_conn->state != ST_TLS_EST) {
+                        DPRINTF(D_TLS, "leave send_queue() on connection "
+                                "in state %d\n", f->f_un.f_tls.tls_conn->state);
+                        return;
+                 }
 #endif /* !DISABLE_TLS */
-        
-        STAILQ_FOREACH_SAFE(qentry, &f->f_qhead, entries, tqentry) {
                 DPRINTF((D_DATA|D_CALL), "send_queue() calls fprintlog()\n");
                 fprintlog(f, qentry->msg, qentry);
         }
@@ -4242,6 +4253,7 @@ message_queue_remove(struct filed *f, struct buf_queue *qentry)
         if (!f || !qentry || !qentry->msg)
                 return false;
 
+        assert(!STAILQ_EMPTY(&f->f_qhead));
         STAILQ_REMOVE(&f->f_qhead, qentry, buf_queue, entries);
         f->f_qelements--;
         f->f_qsize -= buf_queue_obj_size(qentry);

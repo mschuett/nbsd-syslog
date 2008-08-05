@@ -80,6 +80,15 @@
             ((struct type *)                    \
         ((char *)((head)->stqh_last) - __offsetof(struct type, field))))
 #endif /* !STAILQ_LAST */
+#ifndef STAILQ_CONCAT
+#define STAILQ_CONCAT(head1, head2) do {        \
+  if (!STAILQ_EMPTY((head2))) {         \
+    *(head1)->stqh_last = (head2)->stqh_first;    \
+    (head1)->stqh_last = (head2)->stqh_last;    \
+    STAILQ_INIT((head2));         \
+  }               \
+} while (0)
+#endif /* !STAILQ_CONCAT */
 #ifndef TAILQ_CONCAT
 #define TAILQ_CONCAT(head1, head2, field) do {              \
     if (!TAILQ_EMPTY(head2)) {                  \

@@ -78,7 +78,7 @@
     (STAILQ_EMPTY((head)) ?                     \
         NULL :                          \
             ((struct type *)                    \
-        ((char *)((head)->stqh_last) - __offsetof(struct type, field))))
+        ((char *)((head)->stqh_last) - offsetof(struct type, field))))
 #endif /* !STAILQ_LAST */
 #ifndef STAILQ_CONCAT
 #define STAILQ_CONCAT(head1, head2) do {        \

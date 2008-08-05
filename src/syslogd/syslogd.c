@@ -2477,11 +2477,12 @@ monitor_mem_usage()
         static struct clockinfo ci = {.tick = 0};
         size_t ci_len = sizeof(ci);
         int ci_mib[2] = {CTL_KERN, KERN_CLOCKRATE};
+        const int memory_high_percent = 95;
+#ifdef LOG_MEM_USAGE
         char maxmem[12];
         char usemem[12];
-        const int memory_high_percent = 95;
         char statusline[128];
-        
+#endif /* LOG_MEM_USAGE */
 
         /* ci.tick will not change, so read only once */
         if (!ci.tick && sysctl(ci_mib, 2, &ci, &ci_len, NULL, 0) == -1) {
@@ -2511,7 +2512,7 @@ monitor_mem_usage()
                         currentmem, "bytes", HN_AUTOSCALE, 0);
                 humanize_number(maxmem, sizeof(maxmem),
                         rlp.rlim_max, "bytes", HN_AUTOSCALE, 0);
-                
+
                 snprintf(statusline, sizeof(statusline),
                         "Status: mem usage %s/%s, raw values %llu/%llu, "
                         "deltas dmem/dticks = %llu/%llu",

@@ -15,8 +15,6 @@
  * checks UTF-8 codepoint
  * returns either its length in bytes or 0 if *input is invalid
  * 
- * note: this only checks for technically correct encoding.
- * it does not check for shortest form encoding!
  */
 static inline unsigned
 valid_utf8(const char *c) {
@@ -24,11 +22,23 @@ valid_utf8(const char *c) {
 
         /* first byte gives sequence length */
              if ((*c & 0x80) == 0x00) return 1; /* 0bbbbbbb -- ASCII */
-        else if ((*c & 0xc0) == 0x80) nb = 0;   /* 10bbbbbb -- trailing byte */
+        else if ((*c & 0xc0) == 0x80) return 0; /* 10bbbbbb -- trailing byte */
         else if ((*c & 0xe0) == 0xc0) nb = 2;   /* 110bbbbb */
         else if ((*c & 0xf0) == 0xe0) nb = 3;   /* 1110bbbb */
         else if ((*c & 0xf8) == 0xf0) nb = 4;   /* 11110bbb */
         else return 0; /* UTF-8 allows only up to 4 bytes */ 
+
+        /* catch overlong encodings */
+        if ((*c & 0xfe) == 0xc0)
+                return 0; /* 1100000b ... */
+        else if (((*c & 0xff) == 0xe0) && ((*(c+1) & 0xe0) == 0x80))
+                return 0; /* 11100000 100bbbbb ... */
+        else if (((*c & 0xff) == 0xf0) && ((*(c+1) & 0xf0) == 0x80))
+                return 0; /* 11110000 1000bbbb ... ... */
+
+        /* and also filter UTF-16 surrogates (=invalid in UTF-8) */
+        if (((*c & 0xff) == 0xed) && ((*(c+1) & 0xe0) == 0xa0))
+                return 0; /* 11101101 101bbbbb ... */
 
         rc = nb;
         /* check trailing bytes */
@@ -52,6 +62,16 @@ char *inputs[] = {
 "\xc0",
 "\xf4\x90\x80",  /* last byte missing */
 "\xf8\x90\x80\x80\x80",  /* 5 bytes --> too long */
+"\xed\x00\xbf",
+"\xc0\x80",  /* overlong, = \0 */
+/* overlong sequences */
+"\xe0\x80\xaf",
+"\xe0\x9f\xbf",
+"\xe0\x9f\x80",
+"\xf0\x80\x80\x80",  /* overlong, = \0 */
+/* UTF-16 surrogates */
+"\xed\xa0\x80",
+"\xed\xaf\xbf",
 NULL,
 /* return 1 */
 "a",
@@ -63,7 +83,6 @@ NULL,
 "é",
 "ø",
 "ñ",
-"\xc0\x80",  /* overlong, = \0 */
 "\xce\xb1",
 NULL,
 /* return 3 */
@@ -74,17 +93,10 @@ NULL,
 "\xed\x9f\xbf",
 "\xee\x80\x80",
 "\xef\xbf\xbd",
-/* overlong sequences */
-"\xe0\x80\xaf",  
-"\xe0\x9f\xbf",
-/* UTF-16 surrogates */
-"\xed\xa0\x80",
-"\xed\xaf\xbf",
 NULL,
 /* return 4 */
 "\xf4\x8f\xbf\xbf",
 "\xf4\x90\x80\x80",
-"\xf0\x80\x80\x80",  /* overlong, = \0 */
 NULL,
 };
 
@@ -108,7 +120,7 @@ main()
                                 printf("FAIL on: lenght %d != %d for %.*s: ",
                                         rc, rightrc, rightrc+1, inputs[i]);
                                 for (int k = 0; k <= rightrc; k++) {
-                                        printf("%0x", (unsigned char) (inputs[i][k] % 0xff));
+                                        printf("%02x", (unsigned char) (inputs[i][k] % 0xff));
                                 }
                                 printf("\n");
                         }

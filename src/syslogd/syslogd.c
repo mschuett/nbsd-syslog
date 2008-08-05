@@ -812,30 +812,33 @@ logpath_fileadd(char ***lp, int *szp, int *maxszp, char *file)
         fclose(fp);
 }
 
-/* question: the internet draft says:
- * a collector or relay MUST NOT interpret messages in the "non-shortest form".
- *
- * --> do we have to filter non-shortest forms or is it
- *     OK to relay them since syslogd does not interpret?
- */
 /* 
  * checks UTF-8 codepoint
  * returns either its length in bytes or 0 if *input is invalid
- * 
- * note: this only checks for technically correct encoding.
- * it does not check for shortest form encoding!
- */
+*/
 static inline unsigned
 valid_utf8(const char *c) {
         unsigned rc, nb;
 
         /* first byte gives sequence length */
              if ((*c & 0x80) == 0x00) return 1; /* 0bbbbbbb -- ASCII */
-        else if ((*c & 0xc0) == 0x80) nb = 0;   /* 10bbbbbb -- trailing byte */
+        else if ((*c & 0xc0) == 0x80) return 0; /* 10bbbbbb -- trailing byte */
         else if ((*c & 0xe0) == 0xc0) nb = 2;   /* 110bbbbb */
         else if ((*c & 0xf0) == 0xe0) nb = 3;   /* 1110bbbb */
         else if ((*c & 0xf8) == 0xf0) nb = 4;   /* 11110bbb */
         else return 0; /* UTF-8 allows only up to 4 bytes */ 
+
+        /* catch overlong encodings */
+        if ((*c & 0xfe) == 0xc0)
+                return 0; /* 1100000b ... */
+        else if (((*c & 0xff) == 0xe0) && ((*(c+1) & 0xe0) == 0x80))
+                return 0; /* 11100000 100bbbbb ... */
+        else if (((*c & 0xff) == 0xf0) && ((*(c+1) & 0xf0) == 0x80))
+                return 0; /* 11110000 1000bbbb ... ... */
+
+        /* and also filter UTF-16 surrogates (=invalid in UTF-8) */
+        if (((*c & 0xff) == 0xed) && ((*(c+1) & 0xe0) == 0xa0))
+                return 0; /* 11101101 101bbbbb ... */
 
         rc = nb;
         /* check trailing bytes */
@@ -847,6 +850,7 @@ valid_utf8(const char *c) {
         }
         return rc;
 }
+
 
 /* note previous versions transscribe
  * control characters, e.g. \007 --> "^G"

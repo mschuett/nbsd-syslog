@@ -2756,7 +2756,37 @@ die(int fd, short event, void *ev)
                 free((char *)f);
         }
 
+        /*
+         *  Close all open UDP sockets
+         */
+        if (finet) {
+                for (i = 0; i < finet->fd; i++) {
+                        if (close(finet[i+1].fd) < 0) {
+                                logerror("close() failed");
+                                die(0, 0, NULL);
+                        }
+                        DEL_EVENT(finet[i+1].ev);
+                        FREEPTR(finet[i+1].ev);
+                }
+                FREEPTR(finet);
+        }
+
 #ifndef DISABLE_TLS
+        /*
+         *  Close all open incoming TCP/TLS sockets
+         */
+        if (TLS_Listen_Set) {
+                for (int i = 0; i < TLS_Listen_Set->fd; i++) {
+                        if (close(TLS_Listen_Set[i+1].fd) < 0) {
+                                logerror("close() failed");
+                                die(0, 0, NULL);
+                        }
+                        DEL_EVENT(TLS_Listen_Set[i+1].ev);
+                        FREEPTR(TLS_Listen_Set[i+1].ev);
+                }
+                FREEPTR(TLS_Listen_Set);
+        }
+
         FREEPTR(tls_opt.CAdir);
         FREEPTR(tls_opt.CAfile);
         FREEPTR(tls_opt.keyfile);
@@ -3174,13 +3204,28 @@ init(int fd, short event, void *ev)
                                 logerror("close() failed");
                                 die(0, 0, NULL);
                         }
-                        if (event_del(finet[i+1].ev) == -1)
-                                logerror("event_del() failed");
-                                /* what do we do now? */
-                        else
-                                FREEPTR(finet[i+1].ev);
+                        DEL_EVENT(finet[i+1].ev);
+                        FREEPTR(finet[i+1].ev);
                 }
+                FREEPTR(finet);
         }
+
+#ifndef DISABLE_TLS
+        /*
+         *  Close all open incoming TCP/TLS sockets
+         */
+        if (TLS_Listen_Set) {
+                for (int i = 0; i < TLS_Listen_Set->fd; i++) {
+                        if (close(TLS_Listen_Set[i+1].fd) < 0) {
+                                logerror("close() failed");
+                                die(0, 0, NULL);
+                        }
+                        DEL_EVENT(TLS_Listen_Set[i+1].ev);
+                        FREEPTR(TLS_Listen_Set[i+1].ev);
+                }
+                FREEPTR(TLS_Listen_Set);
+        }
+#endif /* !DISABLE_TLS */
 
         /* get FQDN and hostname/domain */
         FREEPTR(oldLocalFQDN);

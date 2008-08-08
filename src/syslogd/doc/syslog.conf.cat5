@@ -269,7 +269,8 @@ EEXXAAMMPPLLEESS
      daemon.=debug                           /var/log/daemon.debug
 
      # The authpriv file has restricted access.
-     authpriv.*                              /var/log/secure
+     # Write logs with priority for later verification with syslog-sign.
+     authpriv.*                              +/var/log/secure
 
      # Log all the mail messages in one place.
      mail.*                                  /var/log/maillog
@@ -314,6 +315,10 @@ EEXXAAMMPPLLEESS
      !*
      -@
      *.*                                     /var/log/foreign
+
+     # Generate digital signatures for all messages
+     # to each file or network destination.
+     sign_sg=3
 
 SSEEEE AALLSSOO
      syslog(3), syslogd(8)

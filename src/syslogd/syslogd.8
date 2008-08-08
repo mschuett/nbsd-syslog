@@ -92,9 +92,10 @@ the default is 20 minutes.
 .It Fl n
 Do not perform hostname lookups; report only numeric addresses.
 .It Fl o
-Output messages in old BSD Syslog format. Otherwise messages are
-written in syslog-protocol format.
-.Em (Option will be changed in following versions.)
+Select output message format. Default format is syslog-protocol.
+You can use
+.Sq -o rfc3164
+to output a traditional BSD Syslog format. 
 .It Fl P
 Specify the pathname of a file containing a list of sockets to be
 created.

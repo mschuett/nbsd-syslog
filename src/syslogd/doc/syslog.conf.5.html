@@ -1,5 +1,5 @@
 <!-- Creator     : groff version 1.19.2 -->
-<!-- CreationDate: Fri Aug  8 20:34:14 2008 -->
+<!-- CreationDate: Fri Aug  8 21:08:53 2008 -->
 <!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN"
 "http://www.w3.org/TR/html4/loose.dtd">
 <html>
@@ -513,7 +513,9 @@ messages at debug level only</p>
 </table>
 
 <p style="margin-left:8%; margin-top: 1em"># The authpriv
-file has restricted access.</p>
+file has restricted access. <br>
+# Write logs with priority for later verification with
+syslog-sign.</p>
 
 <table width="100%" border=0 rules="none" frame="void"
        cellspacing="0" cellpadding="0">
@@ -533,7 +535,7 @@ file has restricted access.</p>
 <td width="13%">
 
 
-<p valign="top">/var/log/secure</p></td>
+<p valign="top">+/var/log/secure</p></td>
 <td width="18%">
 </td>
 </table>
@@ -864,6 +866,11 @@ log messages from all programs to a separate file. <br>
 <td width="18%">
 </td>
 </table>
+
+<p style="margin-left:8%; margin-top: 1em"># Generate
+digital signatures for all messages <br>
+# to each file or network destination. <br>
+sign_sg=3</p>
 
 <p style="margin-top: 1em" valign="top"><b>SEE ALSO</b></p>
 

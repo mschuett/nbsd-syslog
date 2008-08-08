@@ -399,6 +399,21 @@ These are:
 .Bl -ohang
 .It Em tls_server
 Enables TLS server mode.
+.It Em tls_bindport
+Service name or port number to bind to. Default is
+.Sq syslog ,
+but as long as no official port is assigned this has to be configured.
+.It Em tls_bindhost
+Hostname or IP to bind to.
+.It Em tls_reconnect_interval
+Initial reconnect timer in seconds; default is 10 sec.
+If the reconnect fails an exponential backoff will increase the interval.
+.It Em tls_reconnect_timeout
+The maximum reconnect interval in seconds.; default is one day.
+If a reconnect timer reaches this value then the connection is considered
+permanently unavailable and no more reconnections are tried.
+.\" should it be explicitly stated that a SIGHUP resets all state
+.\" including this timer and connection status?
 .It Em tls_gen_cert
 Automatically generate a private key and certificate.
 .It Em tls_key
@@ -415,12 +430,6 @@ Directory containing CA certificates.
 If set to
 .Sq off
 then certificate authentication is skipped.
-.It Em tls_bindport
-Service name or port number to bind to. Default is
-.Sq syslog ,
-but as long as no official port is assigned this has to be configured.
-.It Em tls_bindhost
-Hostname or IP to bind to.
 .It Em tls_allow_fingerprints
 List of fingerprints of trusted client certificates.
 .It Em tls_allow_clientcerts
@@ -502,7 +511,8 @@ A configuration file might appear as follows:
 daemon.=debug				/var/log/daemon.debug
 
 # The authpriv file has restricted access.
-authpriv.*				/var/log/secure
+# Write logs with priority for later verification with syslog-sign.
+authpriv.*				+/var/log/secure
 
 # Log all the mail messages in one place.
 mail.*					/var/log/maillog
@@ -547,6 +557,10 @@ kern.err				|exec /usr/local/sbin/raidfilter
 !*
 -@
 *.*					/var/log/foreign
+
+# Generate digital signatures for all messages
+# to each file or network destination.
+sign_sg=3
 .Ed
 .Sh SEE ALSO
 .Xr syslog 3 ,

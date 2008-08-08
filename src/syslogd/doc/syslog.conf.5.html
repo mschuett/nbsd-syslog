@@ -1,0 +1,874 @@
+<!-- Creator     : groff version 1.19.2 -->
+<!-- CreationDate: Fri Aug  8 17:59:01 2008 -->
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN"
+"http://www.w3.org/TR/html4/loose.dtd">
+<html>
+<head>
+<meta name="generator" content="groff -Thtml, see www.gnu.org">
+<meta http-equiv="Content-Type" content="text/html; charset=US-ASCII">
+<meta name="Content-Style" content="text/css">
+<style type="text/css">
+       p     { margin-top: 0; margin-bottom: 0; }
+       pre   { margin-top: 0; margin-bottom: 0; }
+       table { margin-top: 0; margin-bottom: 0; }
+</style>
+<title></title>
+</head>
+<body>
+
+<hr>
+
+
+<p valign="top">SYSLOG.CONF(5) NetBSD File Formats Manual
+SYSLOG.CONF(5)</p>
+
+<p style="margin-top: 1em" valign="top"><b>NAME</b></p>
+
+<p style="margin-left:8%;"><b>syslog.conf</b> &mdash;
+syslogd(8) configuration file</p>
+
+
+<p style="margin-top: 1em" valign="top"><b>DESCRIPTION</b></p>
+
+<p style="margin-left:8%;">The <b>syslog.conf</b> file is
+the configuration file for the syslogd(8) program. It
+consists of blocks of lines separated by <i>program</i> and
+<i>hostname</i> specifications, with each line containing
+two fields: the <i>selector</i> field which specifies the
+types of messages and priorities to which the line applies,
+and an <i>action</i> field which specifies the action to be
+taken if a message syslogd(8) receives matches the selection
+criteria. The <i>selector</i> field is separated from the
+<i>action</i> field by one or more tab characters.</p>
+
+<p style="margin-left:8%; margin-top: 1em">The
+<i>Selectors</i> function are encoded as a <i>facility</i>,
+a period (&lsquo;.&rsquo;), an optional set of comparison
+flags ([</p>
+
+<p valign="top">! ] [&lt;=&gt;]), and a <i>level</i>, with
+no intervening white-space. Both the <i>facility</i> and the
+<i>level</i> are case insensitive.</p>
+
+<p style="margin-left:8%; margin-top: 1em">The
+<i>facility</i> describes the part of the system generating
+the message, and is one of the following keywords: auth,
+authpriv, cron, ftp, daemon, kern, lpr, mail, mark, news,
+syslog, user, uucp and local0 through local7. These keywords
+(with the exception of mark) correspond to the similar
+&lsquo;&lsquo;LOG_&rsquo;&rsquo; values specified to the
+openlog(3) and syslog(3) library routines.</p>
+
+<p style="margin-left:8%; margin-top: 1em">The
+<i>comparison flags</i> may be used to specify exactly what
+levels are logged. If unspecified, the default comparison is
+&lsquo;&gt;=&rsquo; (greater than or equal to), or, if the
+<b>&minus;U</b> option is passed to syslogd(8),
+&lsquo;=&rsquo; (equal to). Comparison flags beginning with
+&lsquo;</p>
+
+<p valign="top">! &rsquo; will have their logical sense
+inverted. Thus, &lsquo;!=info&rsquo; means all levels except
+info and &lsquo;!notice&rsquo; has the same meaning as
+&lsquo;&lt;notice&rsquo;.</p>
+
+<p style="margin-left:8%; margin-top: 1em">The <i>level</i>
+describes the severity of the message, and is a keyword from
+the following ordered list (higher to lower): emerg, alert,
+crit, err, warning, notice, info and debug. These keywords
+correspond to the similar (LOG_) values specified to the
+syslog(3) library routine.</p>
+
+<p style="margin-left:8%; margin-top: 1em">Each block of
+lines is separated from the previous block by a
+<i>program</i> or <i>hostname</i> specification. A block
+will only log messages corresponding to the most recent
+<i>program</i> and <i>hostname</i> specifications given.
+Consider the case of a block that selects &lsquo;pppd&rsquo;
+as the <i>program</i>, directly followed by a block that
+selects messages from the <i>hostname</i>
+&lsquo;dialhost&rsquo;. The second block will log only
+messages from the pppd(8) program from the host
+&lsquo;dialhost&rsquo;.</p>
+
+<p style="margin-left:8%; margin-top: 1em">A <i>program</i>
+specification of the form &lsquo;#!+prog1,prog2&rsquo; or
+&lsquo;!+prog1,prog2&rsquo; will cause subsequent blocks to
+be applied to messages logged by the specified programs. A
+<i>program</i> specification of the form
+&lsquo;#!-prog1,prog2&rsquo; or &lsquo;!-prog1,prog2&rsquo;
+will cause subsequent blocks to be applied to messages
+logged by programs other than the ones specified. A
+<i>program</i> specification of the form
+&lsquo;#!prog1,prog2&rsquo; or &lsquo;!prog1,prog2&rsquo; is
+equivalent to &lsquo;!+prog1,prog2&rsquo;. Program selectors
+may also match kernel-generated messages. For example, a
+program specification of &lsquo;!+subsys&rsquo; will match
+kernel-generated messages of the form &lsquo;subsys: here is
+a message&rsquo;. The special specification &lsquo;!*&rsquo;
+will cause subsequent blocks to apply to all programs.</p>
+
+<p style="margin-left:8%; margin-top: 1em">A
+<i>hostname</i> specification of the form
+&lsquo;#+host1,host2&rsquo; or &lsquo;+host1,host2&rsquo;
+will cause subsequent blocks to be applied to messages
+received from the specified hosts. A <i>hostname</i>
+specification of the form &lsquo;#-host1,host2&rsquo; or
+&lsquo;-host1,host2&rsquo; will cause subsequent blocks to
+be applied to messages from hosts other than the ones
+specified. If the hostname is given as &lsquo;@&rsquo;, the
+local hostname will be used. The special specification
+&lsquo;+*&rsquo; will cause subsequent blocks to apply to
+all hosts.</p>
+
+<p style="margin-left:8%; margin-top: 1em">See syslog(3)
+for a further descriptions of both the <i>facility</i> and
+<i>level</i> keywords and their significance. It is
+preferred that selections be made based on <i>facility</i>
+rather than <i>program</i>, since the latter can vary in a
+networked environment. However, there are cases where a
+<i>facility</i> may be too broadly defined.</p>
+
+<p style="margin-left:8%; margin-top: 1em">If a received
+message matches the specified <i>facility</i>, and the
+specified <i>level</i> comparison is true, and the first
+word in the message after the date matches the
+<i>program</i>, the action specified in the <i>action</i>
+field will be taken.</p>
+
+<p style="margin-left:8%; margin-top: 1em">Multiple
+<i>selectors</i> may be specified for a single <i>action</i>
+by separating them with semicolon (&lsquo;;&rsquo;)
+characters. It is important to note, however, that each
+<i>selector</i> can modify the ones preceding it.</p>
+
+<p style="margin-left:8%; margin-top: 1em">Multiple
+<i>facilities</i> may be specified for a single <i>level</i>
+by separating them with comma (&lsquo;,&rsquo;)
+characters.</p>
+
+<p style="margin-left:8%; margin-top: 1em">An asterisk
+(&lsquo;*&rsquo;) can be used to specify all
+<i>facilities</i> or all <i>levels</i>.</p>
+
+<p style="margin-left:8%; margin-top: 1em">The special
+<i>facility</i> &lsquo;&lsquo;mark&rsquo;&rsquo; receives a
+message at priority &lsquo;&lsquo;info&rsquo;&rsquo; every
+20 minutes (see syslogd(8)). This is not enabled by a
+<i>facility</i> field containing an asterisk.</p>
+
+<p style="margin-left:8%; margin-top: 1em">The special
+<i>level</i> &lsquo;&lsquo;none&rsquo;&rsquo; disables a
+particular <i>facility</i>.</p>
+
+<p style="margin-left:8%; margin-top: 1em">The
+<i>action</i> field of each line specifies the action to be
+taken when the <i>selector</i> field selects a message.
+There are five forms:</p>
+
+<p style="margin-top: 1em" valign="top"><b>&bull;</b></p>
+
+<p style="margin-left:14%;">A pathname (beginning with a
+leading slash). Selected messages are appended to the
+file.</p>
+
+<p style="margin-left:14%; margin-top: 1em">To ensure that
+kernel messages are written to disk promptly, syslogd(8)
+calls fsync(2) after writing messages from the kernel. Other
+messages are not synced explcitly. You may disable syncing
+of files specified to receive kernel messages by prefixing
+the pathname with a minus sign &lsquo;-&rsquo;. Note that
+use of this option may cause the loss of log information in
+the event of a system crash immediately following the write
+attempt. However, using this option may prove to be useful
+if your system&rsquo;s kernel is logging many messages.</p>
+
+<p style="margin-left:14%; margin-top: 1em">Normally the
+priority and version is not written to file. In order to use
+syslog-sign you may prefix a pathname with the plus sign
+&lsquo;+&rsquo;. If both switches are used the order has to
+be &lsquo;+-&rsquo;.</p>
+
+<p style="margin-top: 1em" valign="top"><b>&bull;</b></p>
+
+<p style="margin-left:14%;">A hostname (preceded by an at
+(&lsquo;@&rsquo;) sign). Selected messages are forwarded to
+the syslogd(8) program on the named host with UDP.</p>
+
+<p style="margin-top: 1em" valign="top"><b>&bull;</b></p>
+
+<p style="margin-left:14%;">A hostname preceded by an at
+(&lsquo;@&rsquo;) Sign and enclosed in brackets
+(&lsquo;[]&rsquo;) Selected messages are forwarded with TLS
+to the syslogd(8) program on the named host. After the
+closing bracket a colon (&lsquo;&rsquo;): And a port or
+service name may be appended. Additional options are
+configured in parantheses in the form of
+key=&quot;value&quot;. Recognized keywords are
+<i>subject</i>, <i>fingerprint</i>, <i>cert</i>, <i>and
+verify</i>.</p>
+
+<p style="margin-top: 1em" valign="top"><b>&bull;</b></p>
+
+<p style="margin-left:14%;">A comma separated list of
+users. Selected messages are written to those users if they
+are logged in.</p>
+
+<p style="margin-top: 1em" valign="top"><b>&bull;</b></p>
+
+<p style="margin-left:14%;">An asterisk. Selected messages
+are written to all logged-in users.</p>
+
+<p style="margin-top: 1em" valign="top"><b>&bull;</b></p>
+
+<p style="margin-left:14%;">A vertical bar
+(&lsquo;|&rsquo;) followed by a command to which to pipe the
+selected messages. The command string is passed to
+<i>/bin/sh</i> for evaluation, so the usual shell
+metacharacters or input/output redirection can occur. (Note
+that redirecting stdio(3) buffered output from the invoked
+command can cause additional delays, or even lost output
+data in case a logging subprocess exits with a signal.) The
+command itself runs with <i>stdout</i> and <i>stderr</i>
+redirected to <i>/dev/null</i>. Upon receipt of a SIGHUP,
+syslogd(8) will close the pipe to the process. If the
+process does not exit voluntarily, it will be sent a SIGTERM
+signal after a grace period of up to 60 seconds.</p>
+
+<p style="margin-left:14%; margin-top: 1em">The command
+will only be started once data arrives that should be piped
+to it. If the command exits, it will be restarted as
+necessary.</p>
+
+<p style="margin-left:14%; margin-top: 1em">If it is
+desired that the subprocess should receive exactly one line
+of input, this can be achieved by exiting after reading and
+processing the single line. A wrapper script can be used to
+achieve this effect, if necessary. Note that this method can
+be very resource-intensive if many log messages are being
+piped through the filter.</p>
+
+<p style="margin-left:14%; margin-top: 1em">Unless the
+command is a full pipeline, it may be useful to start the
+command with <i>exec</i> so that the invoking shell process
+does not wait for the command to complete. Note that the
+command is started with the UID of the syslogd(8) process,
+normally the superuser.</p>
+
+<p style="margin-left:14%; margin-top: 1em">Just like with
+files a plus sign &lsquo;+&rsquo; will leave the priority
+and version information intact.</p>
+
+<p style="margin-left:8%; margin-top: 1em">Blank lines and
+lines whose first non-blank character is a hash
+(&lsquo;#&rsquo;) character are ignored.</p>
+
+<p style="margin-top: 1em" valign="top"><b>TLS
+OPTIONS</b></p>
+
+<p style="margin-left:8%;">Some additional options are
+necessary to use TLS connections in syslogd(8). These
+are:</p>
+
+
+<p style="margin-top: 1em" valign="top"><i>tls_server</i></p>
+
+<p style="margin-left:8%;">Enables TLS server mode.</p>
+
+
+<p style="margin-top: 1em" valign="top"><i>tls_gen_cert</i></p>
+
+<p style="margin-left:8%;">Automatically generate a private
+key and certificate.</p>
+
+<p style="margin-top: 1em" valign="top"><i>tls_key</i></p>
+
+<p style="margin-left:8%;">File with private key. Default
+is &lsquo;/etc/openssl/default.key&rsquo;</p>
+
+
+<p style="margin-top: 1em" valign="top"><i>tls_cert</i></p>
+
+<p style="margin-left:8%;">File with certificate to use.
+Default is &lsquo;/etc/openssl/default.crt&rsquo;</p>
+
+<p style="margin-top: 1em" valign="top"><i>tls_ca</i></p>
+
+<p style="margin-left:8%;">File with CA certificate to
+use.</p>
+
+
+<p style="margin-top: 1em" valign="top"><i>tls_cadir</i></p>
+
+<p style="margin-left:8%;">Directory containing CA
+certificates.</p>
+
+
+<p style="margin-top: 1em" valign="top"><i>tls_verify</i></p>
+
+<p style="margin-left:8%;">If set to &lsquo;off&rsquo; then
+certificate authentication is skipped.</p>
+
+
+<p style="margin-top: 1em" valign="top"><i>tls_bindport</i></p>
+
+<p style="margin-left:8%;">Service name or port number to
+bind to. Default is &lsquo;syslog&rsquo;, but as long as no
+official port is assigned this has to be configured.</p>
+
+
+<p style="margin-top: 1em" valign="top"><i>tls_bindhost</i></p>
+
+<p style="margin-left:8%;">Hostname or IP to bind to.</p>
+
+
+<p style="margin-top: 1em" valign="top"><i>tls_allow_fingerprints</i></p>
+
+<p style="margin-left:8%;">List of fingerprints of trusted
+client certificates.</p>
+
+
+<p style="margin-top: 1em" valign="top"><i>tls_allow_clientcerts</i></p>
+
+<p style="margin-left:8%;">List of filenames with trusted
+client certificates.</p>
+
+
+<p style="margin-top: 1em" valign="top"><b>BUFFERING</b></p>
+
+<p style="margin-left:8%;">syslogd(8) is able to buffer
+temporary not writeable messages in memory. To limit the
+memory consumed for this buffering the following optons may
+be given:</p>
+
+
+<p style="margin-top: 1em" valign="top"><i>file_queue_length</i></p>
+
+
+<p style="margin-top: 1em" valign="top"><i>pipe_queue_length</i></p>
+
+
+<p style="margin-top: 1em" valign="top"><i>tls_queue_length</i></p>
+
+<p style="margin-left:8%;">The maximum number of messages
+buffered for one destination of type tls, file, or pipe
+respectively. Defaults are &lsquo;1024&rsquo;, &lsquo;1024,
+and&rsquo; &lsquo;-1&rsquo; (no limit).</p>
+
+
+<p style="margin-top: 1em" valign="top"><i>file_queue_size</i></p>
+
+
+<p style="margin-top: 1em" valign="top"><i>pipe_queue_size</i></p>
+
+
+<p style="margin-top: 1em" valign="top"><i>tls_queue_size</i></p>
+
+<p style="margin-left:8%;">The maximum memory usage in
+bytes of messages buffered for one destination. Defaults are
+&lsquo;1M&rsquo; &lsquo;1M&rsquo; &lsquo;16M&rsquo;.</p>
+
+<p style="margin-top: 1em" valign="top"><b>SIGNING</b></p>
+
+<p style="margin-left:8%;">syslogd(8) is able to digitally
+sign all processed messages.</p>
+
+<p style="margin-top: 1em" valign="top"><i>sign_sg</i></p>
+
+<p style="margin-left:20%;">Enables signing. Set this
+option to enable syslog-sign and select how to assign
+messages to signature groups. Four possible options are:</p>
+
+<p style="margin-top: 1em" valign="top"><i>0</i></p>
+
+<p style="margin-left:32%;">Use one global signature group
+for all messages.</p>
+
+<p style="margin-top: 1em" valign="top"><i>1</i></p>
+
+<p style="margin-left:32%;">Use one signature group per
+priority.</p>
+
+<p style="margin-top: 1em" valign="top"><i>2</i></p>
+
+<p style="margin-left:32%;">Use signature groups for ranges
+of priorities.</p>
+
+<p style="margin-top: 1em" valign="top"><i>3</i></p>
+
+<p style="margin-left:32%;">Use one signature group per
+destination. This is a custom strategy not defined by the
+standard. With this setting one signature group is set up
+for every file and network action.</p>
+
+
+<p style="margin-top: 1em" valign="top"><i>sign_delim_sg2</i></p>
+
+<p style="margin-left:20%;">This Option is only evaluated
+with &lsquo;sign_sg=2&rsquo; and allows to configure the
+priority ranges for signature groups. The parameters are
+numerical values used as the maximum priority for one group.
+The default is to use one signature groups per facility,
+which is equal to setting &lsquo;sign_delim_sg2=7 15 23 31
+39 ...&rsquo;.</p>
+
+<p style="margin-top: 1em" valign="top"><b>FILES</b> <br>
+/etc/syslog.conf</p>
+
+<p style="margin-left:35%; margin-top: 1em">The syslogd(8)
+configuration file.</p>
+
+
+<p style="margin-top: 1em" valign="top"><b>EXAMPLES</b></p>
+
+<p style="margin-left:8%;">A configuration file might
+appear as follows:</p>
+
+<p style="margin-left:8%; margin-top: 1em"># Log all kernel
+messages, authentication messages of <br>
+# level notice or higher and anything of level err or <br>
+# higher to the console. <br>
+# Don&rsquo;t log private authentication messages!</p>
+
+<table width="100%" border=0 rules="none" frame="void"
+       cellspacing="0" cellpadding="0">
+<tr valign="top" align="left">
+<td width="8%"></td>
+<td width="12%">
+
+
+<p valign="top">*.err;kern.*;auth.notice;authpriv.none</p></td>
+<td width="49%"></td>
+<td width="13%">
+
+
+<p valign="top">/dev/console</p></td>
+<td width="18%">
+</td>
+</table>
+
+<p style="margin-left:8%; margin-top: 1em"># Log anything
+(except mail) of level info or higher. <br>
+# Don&rsquo;t log private authentication messages!</p>
+
+<table width="100%" border=0 rules="none" frame="void"
+       cellspacing="0" cellpadding="0">
+<tr valign="top" align="left">
+<td width="8%"></td>
+<td width="12%">
+
+
+<p valign="top">*.info;mail.none;authpriv.none</p></td>
+<td width="37%"></td>
+<td width="12%">
+</td>
+<td width="13%">
+
+
+<p valign="top">/var/log/messages</p></td>
+<td width="18%">
+</td>
+</table>
+
+<p style="margin-left:8%; margin-top: 1em"># Log daemon
+messages at debug level only</p>
+
+<table width="100%" border=0 rules="none" frame="void"
+       cellspacing="0" cellpadding="0">
+<tr valign="top" align="left">
+<td width="8%"></td>
+<td width="12%">
+
+
+<p valign="top">daemon.=debug</p></td>
+<td width="12%"></td>
+<td width="13%">
+</td>
+<td width="12%">
+</td>
+<td width="12%">
+</td>
+<td width="13%">
+
+
+<p valign="top">/var/log/daemon.debug</p></td>
+<td width="18%">
+</td>
+</table>
+
+<p style="margin-left:8%; margin-top: 1em"># The authpriv
+file has restricted access.</p>
+
+<table width="100%" border=0 rules="none" frame="void"
+       cellspacing="0" cellpadding="0">
+<tr valign="top" align="left">
+<td width="8%"></td>
+<td width="12%">
+
+
+<p valign="top">authpriv.*</p></td>
+<td width="12%"></td>
+<td width="13%">
+</td>
+<td width="12%">
+</td>
+<td width="12%">
+</td>
+<td width="13%">
+
+
+<p valign="top">/var/log/secure</p></td>
+<td width="18%">
+</td>
+</table>
+
+<p style="margin-left:8%; margin-top: 1em"># Log all the
+mail messages in one place.</p>
+
+<table width="100%" border=0 rules="none" frame="void"
+       cellspacing="0" cellpadding="0">
+<tr valign="top" align="left">
+<td width="8%"></td>
+<td width="12%">
+
+
+<p valign="top">mail.*</p></td>
+<td width="12%">
+</td>
+<td width="13%">
+</td>
+<td width="12%">
+</td>
+<td width="12%">
+</td>
+<td width="13%">
+
+
+<p valign="top">/var/log/maillog</p></td>
+<td width="18%">
+</td>
+</table>
+
+<p style="margin-left:8%; margin-top: 1em"># Everybody gets
+emergency messages, plus log them on another <br>
+# machine.</p>
+
+<table width="100%" border=0 rules="none" frame="void"
+       cellspacing="0" cellpadding="0">
+<tr valign="top" align="left">
+<td width="8%"></td>
+<td width="12%">
+
+
+<p valign="top">*.emerg</p></td>
+<td width="12%">
+</td>
+<td width="13%">
+</td>
+<td width="12%">
+</td>
+<td width="12%">
+</td>
+<td width="13%">
+
+
+<p valign="top">*</p></td>
+<td width="18%">
+</td>
+<tr valign="top" align="left">
+<td width="8%"></td>
+<td width="12%">
+
+
+<p valign="top">*.emerg</p></td>
+<td width="12%">
+</td>
+<td width="13%">
+</td>
+<td width="12%">
+</td>
+<td width="12%">
+</td>
+<td width="13%">
+
+
+<p valign="top">@arpa.berkeley.edu</p></td>
+<td width="18%">
+</td>
+</table>
+
+<p style="margin-left:8%; margin-top: 1em"># Log all
+messages of level info or higher to another <br>
+# machine using TLS with an alternative portname and a <br>
+# fingerprint for athentication</p>
+
+<table width="100%" border=0 rules="none" frame="void"
+       cellspacing="0" cellpadding="0">
+<tr valign="top" align="left">
+<td width="8%"></td>
+<td width="12%">
+
+
+<p valign="top">*.info</p></td>
+<td width="12%">
+</td>
+<td width="13%">
+</td>
+<td width="12%">
+</td>
+<td width="12%">
+</td>
+<td width="13%">
+
+
+
+<p valign="top">@[logserver]:1234(fingerprint=&quot;SHA1:01:02:...&quot;)</p> </td>
+<td width="18%">
+</td>
+</table>
+
+<p style="margin-left:8%; margin-top: 1em"># Root and Eric
+get alert and higher messages.</p>
+
+<table width="100%" border=0 rules="none" frame="void"
+       cellspacing="0" cellpadding="0">
+<tr valign="top" align="left">
+<td width="8%"></td>
+<td width="12%">
+
+
+<p valign="top">*.alert</p></td>
+<td width="12%">
+</td>
+<td width="13%">
+</td>
+<td width="12%">
+</td>
+<td width="12%">
+</td>
+<td width="13%">
+
+
+<p valign="top">root,eric</p></td>
+<td width="18%">
+</td>
+</table>
+
+<p style="margin-left:8%; margin-top: 1em"># Save mail and
+news errors of level err and higher in a <br>
+# special file.</p>
+
+<table width="100%" border=0 rules="none" frame="void"
+       cellspacing="0" cellpadding="0">
+<tr valign="top" align="left">
+<td width="8%"></td>
+<td width="12%">
+
+
+<p valign="top">mail,news.err</p></td>
+<td width="12%"></td>
+<td width="13%">
+</td>
+<td width="12%">
+</td>
+<td width="12%">
+</td>
+<td width="13%">
+
+
+<p valign="top">/var/log/spoolerr</p></td>
+<td width="18%">
+</td>
+</table>
+
+<p style="margin-left:8%; margin-top: 1em"># Pipe all
+authentication messages to a filter.</p>
+
+<table width="100%" border=0 rules="none" frame="void"
+       cellspacing="0" cellpadding="0">
+<tr valign="top" align="left">
+<td width="8%"></td>
+<td width="12%">
+
+
+<p valign="top">auth.*</p></td>
+<td width="12%">
+</td>
+<td width="13%">
+</td>
+<td width="12%">
+</td>
+<td width="12%">
+</td>
+<td width="13%">
+
+
+<p valign="top">|exec /usr/local/sbin/authfilter</p></td>
+<td width="18%">
+</td>
+</table>
+
+<p style="margin-left:8%; margin-top: 1em"># Log kernel
+messages to a separate file without syncing each
+message.</p>
+
+<table width="100%" border=0 rules="none" frame="void"
+       cellspacing="0" cellpadding="0">
+<tr valign="top" align="left">
+<td width="8%"></td>
+<td width="12%">
+
+
+<p valign="top">kern.*</p></td>
+<td width="12%">
+</td>
+<td width="13%">
+</td>
+<td width="12%">
+</td>
+<td width="12%">
+</td>
+<td width="13%">
+
+
+<p valign="top">-/var/log/kernlog</p></td>
+<td width="18%">
+</td>
+</table>
+
+<p style="margin-left:8%; margin-top: 1em"># Save ftpd
+transactions along with mail and news. <br>
+!ftpd</p>
+
+<table width="100%" border=0 rules="none" frame="void"
+       cellspacing="0" cellpadding="0">
+<tr valign="top" align="left">
+<td width="8%"></td>
+<td width="12%">
+
+
+<p valign="top">*.*</p></td>
+<td width="12%">
+</td>
+<td width="13%">
+</td>
+<td width="12%">
+</td>
+<td width="12%">
+</td>
+<td width="13%">
+
+
+<p valign="top">/var/log/spoolerr</p></td>
+<td width="18%">
+</td>
+</table>
+
+<p style="margin-left:8%; margin-top: 1em"># Send all error
+messages from a RAID array through a filter. <br>
+!raid0</p>
+
+<table width="100%" border=0 rules="none" frame="void"
+       cellspacing="0" cellpadding="0">
+<tr valign="top" align="left">
+<td width="8%"></td>
+<td width="12%">
+
+
+<p valign="top">kern.err</p></td>
+<td width="12%"></td>
+<td width="13%">
+</td>
+<td width="12%">
+</td>
+<td width="12%">
+</td>
+<td width="13%">
+
+
+<p valign="top">|exec /usr/local/sbin/raidfilter</p></td>
+<td width="18%">
+</td>
+</table>
+
+<p style="margin-left:8%; margin-top: 1em"># Save pppd
+messages from dialhost to a separate file. <br>
+!pppd <br>
++dialhost</p>
+
+<table width="100%" border=0 rules="none" frame="void"
+       cellspacing="0" cellpadding="0">
+<tr valign="top" align="left">
+<td width="8%"></td>
+<td width="12%">
+
+
+<p valign="top">*.*</p></td>
+<td width="12%">
+</td>
+<td width="13%">
+</td>
+<td width="12%">
+</td>
+<td width="12%">
+</td>
+<td width="13%">
+
+
+<p valign="top">/var/log/dialhost-pppd</p></td>
+<td width="18%">
+</td>
+</table>
+
+<p style="margin-left:8%; margin-top: 1em"># Save non-local
+log messages from all programs to a separate file. <br>
+!* <br>
+-@</p>
+
+<table width="100%" border=0 rules="none" frame="void"
+       cellspacing="0" cellpadding="0">
+<tr valign="top" align="left">
+<td width="8%"></td>
+<td width="12%">
+
+
+<p valign="top">*.*</p></td>
+<td width="12%">
+</td>
+<td width="13%">
+</td>
+<td width="12%">
+</td>
+<td width="12%">
+</td>
+<td width="13%">
+
+
+<p valign="top">/var/log/foreign</p></td>
+<td width="18%">
+</td>
+</table>
+
+<p style="margin-top: 1em" valign="top"><b>SEE ALSO</b></p>
+
+<p style="margin-left:8%;">syslog(3), syslogd(8)</p>
+
+<p style="margin-top: 1em" valign="top"><b>HISTORY</b></p>
+
+<p style="margin-left:8%;">The <b>syslog.conf</b> file
+appeared in 4.3BSD, along with syslogd(8).</p>
+
+<p style="margin-top: 1em" valign="top"><b>BUGS</b></p>
+
+<p style="margin-left:8%;">The effects of multiple
+selectors are sometimes not intuitive. For example
+&lsquo;&lsquo;mail.crit;*.err&rsquo;&rsquo; will select
+&lsquo;&lsquo;mail&rsquo;&rsquo; facility messages at the
+level of &lsquo;&lsquo;err&rsquo;&rsquo; or higher, not at
+the level of &lsquo;&lsquo;crit&rsquo;&rsquo; or higher.</p>
+
+<p style="margin-left:8%; margin-top: 1em">NetBSD&nbsp;4.0
+November&nbsp;18, 2004 NetBSD&nbsp;4.0</p>
+<hr>
+</body>
+</html>

@@ -202,14 +202,6 @@ int     LogFacPri = 0;          /* put facility and priority in log messages: */
                                 /* 0=no, 1=numeric, 2=names */
 bool    BSDOutputFormat = false;/* if true emit traditional BSD Syslog lines,
                                    otherwise new syslog-protocol lines */
-bool    ChainRelays = false;    /* preserves the names of all relays
-                                 * --> compatible with old syslogd behaviour
-                                 * as introduced after FreeBSD PR#bin/7055,
-                                 * but incompatible with RFC3164 and
-                                 * syslog-protocol
-                                 * 
-                                 * TODO: implement
-                                 */
 char  appname[]   = "syslogd";         /* the APPNAME for own messages */
 char *include_pid = NULL; /* include PID for own messages, NULL disables */
 
@@ -328,11 +320,10 @@ main(int argc, char *argv[])
                 case 'b':
                         bindhostname = optarg;
                         break;
-                case 'c':               /* chain relay hostnames */
-                        ChainRelays = true;
-                        break;
                 case 'd':               /* debug */
-                        Debug = D_ALL;  /* TODO: read bitmap as integer */
+                        Debug = D_ALL;
+                        /* is there a way to read the integer value
+                         * for Debug as an optional argument? */
                         break;
                 case 'f':               /* configuration file */
                         ConfFile = optarg;
@@ -348,8 +339,16 @@ main(int argc, char *argv[])
                 case 'n':               /* turn off DNS queries */
                         UseNameService = 0;
                         break;
-                case 'o':               /* old-style BSD Syslog format */
-                        BSDOutputFormat = true;
+                case 'o':               /* message format */
+                        if (!strncmp(optarg, "rfc3164", sizeof("rfc3164")-1))
+                                BSDOutputFormat = true;
+                        /* else: syslog-protocol is default, 
+                         *       no additional check necessary
+                         */
+                        /* TODO: implement additional output option "osyslog"
+                         *       for old syslogd behaviour as introduced after
+                         *       FreeBSD PR#bin/7055.
+                         */
                         break;
                 case 'p':               /* path */
                         logpath_add(&LogPaths, &funixsize, 
@@ -2277,8 +2276,6 @@ wallmsg(struct filed *f, struct iovec *iov, size_t iovcnt)
         if (reenter++)
                 return;
 
-        /* TODO: dh found a memory allocation bug in the utmp functions
-         *       --> check sometime sater if it got fixed.            */
         (void)getutentries(NULL, &ep);
         if (ep != ohead) {
                 freeutentries(ohead);
@@ -2394,8 +2391,6 @@ reapchild(int fd, short event, void *ev)
 
 /*
  * Return a printable representation of a host address.
- * 
- * TODO: use FQDN for syslog-protocol
  */
 char *
 cvthname(struct sockaddr_storage *f)
@@ -2429,10 +2424,6 @@ cvthname(struct sockaddr_storage *f)
         return (host);
 }
 
-/*
- * TODO: Check if a local domain has to be treated different than other
- * domains. I am not quite certain when the local domain is used at all.
- */ 
 void
 trim_localdomain(char *host)
 {
@@ -2760,7 +2751,7 @@ die(int fd, short event, void *ev)
          *  Close all open UDP sockets
          */
         if (finet) {
-                for (i = 0; i < finet->fd; i++) {
+                for (int i = 0; i < finet->fd; i++) {
                         if (close(finet[i+1].fd) < 0) {
                                 logerror("close() failed");
                                 die(0, 0, NULL);
@@ -3605,21 +3596,14 @@ cfline(const unsigned int linenum, char *line, struct filed *f, char *prog, char
         while (isblank((unsigned char)*p))
                 p++;
 
-#ifndef DISABLE_SIGN
         /* 
-         * preliminary symbols to configure syslog-sign:
+         * should this be "#ifndef DISABLE_SIGN" or is it a general option?
          * '+' before file destination: write with PRI field for later verification
-         * '!' before any destination: sign messages going there
          */ 
         if (*p == '+') {
                 f->f_flags |= FFLAG_FULL;
                 p++;
         }
-        if (*p == '!') {
-                f->f_flags |= FFLAG_SIGN;
-                p++;
-        }
-#endif /* !DISABLE_SIGN */
         if (*p == '-') {
                 syncfile = 0;
                 p++;
@@ -3628,6 +3612,7 @@ cfline(const unsigned int linenum, char *line, struct filed *f, char *prog, char
 
         switch (*p) {
         case '@':
+                f->f_flags |= FFLAG_SIGN;
 #ifndef DISABLE_TLS
                 if (*(p+1) == '[') {
                         /* TLS destination */
@@ -3657,6 +3642,7 @@ cfline(const unsigned int linenum, char *line, struct filed *f, char *prog, char
                 break;
 
         case '/':
+                f->f_flags |= FFLAG_SIGN;
                 (void)strlcpy(f->f_un.f_fname, p, sizeof(f->f_un.f_fname));
                 if ((f->f_file = open(p, O_WRONLY|O_APPEND, 0)) < 0) {
                         f->f_type = F_UNUSED;

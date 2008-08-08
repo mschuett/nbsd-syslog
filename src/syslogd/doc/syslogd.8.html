@@ -1,0 +1,305 @@
+<!-- Creator     : groff version 1.19.2 -->
+<!-- CreationDate: Fri Aug  8 17:59:04 2008 -->
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN"
+"http://www.w3.org/TR/html4/loose.dtd">
+<html>
+<head>
+<meta name="generator" content="groff -Thtml, see www.gnu.org">
+<meta http-equiv="Content-Type" content="text/html; charset=US-ASCII">
+<meta name="Content-Style" content="text/css">
+<style type="text/css">
+       p     { margin-top: 0; margin-bottom: 0; }
+       pre   { margin-top: 0; margin-bottom: 0; }
+       table { margin-top: 0; margin-bottom: 0; }
+</style>
+<title></title>
+</head>
+<body>
+
+<hr>
+
+
+<p valign="top">SYSLOGD(8) NetBSD System Manager&rsquo;s
+Manual SYSLOGD(8)</p>
+
+<p style="margin-top: 1em" valign="top"><b>NAME</b></p>
+
+<p style="margin-left:8%;"><b>syslogd</b> &mdash; log
+systems messages</p>
+
+
+<p style="margin-top: 1em" valign="top"><b>SYNOPSIS</b></p>
+
+<p style="margin-left:20%;"><b>syslogd</b>
+[<b>&minus;dnrSsTUv</b>]
+[<b>&minus;b&nbsp;</b><i>bind_address</i>]
+[<b>&minus;f&nbsp;</b><i>config_file</i>]
+[<b>&minus;g&nbsp;</b><i>group</i>]
+[<b>&minus;m&nbsp;</b><i>mark_interval</i>]
+[<b>&minus;P&nbsp;</b><i>file_list</i>] [</p>
+
+<p valign="top"><b>&minus;p&nbsp;</b><i>log_socket</i>
+[<b>&minus;p&nbsp;</b><i>log_socket2&nbsp;...</i>] ]
+[<b>&minus;t&nbsp;</b><i>chroot_dir</i>]
+[<b>&minus;u&nbsp;</b><i>user</i>]</p>
+
+
+<p style="margin-top: 1em" valign="top"><b>DESCRIPTION</b></p>
+
+<p style="margin-left:8%;"><b>syslogd</b> reads and logs
+messages to the system console, log files, other machines
+and/or users as specified by its configuration file. The
+options are as follows:</p>
+
+<p style="margin-top: 1em" valign="top"><b>&minus;b</b>
+<i>bind_address</i></p>
+
+<p style="margin-left:34%; margin-top: 1em">Specify one
+specific IP address or hostname to bind to. If a hostname is
+specified, the IPv4 or IPv6 address which corresponds to it
+is used.</p>
+
+
+<p style="margin-top: 1em" valign="top"><b>&minus;d</b></p>
+
+<p style="margin-left:34%; margin-top: 1em">Enable
+debugging to the standard output, and do not disassociate
+from the controlling terminal.</p>
+
+
+<p style="margin-top: 1em" valign="top"><b>&minus;f</b></p>
+
+<p style="margin-left:34%; margin-top: 1em">Specify the
+pathname of an alternative configuration file; the default
+is <i>/etc/syslog.conf</i>.</p>
+
+<p style="margin-top: 1em" valign="top"><b>&minus;g</b>
+<i>group</i></p>
+
+<p style="margin-left:34%; margin-top: 1em">Set GID to
+<i>group</i> after the sockets and log files have been
+opened.</p>
+
+
+<p style="margin-top: 1em" valign="top"><b>&minus;m</b></p>
+
+<p style="margin-left:34%; margin-top: 1em">Select the
+number of minutes between &lsquo;&lsquo;mark&rsquo;&rsquo;
+messages; the default is 20 minutes.</p>
+
+
+<p style="margin-top: 1em" valign="top"><b>&minus;n</b></p>
+
+<p style="margin-left:34%; margin-top: 1em">Do not perform
+hostname lookups; report only numeric addresses.</p>
+
+
+<p style="margin-top: 1em" valign="top"><b>&minus;o</b></p>
+
+<p style="margin-left:34%; margin-top: 1em">Select output
+message format. Default format is syslog-protocol. You can
+use &lsquo;-o rfc3164&rsquo; to output a traditional BSD
+Syslog format.</p>
+
+
+<p style="margin-top: 1em" valign="top"><b>&minus;P</b></p>
+
+<p style="margin-left:34%; margin-top: 1em">Specify the
+pathname of a file containing a list of sockets to be
+created. The format of the file is simply one socket per
+line.</p>
+
+
+<p style="margin-top: 1em" valign="top"><b>&minus;p</b></p>
+
+<p style="margin-left:34%; margin-top: 1em">Specify the
+pathname of a log socket. Multiple <b>&minus;p</b> options
+create multiple log sockets. If no <b>&minus;p</b> arguments
+are created, the default socket of <i>/var/run/log</i> is
+used.</p>
+
+
+<p style="margin-top: 1em" valign="top"><b>&minus;r</b></p>
+
+<p style="margin-left:34%; margin-top: 1em">Disable the
+compression of repeated instances of the same line into a
+single line of the form &lsquo;&lsquo;last message repeated
+N times&rsquo;&rsquo;.</p>
+
+
+<p style="margin-top: 1em" valign="top"><b>&minus;S</b></p>
+
+<p style="margin-left:34%; margin-top: 1em">Sync kernel
+messages to disk immediately.</p>
+
+
+<p style="margin-top: 1em" valign="top"><b>&minus;s</b></p>
+
+<p style="margin-left:34%; margin-top: 1em">Select
+&lsquo;&lsquo;secure&rsquo;&rsquo; mode, in which
+<b>syslogd</b> does not listen on a UDP socket but only
+communicates over a UNIX domain socket. This is valuable
+when the machine on which <b>syslogd</b> runs is subject to
+attack over the network and it is desired that the machine
+be protected from attempts to remotely fill logs and similar
+attacks.</p>
+
+<p style="margin-top: 1em" valign="top"><b>&minus;t</b>
+<i>chroot_dir</i></p>
+
+<p style="margin-left:34%; margin-top: 1em">chroot(2) to
+<i>chroot_dir</i> after the sockets and log files have been
+opened.</p>
+
+
+<p style="margin-top: 1em" valign="top"><b>&minus;T</b></p>
+
+<p style="margin-left:34%; margin-top: 1em">Always use the
+local time and date for messages received from the network,
+instead of the timestamp field supplied in the message by
+the remote host. This is useful if some of the originating
+hosts can&rsquo;t keep time properly or are unable to
+generate a correct timestamp.</p>
+
+<p style="margin-top: 1em" valign="top"><b>&minus;u</b>
+<i>user</i></p>
+
+<p style="margin-left:34%; margin-top: 1em">Set UID to
+<i>user</i> after the sockets and log files have been
+opened.</p>
+
+
+<p style="margin-top: 1em" valign="top"><b>&minus;U</b></p>
+
+<p style="margin-left:34%; margin-top: 1em">Unique priority
+logging. Only log messages at the priority specified by the
+selector in the configuration file. Without this option,
+messages at the specified priority or higher are logged.
+This option changes the default priority comparison from
+&lsquo;&gt;=&rsquo; to &lsquo;=&rsquo;.</p>
+
+
+<p style="margin-top: 1em" valign="top"><b>&minus;v</b></p>
+
+<p style="margin-left:34%; margin-top: 1em">Verbose
+logging. If specified once, the numeric facility and
+priority are logged with each locally-written message. If
+specified more than once, the names of the facility and
+priority are logged with each locally-written message.</p>
+
+<p style="margin-left:8%; margin-top: 1em"><b>syslogd</b>
+reads its configuration file when it starts up and whenever
+it receives a hangup signal. For information on the format
+of the configuration file, see syslog.conf(5).</p>
+
+<p style="margin-left:8%; margin-top: 1em"><b>syslogd</b>
+reads messages from the UNIX domain socket
+<i>/var/run/log</i>, from an Internet domain socket
+specified in <i>/etc/services</i>, and from the special
+device <i>/dev/klog</i> (to read kernel messages).</p>
+
+<p style="margin-left:8%; margin-top: 1em"><b>syslogd</b>
+creates the file <i>/var/run/syslogd.pid</i>, and stores its
+process id there. This can be used to kill or reconfigure
+<b>syslogd</b>.</p>
+
+<p style="margin-left:8%; margin-top: 1em">By using
+multiple <b>&minus;p</b> options, one can set up many chroot
+environments by passing the pathname to the log socket
+(<i>/var/run/log</i>) in each chroot area to <b>syslogd</b>.
+For example:</p>
+
+<p style="margin-left:17%;">syslogd -p /var/run/log -p
+/web/var/run/log -p /ftp/var/run/log</p>
+
+<p style="margin-left:8%; margin-top: 1em">Note: the normal
+log socket must now also be passed to <b>syslogd</b>.</p>
+
+<p style="margin-left:8%; margin-top: 1em">The logged
+message includes the date, time, and hostname (or pathname
+of the log socket). Commonly, the program name and the
+process id is included.</p>
+
+<p style="margin-left:8%; margin-top: 1em">The date and
+time are taken from the received message. If the format of
+the timestamp field is incorrect, time obtained from the
+local host is used instead. This can be overridden by the
+<b>&minus;T</b> flag.</p>
+
+<p style="margin-left:8%; margin-top: 1em">Accesses from
+UDP socket can be filtered by libwrap configuration files,
+like <i>/etc/hosts.deny</i>. Specify
+&lsquo;&lsquo;syslogd&rsquo;&rsquo; in <i>daemon_list</i>
+portion of the configuration files. Refer to hosts_access(5)
+for details.</p>
+
+<p style="margin-left:8%; margin-top: 1em"><b>SYSLOG
+PROTOCOL NOTES <br>
+syslogd</b> accepts messages in traditional BSD Syslog or in
+newer Syslog Protocol format. See RFC 3164 (BSD Syslog) and
+RFC <i>nnnn</i> (Syslog Protocol) for detailed description
+of the message format.</p>
+
+<p style="margin-left:8%; margin-top: 1em">Messages from
+the local kernel are assumed to be in BSD Syslog format. If
+they are not tagged with a priority code then they receive
+the default facility LOG_KERN and priority LOG_NOTICE. All
+other untagged messages receive the default facility
+LOG_USER and priority LOG_NOTICE.</p>
+
+<p style="margin-top: 1em" valign="top"><b>FILES</b> <br>
+/etc/syslog.conf</p>
+
+<p style="margin-left:42%; margin-top: 1em">The
+configuration file.</p>
+
+<p valign="top">/var/run/syslogd.pid</p>
+
+<p style="margin-left:42%; margin-top: 1em">The process id
+of current <b>syslogd</b>.</p>
+
+<p valign="top">/var/run/log</p>
+
+<p style="margin-left:42%; margin-top: 1em">Name of the
+UNIX domain datagram log socket.</p>
+
+<p valign="top">/dev/klog</p>
+
+<p style="margin-left:42%; margin-top: 1em">The kernel log
+device.</p>
+
+<p style="margin-top: 1em" valign="top"><b>SEE ALSO</b></p>
+
+<p style="margin-left:8%;">logger(1), syslog(3),
+services(5), syslog.conf(5), newsyslog(8)</p>
+
+<p style="margin-top: 1em" valign="top"><i>The BSD syslog
+Protocol</i></p>
+
+<p style="margin-left:8%;">,</p>
+
+<p valign="top">RFC , <br>
+3164 , <br>
+August 2001 .</p>
+
+<p style="margin-top: 1em" valign="top"><i>The syslog
+Protocol</i></p>
+
+<p style="margin-left:8%;">,</p>
+
+<p valign="top">Internet-Draft , <br>
+draft-ietf-syslog-protocol-23 , <br>
+September 2007 .</p>
+
+<p style="margin-top: 1em" valign="top"><b>HISTORY</b></p>
+
+<p style="margin-left:8%;">The <b>syslogd</b> command
+appeared in 4.3BSD. Support for multiple log sockets
+appeared in NetBSD&nbsp;1.4. libwrap support appeared in
+NetBSD&nbsp;1.6.</p>
+
+<p style="margin-left:8%; margin-top: 1em">NetBSD&nbsp;4.0
+September&nbsp;15, 2006 NetBSD&nbsp;4.0</p>
+<hr>
+</body>
+</html>

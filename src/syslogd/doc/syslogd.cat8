@@ -1,0 +1,142 @@
+SYSLOGD(8)              NetBSD System Manager's Manual              SYSLOGD(8)
+
+NNAAMMEE
+     ssyyssllooggdd -- log systems messages
+
+SSYYNNOOPPSSIISS
+     ssyyssllooggdd [--ddnnrrSSssTTUUvv] [--bb _b_i_n_d___a_d_d_r_e_s_s] [--ff _c_o_n_f_i_g___f_i_l_e] [--gg _g_r_o_u_p]
+             [--mm _m_a_r_k___i_n_t_e_r_v_a_l] [--PP _f_i_l_e___l_i_s_t] [--pp _l_o_g___s_o_c_k_e_t
+             [--pp _l_o_g___s_o_c_k_e_t_2 _._._.]] [--tt _c_h_r_o_o_t___d_i_r] [--uu _u_s_e_r]
+
+DDEESSCCRRIIPPTTIIOONN
+     ssyyssllooggdd reads and logs messages to the system console, log files, other
+     machines and/or users as specified by its configuration file.  The
+     options are as follows:
+
+     --bb _b_i_n_d___a_d_d_r_e_s_s  Specify one specific IP address or hostname to bind to.
+                      If a hostname is specified, the IPv4 or IPv6 address
+                      which corresponds to it is used.
+
+     --dd               Enable debugging to the standard output, and do not dis-
+                      associate from the controlling terminal.
+
+     --ff               Specify the pathname of an alternative configuration
+                      file; the default is _/_e_t_c_/_s_y_s_l_o_g_._c_o_n_f.
+
+     --gg _g_r_o_u_p         Set GID to _g_r_o_u_p after the sockets and log files have
+                      been opened.
+
+     --mm               Select the number of minutes between ``mark'' messages;
+                      the default is 20 minutes.
+
+     --nn               Do not perform hostname lookups; report only numeric
+                      addresses.
+
+     --oo               Select output message format. Default format is syslog-
+                      protocol.  You can use `-o rfc3164' to output a tradi-
+                      tional BSD Syslog format.
+
+     --PP               Specify the pathname of a file containing a list of
+                      sockets to be created.  The format of the file is simply
+                      one socket per line.
+
+     --pp               Specify the pathname of a log socket.  Multiple --pp
+                      options create multiple log sockets.  If no --pp arguments
+                      are created, the default socket of _/_v_a_r_/_r_u_n_/_l_o_g is used.
+
+     --rr               Disable the compression of repeated instances of the
+                      same line into a single line of the form ``last message
+                      repeated N times''.
+
+     --SS               Sync kernel messages to disk immediately.
+
+     --ss               Select ``secure'' mode, in which ssyyssllooggdd does not listen
+                      on a UDP socket but only communicates over a UNIX domain
+                      socket.  This is valuable when the machine on which
+                      ssyyssllooggdd runs is subject to attack over the network and
+                      it is desired that the machine be protected from
+                      attempts to remotely fill logs and similar attacks.
+
+     --tt _c_h_r_o_o_t___d_i_r    chroot(2) to _c_h_r_o_o_t___d_i_r after the sockets and log files
+                      have been opened.
+
+     --TT               Always use the local time and date for messages received
+                      from the network, instead of the timestamp field sup-
+                      plied in the message by the remote host.  This is useful
+                      if some of the originating hosts can't keep time prop-
+                      erly or are unable to generate a correct timestamp.
+
+     --uu _u_s_e_r          Set UID to _u_s_e_r after the sockets and log files have
+                      been opened.
+
+     --UU               Unique priority logging.  Only log messages at the pri-
+                      ority specified by the selector in the configuration
+                      file.  Without this option, messages at the specified
+                      priority or higher are logged.  This option changes the
+                      default priority comparison from `>=' to `='.
+
+     --vv               Verbose logging.  If specified once, the numeric facil-
+                      ity and priority are logged with each locally-written
+                      message.  If specified more than once, the names of the
+                      facility and priority are logged with each locally-writ-
+                      ten message.
+
+     ssyyssllooggdd reads its configuration file when it starts up and whenever it
+     receives a hangup signal.  For information on the format of the configu-
+     ration file, see syslog.conf(5).
+
+     ssyyssllooggdd reads messages from the UNIX domain socket _/_v_a_r_/_r_u_n_/_l_o_g, from an
+     Internet domain socket specified in _/_e_t_c_/_s_e_r_v_i_c_e_s, and from the special
+     device _/_d_e_v_/_k_l_o_g (to read kernel messages).
+
+     ssyyssllooggdd creates the file _/_v_a_r_/_r_u_n_/_s_y_s_l_o_g_d_._p_i_d, and stores its process id
+     there.  This can be used to kill or reconfigure ssyyssllooggdd.
+
+     By using multiple --pp options, one can set up many chroot environments by
+     passing the pathname to the log socket (_/_v_a_r_/_r_u_n_/_l_o_g) in each chroot area
+     to ssyyssllooggdd.  For example:
+           syslogd -p /var/run/log -p /web/var/run/log -p /ftp/var/run/log
+
+     Note: the normal log socket must now also be passed to ssyyssllooggdd.
+
+     The logged message includes the date, time, and hostname (or pathname of
+     the log socket).  Commonly, the program name and the process id is
+     included.
+
+     The date and time are taken from the received message.  If the format of
+     the timestamp field is incorrect, time obtained from the local host is
+     used instead.  This can be overridden by the --TT flag.
+
+     Accesses from UDP socket can be filtered by libwrap configuration files,
+     like _/_e_t_c_/_h_o_s_t_s_._d_e_n_y.  Specify ``syslogd'' in _d_a_e_m_o_n___l_i_s_t portion of the
+     configuration files.  Refer to hosts_access(5) for details.
+
+   SSYYSSLLOOGG PPRROOTTOOCCOOLL NNOOTTEESS
+     ssyyssllooggdd accepts messages in traditional BSD Syslog or in newer Syslog
+     Protocol format. See RFC 3164 (BSD Syslog) and RFC _n_n_n_n (Syslog Protocol)
+     for detailed description of the message format.
+
+     Messages from the local kernel are assumed to be in BSD Syslog format.
+     If they are not tagged with a priority code then they receive the default
+     facility LOG_KERN and priority LOG_NOTICE.  All other untagged messages
+     receive the default facility LOG_USER and priority LOG_NOTICE.
+
+FFIILLEESS
+     /etc/syslog.conf      The configuration file.
+     /var/run/syslogd.pid  The process id of current ssyyssllooggdd.
+     /var/run/log          Name of the UNIX domain datagram log socket.
+     /dev/klog             The kernel log device.
+
+SSEEEE AALLSSOO
+     logger(1), syslog(3), services(5), syslog.conf(5), newsyslog(8)
+
+     _T_h_e _B_S_D _s_y_s_l_o_g _P_r_o_t_o_c_o_l, RFC, 3164, August 2001.
+
+     _T_h_e _s_y_s_l_o_g _P_r_o_t_o_c_o_l, Internet-Draft, draft-ietf-syslog-protocol-23,
+     September 2007.
+
+HHIISSTTOORRYY
+     The ssyyssllooggdd command appeared in 4.3BSD.  Support for multiple log sockets
+     appeared in NetBSD 1.4.  libwrap support appeared in NetBSD 1.6.
+
+NetBSD 4.0                    September 15, 2006                    NetBSD 4.0

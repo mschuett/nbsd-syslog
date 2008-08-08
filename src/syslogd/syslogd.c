@@ -1697,10 +1697,12 @@ logmsg(struct buf_msg *buffer)
                      f->f_prevmsg &&
                      buffer->msglen == f->f_prevmsg->msglen &&
                     !NoRepeat &&
-                    buffer->msg && f->f_prevmsg->msg &&
-                    !strcmp(buffer->msg, f->f_prevmsg->msg) &&
-                    buffer->host && f->f_prevmsg->host &&
-                    !strcasecmp(buffer->host, f->f_prevmsg->host)) {
+                    (buffer->host && f->f_prevmsg->host &&
+                    !strcasecmp(buffer->host, f->f_prevmsg->host)) &&
+                    ((buffer->sd && f->f_prevmsg->sd &&
+                    !strcmp(buffer->sd, f->f_prevmsg->sd)) ||
+                    (buffer->msg && f->f_prevmsg->msg &&
+                    !strcmp(buffer->msg, f->f_prevmsg->msg)))) {
                         f->f_prevcount++;
                         DPRINTF(D_DATA, "Msg repeated %d times, %ld sec of %d\n",
                             f->f_prevcount, (long)(now - f->f_time),

@@ -213,7 +213,6 @@ char   *getLocalFQDN(void);
 struct socketEvent* socksetup(int, const char *);
 void    read_config_file(FILE*, struct filed**);
 void    init(int fd, short event, void *ev);  /* SIGHUP kevent dispatch routine */
-void    monitor_mem_usage(void);
 void    logerror(const char *, ...);
 void    loginfo(const char *, ...);
 void    logmsg_async(const int, const char *, const char *, const int);
@@ -1898,7 +1897,7 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
         char *p, *line = NULL, *lineptr = NULL;
 #define REPBUFSIZE 80
         char greetings[200];
-#define ADDEV() do { v++; assert(v - iov < A_CNT(iov)); while(0)
+#define ADDEV() do { v++; assert(v - iov < A_CNT(iov)); } while(0)
 
         DPRINTF(D_CALL, "fprintlog(%p, %p, %p)\n", f, buffer, qentry);
 
@@ -2471,7 +2470,6 @@ domark(int fd, short event, void *ev)
         if (MarkSeq >= MarkInterval) {
                 logmsg_async(LOG_INFO, NULL, "-- MARK --", ADDDATE|MARK);
                 MarkSeq = 0;
-                monitor_mem_usage();
         }
 
         for (f = Files; f; f = f->f_next) {
@@ -2598,10 +2596,10 @@ free_incoming_tls_sockets(void)
                 for (i = 0; i < TLS_Listen_Set->fd; i++) {
                         if (close(TLS_Listen_Set[i+1].fd) == -1)
                                 logerror("close() failed");
-                        if (event_del(TLS_Listen_Set[i+1].ev) == -1)
-                                logerror("event_del() failed");
+                        DEL_EVENT(TLS_Listen_Set[i+1].ev);
                         FREEPTR(TLS_Listen_Set[i+1].ev);
                 }
+        FREEPTR(TLS_Listen_Set);
         /* close/free incoming TLS connections */
         while (!SLIST_EMPTY(&TLS_Incoming_Head)) {
                 tls_in = SLIST_FIRST(&TLS_Incoming_Head);
@@ -2692,21 +2690,6 @@ die(int fd, short event, void *ev)
         }
 
 #ifndef DISABLE_TLS
-        /*
-         *  Close all open incoming TCP/TLS sockets
-         */
-        if (TLS_Listen_Set) {
-                for (int i = 0; i < TLS_Listen_Set->fd; i++) {
-                        if (close(TLS_Listen_Set[i+1].fd) < 0) {
-                                logerror("close() failed");
-                                die(0, 0, NULL);
-                        }
-                        DEL_EVENT(TLS_Listen_Set[i+1].ev);
-                        FREEPTR(TLS_Listen_Set[i+1].ev);
-                }
-                FREEPTR(TLS_Listen_Set);
-        }
-
         FREEPTR(tls_opt.CAdir);
         FREEPTR(tls_opt.CAfile);
         FREEPTR(tls_opt.keyfile);
@@ -3122,23 +3105,6 @@ init(int fd, short event, void *ev)
                 }
                 FREEPTR(finet);
         }
-
-#ifndef DISABLE_TLS
-        /*
-         *  Close all open incoming TCP/TLS sockets
-         */
-        if (TLS_Listen_Set) {
-                for (int i = 0; i < TLS_Listen_Set->fd; i++) {
-                        if (close(TLS_Listen_Set[i+1].fd) < 0) {
-                                logerror("close() failed");
-                                die(0, 0, NULL);
-                        }
-                        DEL_EVENT(TLS_Listen_Set[i+1].ev);
-                        FREEPTR(TLS_Listen_Set[i+1].ev);
-                }
-                FREEPTR(TLS_Listen_Set);
-        }
-#endif /* !DISABLE_TLS */
 
         /* get FQDN and hostname/domain */
         FREEPTR(oldLocalFQDN);

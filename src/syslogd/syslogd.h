@@ -268,6 +268,12 @@ char *strndup(const char *str, size_t n);
 /* allowed number of priorities by IETF standards */
 #define IETF_NUM_PRIVALUES  192
 
+#define MATCH_PRI(f, fac, sev) \
+           (  (((f)->f_pcmp[fac] & PRI_EQ) && ((f)->f_pmask[fac] == (sev))) \
+            ||(((f)->f_pcmp[fac] & PRI_LT) && ((f)->f_pmask[fac]  < (sev)))  \
+            ||(((f)->f_pcmp[fac] & PRI_GT) && ((f)->f_pmask[fac]  > (sev)))  \
+           )
+
 /*
  * Flags to logmsg().
  */

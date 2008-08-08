@@ -253,7 +253,7 @@ sign_sg_init(struct filed *Files)
 {
         struct signature_group_t *newsg;
         struct filed_queue       *fq;
-        struct string_queue      *sqentry;
+        struct string_queue      *sqentry, *last_sqentry;
 
         /* note on SG 1 and 2:
          * it is assumed that redundant signature groups
@@ -327,8 +327,6 @@ sign_sg_init(struct filed *Files)
                  * user configured delimiters, or we use a default
                  * and set up one SG per facility
                  */
-                struct string_queue *last_sqentry;
-                
                 if (STAILQ_EMPTY(&GlobalSign.sig2_delims)) {
                         DPRINTF(D_SIGN, "sign_sg_init(): set default "
                                 "values for SG 2\n");

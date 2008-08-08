@@ -164,12 +164,6 @@ struct TypeInfo {
 #endif /* !DISABLE_TLS */
 };
 
-/* hard limit on memory usage */
-struct global_memory_limit {
-        char *configstring;
-        rlim_t numeric;
-} global_memory_limit = {NULL, 0};
-
 struct  filed *Files = NULL;
 struct  filed consfile;
 
@@ -2459,67 +2453,6 @@ trim_anydomain(char *host)
 }
 
 void
-monitor_mem_usage()
-{
-        struct rlimit rlp;
-        struct rusage ru;
-        static u_int64_t last_ticks = 0;
-        static u_int64_t last_mem   = 0;
-        u_int64_t ticks, delta_ticks, mem, delta_mem, currentmem;
-        static struct clockinfo ci = {.tick = 0};
-        size_t ci_len = sizeof(ci);
-        int ci_mib[2] = {CTL_KERN, KERN_CLOCKRATE};
-        const int memory_high_percent = 95;
-#ifdef LOG_MEM_USAGE
-        char maxmem[12];
-        char usemem[12];
-        char statusline[128];
-#endif /* LOG_MEM_USAGE */
-
-        /* ci.tick will not change, so read only once */
-        if (!ci.tick && sysctl(ci_mib, 2, &ci, &ci_len, NULL, 0) == -1) {
-                DPRINTF(D_MISC, "Couldn't get kern.clockrate\n");
-                ci.tick = 10000;
-        }
-
-        if ((getrusage(RUSAGE_SELF, &ru) == -1)
-         || (getrlimit(RLIMIT_DATA, &rlp) == -1)) {
-                logerror("Unable to get ressource usage/limits");
-        } else {
-                /* execution time */
-                ticks = ru.ru_stime.tv_sec + ru.ru_utime.tv_sec;      /* sec */
-                ticks *= 1000000;                                    /* usec */
-                ticks += ru.ru_stime.tv_usec + ru.ru_utime.tv_usec;
-                ticks /= ci.tick;                                   /* ticks */
-                delta_ticks = ticks - last_ticks;
-                last_ticks = ticks;
-                /* memory usage */
-                mem = (ru.ru_ixrss + ru.ru_idrss + ru.ru_isrss);   /* Kbytes */
-                mem *= 1024;                                        /* bytes */
-                delta_mem = mem - last_mem;
-                last_mem = mem;
-                currentmem = (delta_ticks ? delta_mem/delta_ticks : mem);
-#ifdef LOG_MEM_USAGE
-                humanize_number(usemem, sizeof(usemem),
-                        currentmem, "bytes", HN_AUTOSCALE, 0);
-                humanize_number(maxmem, sizeof(maxmem),
-                        rlp.rlim_max, "bytes", HN_AUTOSCALE, 0);
-
-                snprintf(statusline, sizeof(statusline),
-                        "Status: mem usage %s/%s, raw values %llu/%llu, "
-                        "deltas dmem/dticks = %llu/%llu",
-                        usemem, maxmem, mem, ticks, delta_mem, delta_ticks);
-                logmsg_async(LOG_DEBUG, NULL, statusline, ADDDATE);
-#endif /* LOG_MEM_USAGE */
-
-                if ((currentmem > 0)
-                 && ((memory_high_percent * rlp.rlim_max) > 0)
-                 && (currentmem >= (memory_high_percent * rlp.rlim_max) / 100))
-                        message_allqueues_purge();
-        }
-}
-
-void
 domark(int fd, short event, void *ev)
 {
         struct event *ev_pass = (struct event *)ev;
@@ -2550,7 +2483,6 @@ domark(int fd, short event, void *ev)
                         BACKOFF(f);
                 }
         }
-        monitor_mem_usage();
         RESTORE_SIGNALS(omask);
 
         /* Walk the dead queue, and see if we should signal somebody. */
@@ -2854,7 +2786,6 @@ read_config_file(FILE *cf, struct filed **f_ptr)
                 {"pipe_queue_length",     &TypeInfo[F_PIPE].queue_length_string},
                 {"file_queue_size",       &TypeInfo[F_FILE].queue_size_string},
                 {"pipe_queue_size",       &TypeInfo[F_PIPE].queue_size_string},
-                {"mem_size_limit",        &global_memory_limit.configstring},
 #ifndef DISABLE_SIGN
                 /* syslog-sign setting */
                 {"sign_sg",               &sign_sg_str},
@@ -2958,12 +2889,6 @@ read_config_file(FILE *cf, struct filed **f_ptr)
                 }
         }
         /* convert strings to integer values */
-        if (global_memory_limit.configstring
-         && !dehumanize_number(global_memory_limit.configstring, &global_memory_limit.numeric)) {
-                if (setrlimit(RLIMIT_DATA,
-                        &((struct rlimit) {global_memory_limit.numeric, global_memory_limit.numeric})) == -1)
-                        logerror("Unable to setrlimit()");
-        }
         for (i = 0; i < A_CNT(TypeInfo); i++) {
                 if (!TypeInfo[i].queue_length_string
                  || dehumanize_number(TypeInfo[i].queue_length_string, &TypeInfo[i].queue_length) == -1)

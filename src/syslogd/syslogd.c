@@ -1907,7 +1907,7 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
         char *p, *line = NULL, *lineptr = NULL;
 #define REPBUFSIZE 80
         char greetings[200];
-#define ADDEV() assert(++v - iov < A_CNT(iov))
+#define ADDEV() do { v++; assert(v - iov < A_CNT(iov)); while(0)
 
         DPRINTF(D_CALL, "fprintlog(%p, %p, %p)\n", f, buffer, qentry);
 

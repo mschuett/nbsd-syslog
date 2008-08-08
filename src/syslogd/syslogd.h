@@ -178,12 +178,15 @@ char *strndup(const char *str, size_t n);
 #define D_MISC  4096    /* everything else */
 #define D_ALL   (D_CALL | D_MEM | D_MEM2 | D_DATA | D_NET | D_FILE | D_TLS | D_EVENT | D_BUFFER | D_SIGN | D_MISC) 
 
-/* remove first printf for short debug messages */
-#define DISABLE_DPRINTF 0
-#define DPRINTF(x, ...) (!DISABLE_DPRINTF && (Debug & x) \
+/* build with -DNDEBUG to remove all assert()s and DPRINTF()s */
+#ifdef NDEBUG
+#define DPRINTF(x, ...) (void)0
+#else
+#define DPRINTF(x, ...) (Debug & (x) \
                          ? (printf("%s:%s:%.4d\t", make_timestamp(NULL, true), \
                                 __FILE__, __LINE__), printf(__VA_ARGS__)) \
                          : 0)
+#endif
 
 /* shortcuts for libevent */
 #define EVENT_ADD(x) do { DPRINTF(D_EVENT, "event_add(%s@%p)\n", #x, x); \

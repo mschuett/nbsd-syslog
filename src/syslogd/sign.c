@@ -18,12 +18,9 @@
 /* 
  * Limitations of this implementation:
  * - cannot use OpenPGP keys, only PKIX or DSA due to OpenSSL capabilities
- * - currently no SG 2
- * - due to the splitting and formatting this syslogd modifies messages
- *   (e.g. if it receives a message with two spaces between fields it will
- *   not forward the message unchanged). This would invalidate signatures,
- *   so all devices using syslog-sign should only emit correct syslog-protocol
- *   formatted messages.
+ * - only works for correctly formatted messages, because incorrect messages
+ *   are reformatted (e.g. if it receives a message with two spaces between
+ *   fields it might even be parsed, but the output will have only one space).
  */
 #ifndef DISABLE_SIGN
 #include "syslogd.h"
@@ -80,7 +77,7 @@ sign_global_init(struct filed *Files)
         if (EVP_PKEY_DSA == EVP_PKEY_type(GlobalSign.pubkey->type)) {
                 GlobalSign.sig = EVP_dss1();
                 GlobalSign.sig_len_b64 = SIGN_B64SIGLEN_DSS;
-/*
+/* this is the place to add non-DSA key types and algorithms
         } else if (EVP_PKEY_RSA == EVP_PKEY_type(GlobalSign.pubkey->type)) {
                 GlobalSign.sig = EVP_sha1();
                 GlobalSign.sig_len_b64 = 28;
@@ -175,32 +172,6 @@ sign_get_keys()
                         privkey = NULL;
                         pubkey = NULL;
                 } else {
-#ifdef SIGN_ALWAYS_TYPE_K
-                        DPRINTF(D_SIGN, "Got public and private key "
-                                "from X.509 --> but use type 'K' anyway\n");
-                        GlobalSign.keytype = 'K';
-                        GlobalSign.privkey = privkey;
-                        GlobalSign.pubkey = pubkey;
-                        
-                        der_len = i2d_DSA_PUBKEY(pubkey->pkey.dsa, NULL);
-                        if (!(ptr_der_pubkey = der_pubkey = malloc(der_len))
-                         || !(pubkey_b64 = malloc(der_len*2))) {
-                                free(der_pubkey);
-                                logerror("malloc() failed");
-                                return false;
-                        }
-                        if (i2d_DSA_PUBKEY(pubkey->pkey.dsa, &ptr_der_pubkey) <= 0) {
-                                logerror("i2d_DSA_PUBKEY() failed");
-                                return false;
-                        }
-                        b64_ntop(der_pubkey, der_len, pubkey_b64, der_len*2);
-                        free(der_pubkey);
-                        /* try to resize memory object as needed */
-                        GlobalSign.pubkey_b64 = realloc(pubkey_b64,
-                                                        strlen(pubkey_b64)+1);
-                        if (!GlobalSign.pubkey_b64)
-                                GlobalSign.pubkey_b64 = pubkey_b64;
-#else
                         DPRINTF(D_SIGN, "Got public and private key "
                                 "from X.509 --> use type PKIX\n");
                         GlobalSign.keytype = 'C';
@@ -226,7 +197,6 @@ sign_get_keys()
                                                         strlen(pubkey_b64)+1);
                         if (!GlobalSign.pubkey_b64)
                                 GlobalSign.pubkey_b64 = pubkey_b64;
-#endif /* SIGN_ALWAYS_TYPE_K */
                 }
         }
 #endif /* !DISABLE_TLS */
@@ -304,13 +274,13 @@ sign_sg_init(struct filed *Files)
                           } } while (0)
 #define ALLOC_SG(x) do {ALLOC_OR_FALSE(x);                              \
                         (x)->last_msg_num = 1; /* cf. section 4.2.5 */  \
-                        STAILQ_INIT(&(x)->hashes);                       \
-                        STAILQ_INIT(&(x)->files);                        \
+                        STAILQ_INIT(&(x)->hashes);                      \
+                        STAILQ_INIT(&(x)->files);                       \
                 } while (0)
 #define ASSIGN_FQ() do {ALLOC_OR_FALSE(fq);                             \
                         fq->f = f;                                      \
                         f->f_sg = newsg;                                \
-                        STAILQ_INSERT_TAIL(&newsg->files, fq, entries);  \
+                        STAILQ_INSERT_TAIL(&newsg->files, fq, entries); \
                 } while (0)
 
         switch (GlobalSign.sg) {
@@ -342,9 +312,7 @@ sign_sg_init(struct filed *Files)
                                 if (!(f->f_flags & FFLAG_SIGN))
                                         continue;
                                 /* check priorities */
-                                if (  ((f->f_pcmp[fac] & PRI_EQ) && (f->f_pmask[fac] == prilev))
-                                     ||((f->f_pcmp[fac] & PRI_LT) && (f->f_pmask[fac] < prilev))
-                                     ||((f->f_pcmp[fac] & PRI_GT) && (f->f_pmask[fac] > prilev)))
+                                if (MATCH_PRI(f, fac, prilev))
                                         ASSIGN_FQ();
                         }
                         STAILQ_INSERT_TAIL(&GlobalSign.SigGroups,
@@ -359,23 +327,30 @@ sign_sg_init(struct filed *Files)
                  * user configured delimiters, or we use a default
                  * and set up one SG per facility
                  */
+                struct string_queue *last_sqentry;
                 
                 if (STAILQ_EMPTY(&GlobalSign.sig2_delims)) {
-                        DPRINTF(D_SIGN, "sign_sg_init(): set default values for SG 2\n");
+                        DPRINTF(D_SIGN, "sign_sg_init(): set default "
+                                "values for SG 2\n");
                         for (int i = 0; i < (IETF_NUM_PRIVALUES>>3); i++) {
                                 ALLOC_OR_FALSE(sqentry);
                                 sqentry->data = NULL;
                                 sqentry->key = (i<<3);
-                                STAILQ_INSERT_TAIL(&GlobalSign.sig2_delims, sqentry, entries);
+                                STAILQ_INSERT_TAIL(&GlobalSign.sig2_delims,
+                                        sqentry, entries);
                         }
                 }
                 assert(!STAILQ_EMPTY(&GlobalSign.sig2_delims));
+
                 /* add one more group at the end */
-                if (STAILQ_LAST(&GlobalSign.sig2_delims, string_queue, entries)->key < IETF_NUM_PRIVALUES) {
+                last_sqentry = STAILQ_LAST(&GlobalSign.sig2_delims,
+                        string_queue, entries);
+                if (last_sqentry->key < IETF_NUM_PRIVALUES) {
                         ALLOC_OR_FALSE(sqentry);
                         sqentry->data = NULL;
                         sqentry->key = IETF_NUM_PRIVALUES-1;
-                        STAILQ_INSERT_TAIL(&GlobalSign.sig2_delims, sqentry, entries);
+                        STAILQ_INSERT_TAIL(&GlobalSign.sig2_delims,
+                                sqentry, entries);
                 }
 
                 STAILQ_FOREACH(sqentry, &GlobalSign.sig2_delims, entries) {
@@ -389,15 +364,16 @@ sign_sg_init(struct filed *Files)
                                 if (!(f->f_flags & FFLAG_SIGN))
                                         continue;
                                 /* check _all_ priorities in SG */
-                                if (STAILQ_LAST(&GlobalSign.SigGroups, string_queue, entries))
-                                        min_pri = (STAILQ_LAST(&GlobalSign.SigGroups, string_queue, entries))->key;
+                                last_sqentry =
+                                        STAILQ_LAST(&GlobalSign.SigGroups,
+                                        string_queue, entries);
+                                if (last_sqentry)
+                                        min_pri = last_sqentry->key;
                                 for (int i = min_pri; i <= newsg->spri; i++) {
                                         int fac, prilev;
                                         fac = LOG_FAC(i);
                                         prilev = LOG_PRI(i);
-                                        if (  ((f->f_pcmp[fac] & PRI_EQ) && (f->f_pmask[fac] == prilev))
-                                            ||((f->f_pcmp[fac] & PRI_LT) && (f->f_pmask[fac] < prilev))
-                                            ||((f->f_pcmp[fac] & PRI_GT) && (f->f_pmask[fac] > prilev))) {
+                                        if (MATCH_PRI(f, fac, prilev)) {
                                                 match = true;
                                                 break;
                                         }
@@ -405,8 +381,8 @@ sign_sg_init(struct filed *Files)
                                 if (match)
                                         ASSIGN_FQ();
                         }
-                        DPRINTF(D_SIGN, "sign_sg_init(): add SG@%p: "
-                                "SG=\"2\", SPRI=\"%d\"\n", newsg, newsg->spri);
+                        DPRINTF(D_SIGN, "sign_sg_init(): add SG@%p: SG=\"2\","
+                                " SPRI=\"%d\"\n", newsg, newsg->spri);
                         STAILQ_INSERT_TAIL(&GlobalSign.SigGroups,
                                 newsg, entries);
                 }
@@ -461,8 +437,6 @@ sign_global_free()
         }
         sign_free_string_queue(&GlobalSign.sig2_delims);
 
-	/* TODO: in case these were read keys
-	 *       from SSL check if we may free them */
         if (GlobalSign.privkey) {
                 GlobalSign.privkey = NULL;
         }
@@ -524,7 +498,7 @@ sign_send_certificate_block(struct signature_group_t *sg)
                         "FLEN=\"%d\" FRAG=\"%.*s\" "
                         "SIGN=\"\"]",
                         GlobalSign.ver, GlobalSign.rsid, GlobalSign.sg,
-                        sg->spri, payload_len, payload_index+1, /* cf. section 5.3.2.5 */
+                        sg->spri, payload_len, payload_index+1,
                         fragment_len, fragment_len, &payload[payload_index]);
                 assert(sd_len < sizeof(sd));
                 assert(sd[sd_len] == '\0');
@@ -600,7 +574,7 @@ sign_send_signature_block(struct signature_group_t *sg, bool force)
         char sd[SIGN_MAX_SD_LENGTH];
         size_t sd_len;
         unsigned sg_num_hashes = 0;     /* hashes in SG queue */
-        unsigned hashes_in_sb = 0;      /* number of hashes to send in current SB */
+        unsigned hashes_in_sb = 0;      /* number of hashes in current SB */
         unsigned hashes_sent = 0;       /* count of hashes sent */
         struct string_queue *qentry, *old_qentry;
         struct buf_msg *buffer;
@@ -614,7 +588,8 @@ sign_send_signature_block(struct signature_group_t *sg, bool force)
                 sg_num_hashes++;
 
         /* only act if a division is full */
-        if (!sg_num_hashes || (!force && (sg_num_hashes % SIGN_HASH_DIVISION_NUM)))
+        if (!sg_num_hashes
+         || (!force && (sg_num_hashes % SIGN_HASH_DIVISION_NUM)))
                 return 0;
 
         /* if no CB sent so far then do now, just before first SB */
@@ -712,7 +687,8 @@ bool
 sign_msg_hash(char *line, char **hash)
 {
         unsigned char md_value[EVP_MAX_MD_SIZE];
-        unsigned char md_b64[EVP_MAX_MD_SIZE*2];  /* TODO: exact expression for b64 length? */
+        unsigned char md_b64[EVP_MAX_MD_SIZE*2];
+        /* TODO: exact expression for b64 length? */
         unsigned int md_len = 0;
 
         DPRINTF((D_CALL|D_SIGN), "sign_msg_hash('%s')\n", line);
@@ -810,14 +786,13 @@ sign_msg_sign(struct buf_msg **bufferptr, char *sd, size_t linesize)
         newlinelen = strlcat(sd, "\"]", linesize);
         
         if (newlinelen >= linesize) {
-                DPRINTF(D_SIGN, "sign_send_signature_block(): buffer too small\n");
+                DPRINTF(D_SIGN, "sign_send_signature_block(): "
+                        "buffer too small\n");
                 buffer->sd = NULL;
                 DELREF(buffer);
                 return false;
         }
         assert(newlinelen < linesize);
-        DPRINTF(D_SIGN, "sign_send_signature_block(): endptr=%d, linesize=%d, newlinelen=%d, %s\n", endptr, linesize, newlinelen, sd);
-        
         assert(sd[newlinelen] == '\0');
         assert(sd[newlinelen-1] == ']');
         assert(sd[newlinelen-2] == '"');
@@ -864,12 +839,14 @@ sign_string_sign(char *line, char **signature)
         SSL_CHECK_ONE(EVP_SignInit(GlobalSign.sigctx, GlobalSign.sig));
         SSL_CHECK_ONE(EVP_SignUpdate(GlobalSign.sigctx, buf, q-buf));
         assert(GlobalSign.privkey);
-        SSL_CHECK_ONE(EVP_SignFinal(GlobalSign.sigctx, sig_value, &sig_len, GlobalSign.privkey));
+        SSL_CHECK_ONE(EVP_SignFinal(GlobalSign.sigctx, sig_value, &sig_len,
+                GlobalSign.privkey));
         
         b64_ntop(sig_value, sig_len, (char *)sig_b64, sizeof(sig_b64));
         *signature = strdup((char *)sig_b64);
 
-        DPRINTF((D_CALL|D_SIGN), "sign_string_sign('%s') --> '%s'\n", buf, *signature);
+        DPRINTF((D_CALL|D_SIGN), "sign_string_sign('%s') --> '%s'\n",
+                buf, *signature);
         return (bool) *signature;
 }
 

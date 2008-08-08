@@ -1648,10 +1648,7 @@ logmsg(struct buf_msg *buffer)
 
         for (f = Files; f; f = f->f_next) {
                 /* skip messages that are incorrect priority */
-                if (!(((f->f_pcmp[fac] & PRI_EQ) && (f->f_pmask[fac] == prilev))
-                     ||((f->f_pcmp[fac] & PRI_LT) && (f->f_pmask[fac] < prilev))
-                     ||((f->f_pcmp[fac] & PRI_GT) && (f->f_pmask[fac] > prilev))
-                     )
+                if (!MATCH_PRI(f, fac, prilev)
                     || f->f_pmask[fac] == INTERNAL_NOPRI)
                         continue;
 

@@ -220,7 +220,9 @@ void    logmsg(struct buf_msg *);
 void    log_deadchild(pid_t, int, const char *);
 int     matches_spec(const char *, const char *,
                      char *(*)(const char *, const char *));
-void    printline(char *, char *, int);
+void    printline(const char *, char *, const int);
+struct buf_msg *printline_syslogprotocol(const char*, char*, const int, const int);
+struct buf_msg *printline_bsdsyslog(const char*, char*, const int, const int);
 void    printsys(char *);
 int     p_open(char *, pid_t *);
 void    trim_localdomain(char *);
@@ -842,7 +844,7 @@ valid_utf8(const char *c) {
         }
         return rc;
 }
-
+#define UTF8CHARMAX 4
 
 /* note previous versions transscribe
  * control characters, e.g. \007 --> "^G"
@@ -851,17 +853,15 @@ valid_utf8(const char *c) {
  * this new version works on only one buffer and
  * replaces control characters with a space
  */ 
-#define REPL_CNTRL(c) do { if (iscntrl((unsigned char)c)) { \
-                                if ((c) == '\t') {/* no change */} \
-                                else (c) = ' '; \
-                      } } while (0)
-
 #define NEXTFIELD(ptr) if (*(p) == ' ') (p)++; /* SP */                 \
                        else {                                           \
                                 DPRINTF(D_DATA, "format error\n");      \
                                 if (*(p) == '\0') start = (p);          \
                                 goto all_syslog_msg;                    \
                        }
+#define FORCE2ASCII(c) ((iscntrl((unsigned char)(c)) && (c) != '\t')    \
+                        ? '?' : (c) & 0177)
+
 /* following syslog-protocol */
 #define printusascii(ch) (ch >= 33 && ch <= 126)
 #define sdname(ch) (ch != '=' && ch != ' ' && ch != ']' && ch != '"' && printusascii(ch))
@@ -917,8 +917,7 @@ check_sd(char* p, const bool ascii)
                 /* SD-ID */
                 if (!sdname(*q)) return 0;
                 while (sdname(*q)) {
-                        *q &= 0177;
-                        REPL_CNTRL(*q);
+                        *q = FORCE2ASCII(*q);
                         q++;
                 }
                 while (/*CONSTCOND*/1) { /* SD-PARAM */
@@ -931,8 +930,7 @@ check_sd(char* p, const bool ascii)
                         /* PARAM-NAME */
                         if (!sdname(*q)) return 0;
                         while (sdname(*q)) {
-                                *q &= 0177;
-                                REPL_CNTRL(*q);
+                                *q = FORCE2ASCII(*q);
                                 q++;
                         }
 
@@ -957,13 +955,12 @@ check_sd(char* p, const bool ascii)
                                 else if (*q == '\\') esc = true;
                                 else {
                                         if (ascii) {
-                                                *q &= 0177;
-                                                REPL_CNTRL(*q);
+                                                *q = FORCE2ASCII(*q);
                                         } else {
                                                 int i;
                                                 i = valid_utf8(q);
                                                 if (i == 0) *q = '?';
-                                                else if (i == 1) REPL_CNTRL(*q);
+                                                else if (i == 1) *q = FORCE2ASCII(*q);
                                                 else q += (i-1); /* multi byte char */
                                         }
                                 }
@@ -974,22 +971,354 @@ check_sd(char* p, const bool ascii)
         }
 }
 
-/*
- * Take a raw input line, split header fields,
- * check encoding, prepare struct buffer
- * and call logmsg()
- */
-void
-printline(char *hname, char *msg, int flags)
+struct buf_msg *
+printline_syslogprotocol(const char *hname, char *msg, const int flags, const int pri)
 {
-	struct buf_msg *buffer;
-        int pri, i;
-        char *p, *q, *start;
-        long n;
-        bool bsdsyslog = true;
+        struct buf_msg *buffer;
+        char *p, *start;
+        unsigned sdlen = 0, i = 0;
+        bool utf8allowed = false; /* for some fields */
+
+        DPRINTF((D_CALL|D_BUFFER|D_DATA), "printline_syslogprotocol("
+                "\"%s\", \"%s\", %d, %d)\n", hname, msg, flags, pri);
+        
+        buffer = buf_msg_new(0);
+        p = msg;
+        start = p += check_timestamp((unsigned char*) p,
+                &buffer->timestamp, true, !BSDOutputFormat);
+        DPRINTF(D_DATA, "Got timestamp \"%s\"\n", buffer->timestamp);
+
+        NEXTFIELD(p);
+        /* extract host */
+        for (start = p;; p++) {
+                if ((*p == ' ' || *p == '\0')
+                 && start == p-1 && *(p-1) == '-') {
+                        /* NILVALUE */ 
+                        break;
+                } else if ((*p == ' ' || *p == '\0')
+                        && (start != p-1 || *(p-1) != '-')) {
+                        buffer->host = strndup(start, p - start);
+                        break;
+                } else {
+                        *p = FORCE2ASCII(*p);
+                }
+        }
+        /* p @ SP after host */
+        DPRINTF(D_DATA, "Got host \"%s\"\n", buffer->host);
+
+        /* extract app-name */
+        NEXTFIELD(p);
+        for (start = p;; p++) {
+                if ((*p == ' ' || *p == '\0')
+                 && start == p-1 && *(p-1) == '-') {
+                        /* NILVALUE */ 
+                        break;
+                } else if ((*p == ' ' || *p == '\0')
+                        && (start != p-1 || *(p-1) != '-')) {
+                        buffer->prog = strndup(start, p - start);
+                        break;
+                } else {
+                        *p = FORCE2ASCII(*p);
+                }
+        }
+        DPRINTF(D_DATA, "Got prog \"%s\"\n", buffer->prog);
+
+        /* extract procid */
+        NEXTFIELD(p);
+        for (start = p;; p++) {
+                if ((*p == ' ' || *p == '\0')
+                 && start == p-1 && *(p-1) == '-') {
+                        /* NILVALUE */ 
+                        break;
+                } else if ((*p == ' ' || *p == '\0')
+                        && (start != p-1 || *(p-1) != '-')) {
+                        buffer->pid = strndup(start, p - start);
+                        start = p;
+                        break;
+                } else {
+                        *p = FORCE2ASCII(*p);
+                }
+        }
+        DPRINTF(D_DATA, "Got pid \"%s\"\n", buffer->pid);
+
+        /* extract msgid */
+        NEXTFIELD(p);
+        for (start = p;; p++) {
+                if ((*p == ' ' || *p == '\0')
+                 && start == p-1 && *(p-1) == '-') {
+                        /* NILVALUE */ 
+                        start = p+1;
+                        break;
+                } else if ((*p == ' ' || *p == '\0')
+                        && (start != p-1 || *(p-1) != '-')) {
+                        buffer->msgid = strndup(start, p - start);
+                        start = p+1;
+                        break;
+                } else {
+                        *p = FORCE2ASCII(*p);
+                }
+        }
+        DPRINTF(D_DATA, "Got msgid \"%s\"\n", buffer->msgid);
+
+        /* extract SD */
+        NEXTFIELD(p);
+        start = p;
+        sdlen = check_sd(p, false);
+        DPRINTF(D_DATA, "check_sd(\"%s\") returned %d\n", p, sdlen);
+        
+        if (sdlen == 1 && *p == '-') {
+                /* NILVALUE */
+                p++;
+        } else if (sdlen > 1) {
+                buffer->sd = strndup(p, sdlen);
+                p += sdlen;
+        } else {
+                DPRINTF(D_DATA, "format error\n");
+        }
+        if      (*p == '\0') start = p;
+        else if (*p == ' ')  start = ++p; /* SP */
+        DPRINTF(D_DATA, "Got SD \"%s\"\n", buffer->sd);
+
+        /* and now the message itself 
+         * note: move back to last start to check for BOM
+         */
+all_syslog_msg:
+        p = start;
+                /* check for UTF-8-BOM */
+        if (    *p != '\0' &&     *p == (char) 0xEF
+         && *(p+1) != '\0' && *(p+1) == (char) 0xBB
+         && *(p+2) != '\0' && *(p+2) == (char) 0xBF) {
+                DPRINTF(D_DATA, "UTF-8 BOM\n");
+                utf8allowed = true;
+                p += 3;
+        }
+        
+        assert(!buffer->msg);
+        for (;; p++) {
+                if (*p == '\0') {
+                        break;
+                } else if (utf8allowed) {
+                        i = valid_utf8(p);
+                        if (i == 0) *p = '?';
+                        else if (i == 1) *p = FORCE2ASCII(*p);
+                        else p += (i-1); /* multi byte char */
+                } else {
+                        *p = FORCE2ASCII(*p);
+                }
+        }
+        if (p - start) {
+                buffer->msg = strndup(start, p - start);
+                buffer->msgorig = buffer->msg;
+                buffer->msglen = buffer->msgsize = 1 + p - start;
+        }
+        DPRINTF(D_DATA, "Got msg \"%s\"\n", buffer->msg);
+
+        buffer->recvhost = strdup(hname);
+        buffer->pri = pri;
+        buffer->flags = flags;
+
+        DPRINTF(D_DATA, "Got msg \"%s\" with strlen+1=%d and msglen=%d\n",
+                buffer->msg, (buffer->msg) ? strlen(buffer->msg)+1 : 0,
+                buffer->msglen);
+
+        return buffer;
+}
+
+struct buf_msg *
+printline_bsdsyslog(const char *hname, char *msg, const int flags, const int pri)
+{
+        struct buf_msg *buffer;
+        char *p, *start;
         unsigned msgidlen = 0, sdlen = 0;
 
-        DPRINTF((D_CALL|D_BUFFER|D_DATA), "printline(\"%s\", \"%s\", %d)\n", hname, msg, flags);
+        DPRINTF((D_CALL|D_BUFFER|D_DATA), "printline_bsdsyslog("
+                "\"%s\", \"%s\", %d, %d)\n", hname, msg, flags, pri);
+
+        buffer = buf_msg_new(0);
+        p = msg;
+        start = p += check_timestamp((unsigned char*) p,
+                &buffer->timestamp, false, !BSDOutputFormat);
+        DPRINTF(D_DATA, "Got timestamp \"%s\"\n", buffer->timestamp);
+
+        if (*p == ' ') p++; /* SP */
+        else goto all_bsd_msg;
+        /* in any error case we skip header parsing and
+         * treat all following data as message content */ 
+
+        /* extract host */
+        for (start = p;; p++) {
+                if (*p == ' ' || *p == '\0') {
+                        buffer->host = strndup(start, p - start);
+                        break;
+                } else if (*p == '[' || (*p == ':'
+                        && (*(p+1) == ' ' || *(p+1) == '\0'))) {
+                        /* no host in message */
+                        buffer->host = LocalFQDN;
+                        buffer->prog = strndup(start, p - start);
+                        break;
+                } else {
+                        *p = FORCE2ASCII(*p);
+                }
+        }
+        DPRINTF(D_DATA, "Got host \"%s\"\n", buffer->host);
+        /* p @ SP after host, or @ :/[ after prog */
+
+        /* extract program */
+        if (!buffer->prog) {
+                if (*p == ' ') p++; /* SP */
+                else goto all_bsd_msg;
+                
+                for (start = p;; p++) {
+                        if (*p == ' ' || *p == '\0') { /* error */
+                                goto all_bsd_msg;
+                                break;
+                        } else if (*p == '[' || (*p == ':'
+                                && (*(p+1) == ' ' || *(p+1) == '\0'))) {
+                                buffer->prog = strndup(start, p - start);
+                                break;
+                        } else {
+                                *p = FORCE2ASCII(*p);
+                        }
+                }
+        }
+        DPRINTF(D_DATA, "Got prog \"%s\"\n", buffer->prog);
+        start = p;
+
+        /* p @ :/[ after prog */
+        if (*p == '[') {
+                p++;
+                if (*p == ' ') p++; /* SP */
+                for (start = p;; p++) {
+                        if (*p == ' ' || *p == '\0') { /* error */
+                                goto all_bsd_msg;
+                                break;
+                        } else if (*p == ']') {
+                                buffer->pid = strndup(start, p - start);
+                                break;
+                        } else {
+                                *p = FORCE2ASCII(*p);
+                        }
+                }
+        }
+        DPRINTF(D_DATA, "Got pid \"%s\"\n", buffer->pid);
+
+        if (*p == ']') p++;
+        if (*p == ':') p++;
+        if (*p == ' ') p++;
+        
+        /* p @ msgid, @ opening [ of SD or @ first byte of message
+         * accept either case and try to detect MSGID and SD fields
+         *
+         * only limitation: we do not accept UTF-8 data in
+         * BSD Syslog messages -- so all SD values are ASCII-filtered
+         * 
+         * I have found one scenario with 'unexpected' behaviour:
+         * if there is only a SD intended, but a) it is short enough
+         * to be a MSGID and b) the first word of the message can also
+         * be parsed as an SD.
+         * example:
+         * "<35>Jul  6 12:39:08 tag[123]: [exampleSDID@0] - hello"
+         * --> parsed as
+         *     MSGID = "[exampleSDID@0]"
+         *     SD    = "-"
+         *     MSG   = "hello"
+         */
+        start = p;
+        msgidlen = check_msgid(p);
+        if (msgidlen) /* check for SD in 2nd field */
+                sdlen = check_sd(p+msgidlen+1, true);
+                
+        if (msgidlen && sdlen) {
+                /* MSGID in 1st and SD in 2nd field
+                 * now check for NILVALUEs and copy */
+                if (msgidlen == 1 && *p == '-') {
+                        p++; /* - */
+                        p++; /* SP */
+                        DPRINTF(D_DATA, "Got MSGID \"-\"\n");
+                } else {
+                        buffer->msgid = strndup(p, msgidlen);
+                        p += msgidlen;
+                        p++; /* SP */
+                        DPRINTF(D_DATA, "Got MSGID \"%s\"\n",
+                                buffer->msgid);
+                }
+                if (sdlen == 1 && *p == '-') {
+                        p++;
+                        DPRINTF(D_DATA, "Got SD \"-\"\n");
+                } else if (sdlen > 1) {
+                        buffer->sd = strndup(p, sdlen);
+                        p += sdlen;
+                        DPRINTF(D_DATA, "Got SD \"%s\"\n",
+                                buffer->sd);
+                } else {
+                        DPRINTF(D_DATA, "Error\n");
+                }
+        } else {
+                /* either no msgid or no SD in 2nd field
+                 * --> check 1st field for SD */
+                DPRINTF(D_DATA, "No MSGID\n");
+                sdlen = check_sd(p, true);
+                if (sdlen > 1) {
+                        buffer->sd = strndup(p, sdlen);
+                        p += sdlen;
+                        DPRINTF(D_DATA, "Got SD \"%s\"\n",
+                                buffer->sd);
+                } else if (sdlen == 1 && *p == '-') {
+                        p++;
+                        DPRINTF(D_DATA, "Got SD \"-\"\n");
+                } else {
+                        DPRINTF(D_DATA, "No SD\n");
+                }
+        }
+
+        if (*p == ' ') p++;
+        start = p;
+        /* and now the message itself 
+         * note: do not reset start, because we might come here
+         * by goto and want to have the incomplete field as part
+         * of the msg
+         */
+all_bsd_msg:
+                for (;; p++) {
+                        if (*p == '\0') {
+                        break;
+                } else {
+                        *p = FORCE2ASCII(*p);
+                }
+        }
+        if (p - start) {
+                buffer->msg = strndup(start, p - start);
+                buffer->msgorig = buffer->msg;
+                buffer->msglen = buffer->msgsize = 1 + p - start;
+        }
+        DPRINTF(D_DATA, "Got msg \"%s\"\n", buffer->msg);
+
+        buffer->recvhost = strdup(hname);
+        buffer->pri = pri;
+        buffer->flags = flags | BSDSYSLOG;
+
+        DPRINTF(D_DATA, "Got msg \"%s\" with strlen+1=%d and msglen=%d\n",
+                buffer->msg, (buffer->msg) ? strlen(buffer->msg)+1 : 0,
+                buffer->msglen);
+
+        return buffer;
+}
+
+/*
+ * Take a raw input line, read priority and version, call the
+ * right message parsing function, then call logmsg().
+ */
+void
+printline(const char *hname, char *msg, const int flags)
+{
+        struct buf_msg *buffer;
+        int pri;
+        char *p, *q;
+        long n;
+        bool bsdsyslog = true;
+
+        DPRINTF((D_CALL|D_BUFFER|D_DATA),
+                "printline(\"%s\", \"%s\", %d)\n", hname, msg, flags);
         
         /* test for special codes */
         pri = DEFUPRI;
@@ -1003,6 +1332,8 @@ printline(char *hname, char *msg, int flags)
                         if (*p == '1') { /* syslog-protocol version */
                                 p += 2;  /* skip version and space */
                                 bsdsyslog = false;
+                        } else {
+                                bsdsyslog = true;
                         }
                 }
         }
@@ -1017,322 +1348,15 @@ printline(char *hname, char *msg, int flags)
         if ((pri & LOG_FACMASK) == LOG_KERN)
                 pri = LOG_MAKEPRI(LOG_USER, LOG_PRI(pri));
 
-        buffer = buf_msg_new(0);
-        start = p += check_timestamp((unsigned char*) p,
-                &buffer->timestamp, !bsdsyslog, !BSDOutputFormat);
-        DPRINTF(D_DATA, "Got timestamp \"%s\"\n", buffer->timestamp);
-        
+        DPRINTF(D_DATA, "bsdsyslog = %d)\n", bsdsyslog);
         if (bsdsyslog) {
-                if (*p == ' ') p++; /* SP */
-                else goto all_bsd_msg;
-                /* in any error case we skip header parsing and
-                 * treat all following data as message content */ 
-
-                /* extract host */
-                for (start = p;; p++) {
-                        if (*p == ' ' || *p == '\0') {
-                                buffer->host = strndup(start, p - start);
-                                break;
-                        } else if (*p == '[' || (*p == ':'
-                                && (*(p+1) == ' ' || *(p+1) == '\0'))) {
-                                /* no host in message */
-                                buffer->host = LocalFQDN;
-                                buffer->prog = strndup(start, p - start);
-                                break;
-                        } else {
-                                *p &= 0177;
-                                REPL_CNTRL(*p);
-                        }
-                }
-                DPRINTF(D_DATA, "Got host \"%s\"\n", buffer->host);
-                /* p @ SP after host, or @ :/[ after prog */
-
-                /* extract program */
-                if (!buffer->prog) {
-                        if (*p == ' ') p++; /* SP */
-                        else goto all_bsd_msg;
-                        
-                        for (start = p;; p++) {
-                                if (*p == ' ' || *p == '\0') { /* error */
-                                        goto all_bsd_msg;
-                                        break;
-                                } else if (*p == '[' || (*p == ':'
-                                        && (*(p+1) == ' ' || *(p+1) == '\0'))) {
-                                        buffer->prog = strndup(start, p - start);
-                                        break;
-                                } else {
-                                        *p &= 0177;
-                                        REPL_CNTRL(*p);
-                                }
-                        }
-                }
-                DPRINTF(D_DATA, "Got prog \"%s\"\n", buffer->prog);
-                start = p;
-
-                /* p @ :/[ after prog */
-                if (*p == '[') {
-                        p++;
-                        if (*p == ' ') p++; /* SP */
-                        for (start = p;; p++) {
-                                if (*p == ' ' || *p == '\0') { /* error */
-                                        goto all_bsd_msg;
-                                        break;
-                                } else if (*p == ']') {
-                                        buffer->pid = strndup(start, p - start);
-                                        break;
-                                } else {
-                                        *p &= 0177;
-                                        REPL_CNTRL(*p);
-                                }
-                        }
-                }
-                DPRINTF(D_DATA, "Got pid \"%s\"\n", buffer->pid);
-
-                if (*p == ']') p++;
-                if (*p == ':') p++;
-                if (*p == ' ') p++;
-                
-                /* p @ msgid, @ opening [ of SD or @ first byte of message
-                 * accept either case and try to detect MSGID and SD fields
-                 *
-                 * only limitation: we do not accept UTF-8 data in
-                 * BSD Syslog messages -- so all SD values are ASCII-filtered
-                 * 
-                 * I have found one scenario with 'unexpected' behaviour:
-                 * if there is only a SD intended, but a) it is short enough
-                 * to be a MSGID and b) the first word of the message can also
-                 * be parsed as an SD.
-                 * example:
-                 * "<35>Jul  6 12:39:08 tag[123]: [exampleSDID@0] - hello"
-                 * --> parsed as
-                 *     MSGID = "[exampleSDID@0]"
-                 *     SD    = "-"
-                 *     MSG   = "hello"
-                 */
-                start = p;
-                msgidlen = check_msgid(p);
-                if (msgidlen) /* check for SD in 2nd field */
-                        sdlen = check_sd(p+msgidlen+1, true);
-                        
-                if (msgidlen && sdlen) {
-                        /* MSGID in 1st and SD in 2nd field
-                         * now check for NILVALUEs and copy */
-                        if (msgidlen == 1 && *p == '-') {
-                                p++; /* - */
-                                p++; /* SP */
-                                DPRINTF(D_DATA, "Got MSGID \"-\"\n");
-                        } else {
-                                buffer->msgid = strndup(p, msgidlen);
-                                p += msgidlen;
-                                p++; /* SP */
-                                DPRINTF(D_DATA, "Got MSGID \"%s\"\n",
-                                        buffer->msgid);
-                        }
-                        if (sdlen == 1 && *p == '-') {
-                                p++;
-                                DPRINTF(D_DATA, "Got SD \"-\"\n");
-                        } else if (sdlen > 1) {
-                                buffer->sd = strndup(p, sdlen);
-                                p += sdlen;
-                                DPRINTF(D_DATA, "Got SD \"%s\"\n",
-                                        buffer->sd);
-                        } else {
-                                DPRINTF(D_DATA, "Error\n");
-                        }
-                } else {
-                        /* either no msgid or no SD in 2nd field
-                         * --> check 1st field for SD */
-                        DPRINTF(D_DATA, "No MSGID\n");
-                        sdlen = check_sd(p, true);
-                        if (sdlen > 1) {
-                                buffer->sd = strndup(p, sdlen);
-                                p += sdlen;
-                                DPRINTF(D_DATA, "Got SD \"%s\"\n",
-                                        buffer->sd);
-                        } else if (sdlen == 1 && *p == '-') {
-                                p++;
-                                DPRINTF(D_DATA, "Got SD \"-\"\n");
-                        } else {
-                                DPRINTF(D_DATA, "No SD\n");
-                        }
-                }
-
-                if (*p == ' ') p++;
-                start = p;
-                /* and now the message itself 
-                 * note: do not reset start, because we might come here
-                 * by goto and want to have the incomplete field as part
-                 * of the msg
-                 */
-all_bsd_msg:
-                for (;; p++) {
-                        if (*p == '\0') {
-                                break;
-                        } else {
-                                *p &= 0177;
-                                REPL_CNTRL(*p);
-                        }
-                }
-                if (p - start) {
-                        buffer->msg = strndup(start, p - start);
-                        buffer->msgorig = buffer->msg;
-                        buffer->msglen = buffer->msgsize = 1 + p - start;
-                }
-                DPRINTF(D_DATA, "Got msg \"%s\"\n", buffer->msg);
-        } else /* syslog-protocol */ {
-                bool utf8allowed = false; /* for some fields */
-                
-                NEXTFIELD(p);
-                /* extract host */
-                for (start = p;; p++) {
-                        if ((*p == ' ' || *p == '\0')
-                         && start == p-1 && *(p-1) == '-') {
-                                /* NILVALUE */ 
-                                break;
-                        } else if ((*p == ' ' || *p == '\0')
-                                && (start != p-1 || *(p-1) != '-')) {
-                                buffer->host = strndup(start, p - start);
-                                break;
-                        } else {
-                                *p &= 0177;
-                                REPL_CNTRL(*p);
-                        }
-                }
-                /* p @ SP after host */
-                DPRINTF(D_DATA, "Got host \"%s\"\n", buffer->host);
-
-                /* extract app-name */
-                NEXTFIELD(p);
-                for (start = p;; p++) {
-                        if ((*p == ' ' || *p == '\0')
-                         && start == p-1 && *(p-1) == '-') {
-                                /* NILVALUE */ 
-                                break;
-                        } else if ((*p == ' ' || *p == '\0')
-                                && (start != p-1 || *(p-1) != '-')) {
-                                buffer->prog = strndup(start, p - start);
-                                break;
-                        } else {
-                                *p &= 0177;
-                                REPL_CNTRL(*p);
-                        }
-                }
-                DPRINTF(D_DATA, "Got prog \"%s\"\n", buffer->prog);
-
-                /* extract procid */
-                NEXTFIELD(p);
-                for (start = p;; p++) {
-                        if ((*p == ' ' || *p == '\0')
-                         && start == p-1 && *(p-1) == '-') {
-                                /* NILVALUE */ 
-                                break;
-                        } else if ((*p == ' ' || *p == '\0')
-                                && (start != p-1 || *(p-1) != '-')) {
-                                buffer->pid = strndup(start, p - start);
-                                start = p;
-                                break;
-                        } else {
-                                *p &= 0177;
-                                REPL_CNTRL(*p);
-                        }
-                }
-                DPRINTF(D_DATA, "Got pid \"%s\"\n", buffer->pid);
-
-                /* extract msgid */
-                NEXTFIELD(p);
-                for (start = p;; p++) {
-                        if ((*p == ' ' || *p == '\0')
-                         && start == p-1 && *(p-1) == '-') {
-                                /* NILVALUE */ 
-                                start = p+1;
-                                break;
-                        } else if ((*p == ' ' || *p == '\0')
-                                && (start != p-1 || *(p-1) != '-')) {
-                                buffer->msgid = strndup(start, p - start);
-                                start = p+1;
-                                break;
-                        } else {
-                                /* question: if we find a non-ASCII char here
-                                 * -- should we filter it but still read it as
-                                 * a MSGID?
-                                 * or should we bail out with a format error,
-                                 * thus not parsing the wrong MSGID and a
-                                 * following SD
-                                 * (so they end up in the MSG field)?
-                                 */ 
-                                *p &= 0177;
-                                REPL_CNTRL(*p);
-                        }
-                }
-                DPRINTF(D_DATA, "Got msgid \"%s\"\n", buffer->msgid);
-
-                /* extract SD */
-                NEXTFIELD(p);
-                start = p;
-                sdlen = check_sd(p, false);
-                DPRINTF(D_DATA, "check_sd(\"%s\") returned %d\n", p, sdlen);
-                
-                if (sdlen == 1 && *p == '-') {
-                        /* NILVALUE */
-                        p++;
-                } else if (sdlen > 1) {
-                        buffer->sd = strndup(p, sdlen);
-                        p += sdlen;
-                } else {
-                        DPRINTF(D_DATA, "format error\n");
-                }
-                if (*p == '\0')     start = p;
-                else if (*p == ' ') start = ++p; /* SP */
-                DPRINTF(D_DATA, "Got SD \"%s\"\n", buffer->sd);
-
-                /* and now the message itself 
-                 * note: move back to last start to check for BOM
-                 */
-all_syslog_msg:
-                p = start;
-                /* check for UTF-8-BOM */
-                if (    *p != '\0' &&     *p == (char) 0xEF
-                 && *(p+1) != '\0' && *(p+1) == (char) 0xBB
-                 && *(p+2) != '\0' && *(p+2) == (char) 0xBF) {
-                        DPRINTF(D_DATA, "UTF-8 BOM\n");
-                        utf8allowed = true;
-                        p += 3;
-                }
-                assert(!buffer->msg);
-                for (;; p++) {
-                        if (*p == '\0') {
-                                break;
-                        } else if (utf8allowed) {
-                                i = valid_utf8(p);
-                                if (i == 0) *p = '?';
-                                else if (i == 1) REPL_CNTRL(*p);
-                                else p += (i-1); /* multi byte char */
-                        } else {
-                                *p &= 0177;
-                                REPL_CNTRL(*p);
-                        }
-                }
-                if (p - start) {
-                        buffer->msg = strndup(start, p - start);
-                        buffer->msgorig = buffer->msg;
-                        buffer->msglen = buffer->msgsize = 1 + p - start;
-                }
-                DPRINTF(D_DATA, "Got msg \"%s\"\n", buffer->msg);
+                buffer = printline_bsdsyslog(hname, p, flags, pri);
+        } else {
+                buffer = printline_syslogprotocol(hname, p, flags, pri);
         }
-
-        buffer->recvhost = strdup(hname);
-        buffer->pri = pri;
-        if (bsdsyslog)
-                buffer->flags = flags |= BSDSYSLOG;
-        else
-                buffer->flags = flags;
-
-        DPRINTF(D_DATA, "Got msg \"%s\" with strlen+1=%d and msglen=%d\n",
-                buffer->msg, (buffer->msg) ? strlen(buffer->msg)+1 : 0,
-                buffer->msglen);
-
         logmsg(buffer);
         DELREF(buffer);
+
 }
 
 /*
@@ -2010,8 +2034,7 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
                 /* filter non-ASCII */
                 p = line;
                 while (*p) {
-                        *p &= 0177;
-                        REPL_CNTRL(*p);
+                        *p = FORCE2ASCII(*p);
                         p++;
                 }
                 v->iov_base = line;
@@ -2032,8 +2055,7 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
                 /* filter non-ASCII */
                 p = line;
                 while (*p) {
-                        *p &= 0177;
-                        REPL_CNTRL(*p);
+                        *p = FORCE2ASCII(*p);
                         p++;
                 }
                 v->iov_base = line;

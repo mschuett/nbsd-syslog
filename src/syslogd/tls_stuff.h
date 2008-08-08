@@ -20,13 +20,12 @@
  * to TLS_LARGE_LINELENGTH immediately  */
 #define TLS_LARGE_LINELENGTH      8192
 #define TLS_PERSIST_LINELENGTH   32768
-/* TODO: keep simple statistics with a moving average linelength? */
 
 /* timeout to call non-blocking TLS operations again */
 #define TLS_RETRY_EVENT_USEC 20000
 
 /* reconnect to lost server after n sec (initial value) */
-#define TLS_RECONNECT_SEC 2
+#define TLS_RECONNECT_SEC 10
 /* backoff connection attempts */
 #define RECONNECT_BACKOFF_FACTOR 15/10
 #define RECONNECT_BACKOFF(x)     (x) = (x) * RECONNECT_BACKOFF_FACTOR
@@ -100,15 +99,6 @@ struct tls_send_msg {
         size_t          linelen;
         unsigned int    offset;    /* in case of partial writes */
 };
-
-/*
- * may be a TODO:
- * collect status information for possible SNMP MIB support
- *
-struct daemon_status {
-
-};
- */
 
 /* return values for TLS_examine_error() */
 #define TLS_OK          0        /* no real problem, just ignore */

@@ -163,6 +163,22 @@ TTLLSS OOPPTTIIOONNSS
      _t_l_s___s_e_r_v_e_r
      Enables TLS server mode.
 
+     _t_l_s___b_i_n_d_p_o_r_t
+     Service name or port number to bind to. Default is `syslog', but as long
+     as no official port is assigned this has to be configured.
+
+     _t_l_s___b_i_n_d_h_o_s_t
+     Hostname or IP to bind to.
+
+     _t_l_s___r_e_c_o_n_n_e_c_t___i_n_t_e_r_v_a_l
+     Initial reconnect timer in seconds; default is 10 sec.  If the reconnect
+     fails an exponential backoff will increase the interval.
+
+     _t_l_s___r_e_c_o_n_n_e_c_t___t_i_m_e_o_u_t
+     The maximum reconnect interval in seconds.; default is one day.  If a
+     reconnect timer reaches this value then the connection is considered per-
+     manently unavailable and no more reconnections are tried.
+
      _t_l_s___g_e_n___c_e_r_t
      Automatically generate a private key and certificate.
 
@@ -180,13 +196,6 @@ TTLLSS OOPPTTIIOONNSS
 
      _t_l_s___v_e_r_i_f_y
      If set to `off' then certificate authentication is skipped.
-
-     _t_l_s___b_i_n_d_p_o_r_t
-     Service name or port number to bind to. Default is `syslog', but as long
-     as no official port is assigned this has to be configured.
-
-     _t_l_s___b_i_n_d_h_o_s_t
-     Hostname or IP to bind to.
 
      _t_l_s___a_l_l_o_w___f_i_n_g_e_r_p_r_i_n_t_s
      List of fingerprints of trusted client certificates.

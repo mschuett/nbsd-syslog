@@ -1,5 +1,5 @@
 <!-- Creator     : groff version 1.19.2 -->
-<!-- CreationDate: Fri Aug  8 17:59:01 2008 -->
+<!-- CreationDate: Fri Aug  8 20:34:14 2008 -->
 <!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN"
 "http://www.w3.org/TR/html4/loose.dtd">
 <html>
@@ -276,6 +276,34 @@ are:</p>
 <p style="margin-left:8%;">Enables TLS server mode.</p>
 
 
+<p style="margin-top: 1em" valign="top"><i>tls_bindport</i></p>
+
+<p style="margin-left:8%;">Service name or port number to
+bind to. Default is &lsquo;syslog&rsquo;, but as long as no
+official port is assigned this has to be configured.</p>
+
+
+<p style="margin-top: 1em" valign="top"><i>tls_bindhost</i></p>
+
+<p style="margin-left:8%;">Hostname or IP to bind to.</p>
+
+
+<p style="margin-top: 1em" valign="top"><i>tls_reconnect_interval</i></p>
+
+<p style="margin-left:8%;">Initial reconnect timer in
+seconds; default is 10 sec. If the reconnect fails an
+exponential backoff will increase the interval.</p>
+
+
+<p style="margin-top: 1em" valign="top"><i>tls_reconnect_timeout</i></p>
+
+<p style="margin-left:8%;">The maximum reconnect interval
+in seconds.; default is one day. If a reconnect timer
+reaches this value then the connection is considered
+permanently unavailable and no more reconnections are
+tried.</p>
+
+
 <p style="margin-top: 1em" valign="top"><i>tls_gen_cert</i></p>
 
 <p style="margin-left:8%;">Automatically generate a private
@@ -308,18 +336,6 @@ certificates.</p>
 
 <p style="margin-left:8%;">If set to &lsquo;off&rsquo; then
 certificate authentication is skipped.</p>
-
-
-<p style="margin-top: 1em" valign="top"><i>tls_bindport</i></p>
-
-<p style="margin-left:8%;">Service name or port number to
-bind to. Default is &lsquo;syslog&rsquo;, but as long as no
-official port is assigned this has to be configured.</p>
-
-
-<p style="margin-top: 1em" valign="top"><i>tls_bindhost</i></p>
-
-<p style="margin-left:8%;">Hostname or IP to bind to.</p>
 
 
 <p style="margin-top: 1em" valign="top"><i>tls_allow_fingerprints</i></p>

@@ -3414,9 +3414,9 @@ init(int fd, short event, void *ev)
          * Log a change in hostname, but only on a restart (we detect this
          * by checking to see if we're passed a kevent).
          */
-        if (ev != NULL && strcmp(oldLocalFQDN, LocalFQDN) != 0)
+        if (oldLocalFQDN && strcmp(oldLocalFQDN, LocalFQDN) != 0)
                 loginfo("host name changed, \"%s\" to \"%s\"",
-                    oldLocalFQDN, LocalHostName);
+                    oldLocalFQDN, LocalFQDN);
 
 #ifndef DISABLE_SIGN
         /* only initialize -sign if actually used */

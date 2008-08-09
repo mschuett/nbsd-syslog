@@ -312,7 +312,7 @@ main(int argc, char *argv[])
 	/* should we set LC_TIME="C" to ensure correct timestamps&parsing? */
         (void)setlocale(LC_ALL, "");
 
-        while ((ch = getopt(argc, argv, "b:dnsSf:m:op:P:ru:g:t:TUv")) != -1)
+        while ((ch = getopt(argc, argv, "b:dnsSf:m:o:p:P:ru:g:t:TUv")) != -1)
                 switch(ch) {
                 case 'b':
                         bindhostname = optarg;
@@ -1119,29 +1119,33 @@ printline_syslogprotocol(const char *hname, char *msg, const int flags, const in
          */
 all_syslog_msg:
         p = start;
-                /* check for UTF-8-BOM */
-        if (    *p != '\0' &&     *p == (char) 0xEF
-         && *(p+1) != '\0' && *(p+1) == (char) 0xBB
-         && *(p+2) != '\0' && *(p+2) == (char) 0xBF) {
+
+        /* check for UTF-8-BOM */
+        if (IS_BOM(p)) {
                 DPRINTF(D_DATA, "UTF-8 BOM\n");
                 utf8allowed = true;
                 p += 3;
         }
-        
-        assert(!buffer->msg);
-        for (;; p++) {
-                if (*p == '\0') {
-                        break;
-                } else if (utf8allowed) {
+
+        if (*p != '\0' && !utf8allowed) {
+                size_t msglen;
+
+                msglen = strlen(p)
+        	assert(!buffer->msg);
+                buffer->msg = copy_utf8_ascii(p, msglen);
+                buffer->msgorig = buffer->msg;
+                buffer->msglen = buffer->msgsize = strlen(buffer->msg)+1;
+        } else if (*p != '\0' && utf8allowed) {
+                while (*p != '\0') {
                         i = valid_utf8(p);
-                        if (i == 0) *p = '?';
-                        else if (i == 1) *p = FORCE2ASCII(*p);
-                        else p += (i-1); /* multi byte char */
-                } else {
-                        *p = FORCE2ASCII(*p);
+                        if (i == 0)
+                                *p++ = '?';
+                        else if (i == 1)
+                                *p = FORCE2ASCII(*p);
+                        p += i;
                 }
-        }
-        if (p - start) {
+                assert(p != start);
+                assert(!buffer->msg);
                 buffer->msg = strndup(start, p - start);
                 buffer->msgorig = buffer->msg;
                 buffer->msglen = buffer->msgsize = 1 + p - start;
@@ -1217,8 +1221,7 @@ printline_bsdsyslog(const char *hname, char *msg, const int flags, const int pri
         DPRINTF((D_CALL|D_BUFFER|D_DATA), "printline_bsdsyslog("
                 "\"%s\", \"%s\", %d, %d)\n", hname, msg, flags, pri);
 
-#define INIT_BUFSIZE 512
-        buffer = buf_msg_new(INIT_BUFSIZE);
+        buffer = buf_msg_new(0);
         p = msg;
         start = p += check_timestamp((unsigned char*) p,
                 &buffer->timestamp, false, !BSDOutputFormat);
@@ -1327,29 +1330,23 @@ printline_bsdsyslog(const char *hname, char *msg, const int flags, const int pri
                         DPRINTF(D_DATA, "Got MSGID \"%s\"\n",
                                 buffer->msgid);
                 }
-                if (sdlen == 1 && *p == '-') {
-                        p++;
-                        DPRINTF(D_DATA, "Got SD \"-\"\n");
-                } else if (sdlen > 1) {
-                        buffer->sd = copy_utf8_ascii(p, sdlen);
-                        DPRINTF(D_DATA, "Got SD \"%s\"\n", buffer->sd);
-                } else {
-                        DPRINTF(D_DATA, "Error\n");
-                }
         } else {
                 /* either no msgid or no SD in 2nd field
                  * --> check 1st field for SD */
                 DPRINTF(D_DATA, "No MSGID\n");
                 sdlen = check_sd(p, true);
-                if (sdlen > 1) {
-                        buffer->sd = copy_utf8_ascii(p, sdlen);
-                        DPRINTF(D_DATA, "Got SD \"%s\"\n", buffer->sd);
-                } else if (sdlen == 1 && *p == '-') {
-                        p++;
-                        DPRINTF(D_DATA, "Got SD \"-\"\n");
-                } else {
-                        DPRINTF(D_DATA, "No SD\n");
-                }
+        }
+        
+        if (sdlen == 0) {
+                DPRINTF(D_DATA, "No SD\n");
+        } else if (sdlen > 1) {
+                buffer->sd = copy_utf8_ascii(p, sdlen);
+                DPRINTF(D_DATA, "Got SD \"%s\"\n", buffer->sd);
+        } else if (sdlen == 1 && *p == '-') {
+                p++;
+                DPRINTF(D_DATA, "Got SD \"-\"\n");
+        } else {
+                DPRINTF(D_DATA, "Error\n");
         }
 
         if (*p == ' ') p++;
@@ -1845,6 +1842,9 @@ format_buffer(struct buf_msg *buffer, char **line, size_t *ptr_linelen,
         char fp_buf[FPBUFSIZE] = "\0";
         char shorthostname[MAXHOSTNAMELEN];
         char *hostname;
+        char *ascii_empty = "";
+        char *ascii_sd = ascii_empty;
+        char *ascii_msg = ascii_empty;
         size_t linelen, msglen, tlsprefixlen, prilen;
 
         DPRINTF(D_CALL, "format_buffer(%p)\n", buffer);
@@ -1854,7 +1854,6 @@ format_buffer(struct buf_msg *buffer, char **line, size_t *ptr_linelen,
         assert(buffer->pri);
         assert(buffer->timestamp);
         assert(buffer->host || buffer->recvhost);
-        assert(buffer->prog || !BSDOutputFormat);
         
         if (LogFacPri) {
                 const char *f_s = NULL, *p_s = NULL;
@@ -1915,17 +1914,26 @@ format_buffer(struct buf_msg *buffer, char **line, size_t *ptr_linelen,
          * file/pipe/wall destinations can omit length and priority
          */
         /* first determine required space */
-        if (BSDOutputFormat)
+        if (BSDOutputFormat) {
+                /* only output ASCII chars */
+                if (buffer->sd)
+                        ascii_sd = copy_utf8_ascii(buffer->sd,
+                                strlen(buffer->sd));
+                if (buffer->msg) {
+                        if (IS_BOM(buffer->msg))
+                                ascii_msg = copy_utf8_ascii(buffer->msg,
+                                        buffer->msglen - 1);
+                        else /* assume already converted */
+                                ascii_msg = buffer->msg;
+                }
                 msglen = snprintf(NULL, 0, "<%d>%s%.15s %s %s%s%s%s: %s%s%s",
                              buffer->pri, fp_buf, buffer->timestamp,
-                             hostname, buffer->prog,
+                             hostname, OUT(buffer->prog),
                              buffer->pid ? "[" : "", 
                              buffer->pid ? buffer->pid : "", 
-                             buffer->pid ? "]" : "", 
-                             buffer->sd ? buffer->sd : "", 
-                             (buffer->sd && buffer->msg ? " ": ""),
-                             (buffer->msg ? buffer->msg: ""));
-        else
+                             buffer->pid ? "]" : "", ascii_sd,
+                             (buffer->sd && buffer->msg ? " ": ""), ascii_msg);
+        } else
                 msglen = snprintf(NULL, 0, "<%d>1 %s%s %s %s %s %s %s%s%s",
                              buffer->pri, fp_buf, buffer->timestamp,
                              hostname, OUT(buffer->prog), OUT(buffer->pid),
@@ -1948,13 +1956,11 @@ format_buffer(struct buf_msg *buffer, char **line, size_t *ptr_linelen,
                              msglen + tlsprefixlen + 1,
                              "%d <%d>%s%.15s %s %s%s%s%s: %s%s%s",
                              msglen, buffer->pri, fp_buf, buffer->timestamp, 
-                             hostname, buffer->prog,
+                             hostname, OUT(buffer->prog),
                              (buffer->pid ? "[" : ""),
                              (buffer->pid ? buffer->pid : ""),
-                             (buffer->pid ? "]" : ""),
-                             (buffer->sd ? buffer->sd: ""),
-                             (buffer->sd && buffer->msg ? " ": ""),
-                             (buffer->msg ? buffer->msg: ""));
+                             (buffer->pid ? "]" : ""), ascii_sd,
+                             (buffer->sd && buffer->msg ? " ": ""), ascii_msg);
         else
                 linelen = snprintf(*line,
                              msglen + tlsprefixlen + 1,
@@ -1968,6 +1974,11 @@ format_buffer(struct buf_msg *buffer, char **line, size_t *ptr_linelen,
                 "msglen %d, tlsprefixlen %d, prilen %d)\n", linelen,
                 linelen, *line, linelen, msglen, tlsprefixlen, prilen);
         
+        if (ascii_sd != ascii_empty)
+                FREEPTR(ascii_sd);
+        if (ascii_msg != ascii_empty
+         && ascii_msg != buffer->msg)
+                FREEPTR(ascii_msg);
         if (ptr_linelen)      *ptr_linelen      = linelen;
         if (ptr_msglen)       *ptr_msglen       = msglen;
         if (ptr_tlsprefixlen) *ptr_tlsprefixlen = tlsprefixlen;

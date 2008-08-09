@@ -274,6 +274,10 @@ char *strndup(const char *str, size_t n);
             ||(((f)->f_pcmp[fac] & PRI_GT) && ((f)->f_pmask[fac]  > (sev)))  \
            )
 
+#define IS_BOM(p) ( *(p) != '\0' &&     *(p) == (char) 0xEF \
+             && *((p)+1) != '\0' && *((p)+1) == (char) 0xBB \
+             && *((p)+2) != '\0' && *((p)+2) == (char) 0xBF)
+
 /*
  * Flags to logmsg().
  */

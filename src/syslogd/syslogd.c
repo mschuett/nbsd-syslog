@@ -236,6 +236,7 @@ void    logpath_fileadd(char ***, int *, int *, char *);
 char *make_timestamp(time_t *, bool);
 unsigned check_timestamp(unsigned char *, char **, const bool, const bool);
 static inline unsigned valid_utf8(const char *);
+char  *copy_utf8_ascii(char*, size_t);
 static unsigned check_sd(char*, const bool);
 static unsigned check_msgid(char *);
 
@@ -1117,11 +1118,59 @@ all_syslog_msg:
         buffer->pri = pri;
         buffer->flags = flags;
 
-        DPRINTF(D_DATA, "Got msg \"%s\" with strlen+1=%d and msglen=%d\n",
-                buffer->msg, (buffer->msg) ? strlen(buffer->msg)+1 : 0,
-                buffer->msglen);
-
         return buffer;
+}
+
+/* copies an input into a new ASCII buffer
+ * ASCII controls are converted to format "^X"
+ * multi-byte UTF-8 chars are converted to format "<ab><cd>"
+ */
+#define INIT_BUFSIZE 512
+char *
+copy_utf8_ascii(char *p, size_t p_len)
+{
+        int idst = 0, isrc = 0, dstsize = INIT_BUFSIZE;
+        unsigned i;
+        char *dst, *tmp_dst;
+        
+        MALLOC(dst, INIT_BUFSIZE);
+        while (isrc < p_len) {
+                if (dstsize < idst + 4 * UTF8CHARMAX) {
+                        tmp_dst = realloc(dst, dstsize + INIT_BUFSIZE);
+                        if (!tmp_dst)
+                                break;
+                        dst = tmp_dst;
+                        dstsize += INIT_BUFSIZE;
+                }
+                
+                i = valid_utf8(&p[isrc]);
+                if (i == 0) { /* invalid encoding */
+                        dst[idst++] = '?';
+                        isrc++;
+                } else if (i == 1) { /* check printable */
+                        if (iscntrl((unsigned char)p[isrc])
+                          && p[isrc] != '\t') {
+                                dst[idst++] = '^';
+                                dst[idst++] = p[isrc++] ^ 0100;
+                        } else
+                                dst[idst++] = p[isrc++];
+                } else {  /* convert UTF-8 to ASCII */
+                        dst[idst++] = '<';
+                        do {
+                                idst += sprintf(&dst[idst],
+                                        "%02x", (unsigned char)p[isrc++]);
+                        } while (--i);
+                        dst[idst++] = '>';
+                }
+        }
+        dst[idst] = '\0';
+
+        /* shrink buffer to right size */
+        tmp_dst = realloc(dst, idst+1);
+        if (tmp_dst)
+                return tmp_dst;
+        else
+                return dst;
 }
 
 struct buf_msg *
@@ -1134,7 +1183,8 @@ printline_bsdsyslog(const char *hname, char *msg, const int flags, const int pri
         DPRINTF((D_CALL|D_BUFFER|D_DATA), "printline_bsdsyslog("
                 "\"%s\", \"%s\", %d, %d)\n", hname, msg, flags, pri);
 
-        buffer = buf_msg_new(0);
+#define INIT_BUFSIZE 512
+        buffer = buf_msg_new(INIT_BUFSIZE);
         p = msg;
         start = p += check_timestamp((unsigned char*) p,
                 &buffer->timestamp, false, !BSDOutputFormat);
@@ -1236,6 +1286,7 @@ printline_bsdsyslog(const char *hname, char *msg, const int flags, const int pri
                         p++; /* SP */
                         DPRINTF(D_DATA, "Got MSGID \"-\"\n");
                 } else {
+                        /* only has ASCII chars after check_msgid() */ 
                         buffer->msgid = strndup(p, msgidlen);
                         p += msgidlen;
                         p++; /* SP */
@@ -1246,10 +1297,8 @@ printline_bsdsyslog(const char *hname, char *msg, const int flags, const int pri
                         p++;
                         DPRINTF(D_DATA, "Got SD \"-\"\n");
                 } else if (sdlen > 1) {
-                        buffer->sd = strndup(p, sdlen);
-                        p += sdlen;
-                        DPRINTF(D_DATA, "Got SD \"%s\"\n",
-                                buffer->sd);
+                        buffer->sd = copy_utf8_ascii(p, sdlen);
+                        DPRINTF(D_DATA, "Got SD \"%s\"\n", buffer->sd);
                 } else {
                         DPRINTF(D_DATA, "Error\n");
                 }
@@ -1259,10 +1308,8 @@ printline_bsdsyslog(const char *hname, char *msg, const int flags, const int pri
                 DPRINTF(D_DATA, "No MSGID\n");
                 sdlen = check_sd(p, true);
                 if (sdlen > 1) {
-                        buffer->sd = strndup(p, sdlen);
-                        p += sdlen;
-                        DPRINTF(D_DATA, "Got SD \"%s\"\n",
-                                buffer->sd);
+                        buffer->sd = copy_utf8_ascii(p, sdlen);
+                        DPRINTF(D_DATA, "Got SD \"%s\"\n", buffer->sd);
                 } else if (sdlen == 1 && *p == '-') {
                         p++;
                         DPRINTF(D_DATA, "Got SD \"-\"\n");
@@ -1279,27 +1326,17 @@ printline_bsdsyslog(const char *hname, char *msg, const int flags, const int pri
          * of the msg
          */
 all_bsd_msg:
-                for (;; p++) {
-                        if (*p == '\0') {
-                        break;
-                } else {
-                        *p = FORCE2ASCII(*p);
-                }
-        }
-        if (p - start) {
-                buffer->msg = strndup(start, p - start);
+        if (*p != '\0') {
+                size_t msglen = strlen(p);
+                buffer->msg = copy_utf8_ascii(p, msglen);
                 buffer->msgorig = buffer->msg;
-                buffer->msglen = buffer->msgsize = 1 + p - start;
+                buffer->msglen = buffer->msgsize = strlen(buffer->msg)+1;
         }
         DPRINTF(D_DATA, "Got msg \"%s\"\n", buffer->msg);
 
         buffer->recvhost = strdup(hname);
         buffer->pri = pri;
         buffer->flags = flags | BSDSYSLOG;
-
-        DPRINTF(D_DATA, "Got msg \"%s\" with strlen+1=%d and msglen=%d\n",
-                buffer->msg, (buffer->msg) ? strlen(buffer->msg)+1 : 0,
-                buffer->msglen);
 
         return buffer;
 }
@@ -1348,12 +1385,15 @@ printline(const char *hname, char *msg, const int flags)
         if ((pri & LOG_FACMASK) == LOG_KERN)
                 pri = LOG_MAKEPRI(LOG_USER, LOG_PRI(pri));
 
-        DPRINTF(D_DATA, "bsdsyslog = %d)\n", bsdsyslog);
         if (bsdsyslog) {
                 buffer = printline_bsdsyslog(hname, p, flags, pri);
         } else {
                 buffer = printline_syslogprotocol(hname, p, flags, pri);
         }
+
+        DPRINTF(D_DATA, "Got msg \"%s\" with strlen+1=%d and msglen=%d\n",
+                buffer->msg, (buffer->msg) ? strlen(buffer->msg)+1 : 0,
+                buffer->msglen);
         logmsg(buffer);
         DELREF(buffer);
 

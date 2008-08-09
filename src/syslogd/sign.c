@@ -535,8 +535,13 @@ sign_get_sg(int pri, struct filed *f)
         if (GlobalSign.rsid && f)
                 switch (GlobalSign.sg) {
                 case 0:
-                case 3:
                         rc = f->f_sg;
+                        break;
+                case 3:
+                        if (f->f_flags & FFLAG_SIGN)
+                                rc = f->f_sg;
+                        else
+                                rc = NULL;
                         break;
                 case 1:
                 case 2:

@@ -81,7 +81,6 @@ __RCSID("$NetBSD: syslogd.c,v 1.84 2006/11/13 20:24:00 christos Exp $");
 #include "sign.h"
 struct sign_global_t GlobalSign = {
         .rsid = 0,
-        .sg = -1,       /* disable by default */
         .sig2_delims = STAILQ_HEAD_INITIALIZER(GlobalSign.sig2_delims)
 };
 #endif /* !DISABLE_SIGN */
@@ -2119,18 +2118,16 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
          * and possibly sending a SB (after buffer is sent): */
         bool newhash = false;
         /* get hash */
-        if ((f->f_flags & FFLAG_SIGN)
-         && !(buffer->flags & SIGN_MSG)
+        if (!(buffer->flags & SIGN_MSG)
          && !qentry) {
                 char *hash = NULL;
                 struct signature_group_t *sg;
 
-                if (!sign_msg_hash(line + tlsprefixlen, &hash)
-                 || (!(sg = sign_get_sg(buffer->pri, f)))) {
-                        free(hash);
-                        logerror("Unable to hash line \"%s\"", line);
-                 } else
+                if ((sg = sign_get_sg(buffer->pri, f))
+                 && sign_msg_hash(line + tlsprefixlen, &hash))
                         newhash = sign_append_hash(hash, sg);
+                else
+                        DPRINTF(D_SIGN, "Unable to hash line \"%s\"", line);
         }
 #endif /* !DISABLE_SIGN */
 
@@ -2951,9 +2948,6 @@ read_config_file(FILE *cf, struct filed **f_ptr)
         }
         for (i = 0; i < A_CNT(config_keywords); i++)
                 FREEPTR(*config_keywords[i].variable);
-#ifndef DISABLE_SIGN
-        GlobalSign.sg = -1;
-#endif /* !DISABLE_SIGN */
         /* 
          * global settings
          */
@@ -3061,8 +3055,8 @@ read_config_file(FILE *cf, struct filed **f_ptr)
                                 "use default value `%d'\n",
                                 sign_sg_str, GlobalSign.sg);
                 }
-        } else
-                GlobalSign.sg = SIGN_SG;
+        } else  /* disable syslog-sign */
+                GlobalSign.sg = -1;
 #endif /* !DISABLE_SIGN */
 
         rewind(cf);
@@ -3657,7 +3651,10 @@ cfline(const unsigned int linenum, char *line, struct filed *f, char *prog, char
 
         switch (*p) {
         case '@':
-                f->f_flags |= FFLAG_SIGN;
+#ifndef DISABLE_SIGN
+                if (GlobalSign.sg == 3)
+                        f->f_flags |= FFLAG_SIGN;
+#endif /* !DISABLE_SIGN */
 #ifndef DISABLE_TLS
                 if (*(p+1) == '[') {
                         /* TLS destination */
@@ -3687,7 +3684,10 @@ cfline(const unsigned int linenum, char *line, struct filed *f, char *prog, char
                 break;
 
         case '/':
-                f->f_flags |= FFLAG_SIGN;
+#ifndef DISABLE_SIGN
+                if (GlobalSign.sg == 3)
+                        f->f_flags |= FFLAG_SIGN;
+#endif /* !DISABLE_SIGN */
                 (void)strlcpy(f->f_un.f_fname, p, sizeof(f->f_un.f_fname));
                 if ((f->f_file = open(p, O_WRONLY|O_APPEND, 0)) < 0) {
                         f->f_type = F_UNUSED;

@@ -223,6 +223,7 @@ int     matches_spec(const char *, const char *,
 void    printline(const char *, char *, const int);
 struct buf_msg *printline_syslogprotocol(const char*, char*, const int, const int);
 struct buf_msg *printline_bsdsyslog(const char*, char*, const int, const int);
+struct buf_msg *printline_kernelprintf(const char*, char*, const int, const int);
 void    printsys(char *);
 int     p_open(char *, pid_t *);
 void    trim_localdomain(char *);
@@ -1374,6 +1375,49 @@ all_bsd_msg:
         return buffer;
 }
 
+struct buf_msg *
+printline_kernelprintf(const char *hname, char *msg, const int flags, const int pri)
+{
+        struct buf_msg *buffer;
+        char *p;
+        unsigned sdlen = 0;
+
+        DPRINTF((D_CALL|D_BUFFER|D_DATA), "printline_kernelprintf("
+                "\"%s\", \"%s\", %d, %d)\n", hname, msg, flags, pri);
+
+        buffer = buf_msg_new(0);
+        buffer->timestamp = strdup(make_timestamp(NULL, !BSDOutputFormat));
+        buffer->pri = pri;
+        buffer->flags = flags;
+
+        /* assume there is no MSGID but there might be SD */
+        p = msg;
+        sdlen = check_sd(p, false);
+        
+        if (sdlen == 0) {
+                DPRINTF(D_DATA, "No SD\n");
+        } else if (sdlen > 1) {
+                buffer->sd = copy_utf8_ascii(p, sdlen);
+                DPRINTF(D_DATA, "Got SD \"%s\"\n", buffer->sd);
+        } else if (sdlen == 1 && *p == '-') {
+                p++;
+                DPRINTF(D_DATA, "Got SD \"-\"\n");
+        } else {
+                DPRINTF(D_DATA, "Error\n");
+        }
+
+        if (*p == ' ') p++;
+        if (*p != '\0') {
+                size_t msglen = strlen(p);
+                buffer->msg = copy_utf8_ascii(p, msglen);
+                buffer->msgorig = buffer->msg;
+                buffer->msglen = buffer->msgsize = strlen(buffer->msg)+1;
+        }
+        DPRINTF(D_DATA, "Got msg \"%s\"\n", buffer->msg);
+
+        return buffer;
+}
+
 /*
  * Take a raw input line, read priority and version, call the
  * right message parsing function, then call logmsg().
@@ -1433,51 +1477,66 @@ printline(const char *hname, char *msg, const int flags)
 void
 printsys(char *msg)
 {
-        int n, is_printf;
+        int n, is_printf, pri, flags;
         char *p, *q;
         struct buf_msg *buffer;
 
         for (p = msg; *p != '\0'; ) {
-                buffer = buf_msg_new(0);
-                /* always assume BSDSYSLOG.
-                 * 
-                 * TODO: remove this assumption or at least add more parsing
-                 *  -- we eventually want the kernel to log structured data
-                 */
-                buffer->flags = ISKERNEL | ADDDATE | BSDSYSLOG;
-                if (SyncKernel)
-                        buffer->flags |= SYNC_FILE;
+                bool bsdsyslog = true;
 
-                buffer->pri = DEFSPRI;
                 is_printf = 1;
+                flags = ISKERNEL | ADDDATE | BSDSYSLOG;
+                if (SyncKernel)
+                        flags |= SYNC_FILE;
+                if (is_printf) /* kernel printf's come out on console */
+                        flags |= IGN_CONS;
+                pri = DEFSPRI;
+
                 if (*p == '<') {
                         errno = 0;
                         n = (int)strtol(p + 1, &q, 10);
                         if (*q == '>' && n >= 0 && n < INT_MAX && errno == 0) {
                                 p = q + 1;
-                                buffer->pri = n;
                                 is_printf = 0;
+                                pri = n;
+                                if (*p == '1') { /* syslog-protocol version */
+                                        p += 2;  /* skip version and space */
+                                        bsdsyslog = false;
+                                } else {
+                                        bsdsyslog = true;
+                                }
                         }
                 }
-                if (is_printf) {
-                        /* kernel printf's come out on console */
-                        buffer->flags |= IGN_CONS;
-                }
-                if (buffer->pri &~ (LOG_FACMASK|LOG_PRIMASK))
-                        buffer->pri = DEFSPRI;
-
                 for (q = p; *q != '\0' && *q != '\n'; q++)
                         /* look for end of line; no further checks.
                          * trust the kernel to send ASCII only */;
                 if (*q != '\0')
                         *q++ = '\0';
 
-                buffer->msg = strndup(p, q - p);
-                buffer->msglen = buffer->msgsize = q - p;
-                buffer->timestamp = strdup(make_timestamp(NULL, !BSDOutputFormat));
-                buffer->recvhost = buffer->host = LocalFQDN;
-                buffer->prog = strdup(_PATH_UNIX);
-                
+                if (pri &~ (LOG_FACMASK|LOG_PRIMASK))
+                        pri = DEFSPRI;
+
+                /* allow all kinds of input from kernel */
+                if (is_printf)
+                        buffer = printline_kernelprintf(
+                                        LocalFQDN, p, flags, pri);
+                else {
+                        if (bsdsyslog)
+                                buffer = printline_bsdsyslog(
+                                        LocalFQDN, p, flags, pri);
+                        else
+                                buffer = printline_syslogprotocol(
+                                        LocalFQDN, p, flags, pri);
+                }
+
+                /* set fields left open */
+                if (!buffer->prog)
+                        buffer->prog = strdup(_PATH_UNIX);
+                if (!buffer->host)
+                        buffer->host = LocalFQDN;
+                if (!buffer->recvhost)
+                        buffer->recvhost = LocalFQDN;
+
                 logmsg(buffer);
                 DELREF(buffer);
                 p = q;

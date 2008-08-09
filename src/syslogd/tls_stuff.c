@@ -953,16 +953,23 @@ parse_tls_destination(char *p, struct filed *f)
         f->f_un.f_tls.tls_conn->x509verify = X509VERIFY_ALWAYS;
         f->f_un.f_tls.tls_conn->reconnect = tls_opt.reconnect_interval;
 
-        if (!(copy_string(&(f->f_un.f_tls.tls_conn->hostname), p, q)))
+        if (!(copy_string(&(f->f_un.f_tls.tls_conn->hostname), p, q))) {
+                logerror("Unable to read TLS server name");
+                free_tls_conn(f->f_un.f_tls.tls_conn);
                 return false;
+        }
         p = ++q;
         
         if (*p == ':') {
                 p++; q++;
                 while (isalnum((unsigned char)*q))
                         q++;
-                if (!(copy_string(&(f->f_un.f_tls.tls_conn->port), p, q)))
+                if (!(copy_string(&(f->f_un.f_tls.tls_conn->port), p, q))) {
+                        logerror("Unable to read TLS port or service name"
+                                " after ':'");
+                        free_tls_conn(f->f_un.f_tls.tls_conn);
                         return false;
+                }
                 p = q;
         }
         /* allow whitespace for readability? */
@@ -971,14 +978,18 @@ parse_tls_destination(char *p, struct filed *f)
         if (*p == '(') {
                 p++;
                 while (*p != ')') {
-                        if (copy_config_value_quoted("subject=\"", &(f->f_un.f_tls.tls_conn->subject), &p)
-                            || copy_config_value_quoted("fingerprint=\"", &(f->f_un.f_tls.tls_conn->fingerprint), &p)
-                            || copy_config_value_quoted("cert=\"", &(f->f_un.f_tls.tls_conn->certfile), &p)) {
+                        if (copy_config_value_quoted("subject=\"",
+                                &(f->f_un.f_tls.tls_conn->subject), &p)
+                            || copy_config_value_quoted("fingerprint=\"",
+                                &(f->f_un.f_tls.tls_conn->fingerprint), &p)
+                            || copy_config_value_quoted("cert=\"",
+                                &(f->f_un.f_tls.tls_conn->certfile), &p)) {
                         /* nothing */
                         }
                         else if (!strcmp(p, "verify=")) {
                                 q = p += sizeof("verify=")-1;
-                                if (*p == '\"') { p++; q++; }  /* "" are optional */
+                                /* "" are optional */
+                                if (*p == '\"') { p++; q++; }
                                 while (isalpha((unsigned char)*q)) q++;
                                 f->f_un.f_tls.tls_conn->x509verify =
                                                         getVerifySetting(p);
@@ -987,17 +998,16 @@ parse_tls_destination(char *p, struct filed *f)
                         }
                         else {
                                 logerror("unknown keyword %s", p);
-                                return false;        
                         }
                         while (*p == ',' || isblank(*p))
                                 p++;
                         if (*p == '\0') {
                                 logerror("unterminated (");
-                                return false;
                         }
                 }
         }
-        DPRINTF((D_TLS|D_PARSE), "got TLS config: host %s, port %s, subject: %s\n",
+        DPRINTF((D_TLS|D_PARSE),
+                "got TLS config: host %s, port %s, subject: %s\n",
                 f->f_un.f_tls.tls_conn->hostname,
                 f->f_un.f_tls.tls_conn->port,
                 f->f_un.f_tls.tls_conn->subject);
@@ -1520,14 +1530,6 @@ dispatch_tls_send(int fd, short event, void *arg)
                         conn_info->sslptr,
                         conn_info, rc);
                 switch (error) {
-                	/* TODO: undelivered messages are retried but
-                	 * never put back on queue.
-                	 * a) Is the assumption that the connection becomes
-                	 * available again valid?
-                	 * b) Is there a better way to do this?
-                	 * c) if a message is retried and a reconnect
-                	 * occurs, then this message should be send
-                	 * over the new connection */
                         case TLS_RETRY_READ:
                                 /* collides with eof event */
                                 if (!retrying)

@@ -947,7 +947,7 @@ check_sd(char* p, const bool ascii)
         if (*q == '-' && (*(q+1) == ' ' || *(q+1) == '\0'))
                 return 1;
 
-        while (/*CONSTCOND*/1) { /* SD-ELEMENT */
+        for(;;) { /* SD-ELEMENT */
                 if (*q++ != '[') return 0;
                 /* SD-ID */
                 if (!sdname(*q)) return 0;
@@ -955,7 +955,7 @@ check_sd(char* p, const bool ascii)
                         *q = FORCE2ASCII(*q);
                         q++;
                 }
-                while (/*CONSTCOND*/1) { /* SD-PARAM */
+                for(;;) { /* SD-PARAM */
                         if (*q == ']') {
                                 q++;
                                 if (*q == ' ' || *q == '\0') return q - p;
@@ -972,8 +972,7 @@ check_sd(char* p, const bool ascii)
                         if (*q++ != '=') return 0;
                         if (*q++ != '"') return 0;
 
-                        /* PARAM-VALUE */
-                        while (/*CONSTCOND*/1) {
+                        for(;;) { /* PARAM-VALUE */
                                 if (esc) {
                                         esc = false;
                                         if (*q == '\\'
@@ -994,9 +993,12 @@ check_sd(char* p, const bool ascii)
                                         } else {
                                                 int i;
                                                 i = valid_utf8(q);
-                                                if (i == 0) *q = '?';
-                                                else if (i == 1) *q = FORCE2ASCII(*q);
-                                                else q += (i-1); /* multi byte char */
+                                                if (i == 0)
+                                                        *q = '?';
+                                                else if (i == 1)
+                                                        *q = FORCE2ASCII(*q);
+                                                else
+                                                        q += (i-1); /* multi byte char */
                                         }
                                 }
                                 q++;
@@ -1130,7 +1132,7 @@ all_syslog_msg:
         if (*p != '\0' && !utf8allowed) {
                 size_t msglen;
 
-                msglen = strlen(p)
+                msglen = strlen(p);
         	assert(!buffer->msg);
                 buffer->msg = copy_utf8_ascii(p, msglen);
                 buffer->msgorig = buffer->msg;
@@ -1421,13 +1423,8 @@ printline(const char *hname, char *msg, const int flags)
         } else {
                 buffer = printline_syslogprotocol(hname, p, flags, pri);
         }
-
-        DPRINTF(D_DATA, "Got msg \"%s\" with strlen+1=%d and msglen=%d\n",
-                buffer->msg, (buffer->msg) ? strlen(buffer->msg)+1 : 0,
-                buffer->msglen);
         logmsg(buffer);
         DELREF(buffer);
-
 }
 
 /*
@@ -1840,8 +1837,7 @@ format_buffer(struct buf_msg *buffer, char **line, size_t *ptr_linelen,
 {
 #define FPBUFSIZE 30
         char fp_buf[FPBUFSIZE] = "\0";
-        char shorthostname[MAXHOSTNAMELEN];
-        char *hostname;
+        char *hostname, *shorthostname = NULL;
         char *ascii_empty = "";
         char *ascii_sd = ascii_empty;
         char *ascii_msg = ascii_empty;
@@ -1894,13 +1890,9 @@ format_buffer(struct buf_msg *buffer, char **line, size_t *ptr_linelen,
                  * gets implemented, this is the right place to distinguish
                  * between buffer->host and buffer->recvhost
                  */
-                char *dest, *src;
-                src = (buffer->host ? buffer->host : buffer->recvhost);
-                dest = shorthostname;
-                while (*src && *src != '.')
-                        *dest++ = *src++;
-                *dest = '\0';
-                hostname = shorthostname;
+                hostname = shorthostname =
+                        strdup(buffer->host ? buffer->host : buffer->recvhost);
+                trim_anydomain(shorthostname);
         } else
                 hostname = (buffer->host ? buffer->host : buffer->recvhost);
 
@@ -1974,6 +1966,7 @@ format_buffer(struct buf_msg *buffer, char **line, size_t *ptr_linelen,
                 "msglen %d, tlsprefixlen %d, prilen %d)\n", linelen,
                 linelen, *line, linelen, msglen, tlsprefixlen, prilen);
         
+        FREEPTR(shorthostname);
         if (ascii_sd != ascii_empty)
                 FREEPTR(ascii_sd);
         if (ascii_msg != ascii_empty

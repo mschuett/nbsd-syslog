@@ -239,7 +239,7 @@ unsigned check_timestamp(unsigned char *, char **, const bool, const bool);
 unsigned valid_utf8(const char *);
 uint_fast32_t get_utf8_value(const char*);
 char  *copy_utf8_ascii(char*, size_t);
-static unsigned check_sd(char*, const bool);
+static unsigned check_sd(char*);
 static unsigned check_msgid(char *);
 
 struct event *allocev(void);
@@ -939,7 +939,7 @@ check_msgid(char *p)
  * filtered up to the format error.
  */
 static unsigned
-check_sd(char* p, const bool ascii)
+check_sd(char* p)
 {
         char *q = p;
         bool esc = false;
@@ -989,18 +989,14 @@ check_sd(char* p, const bool ascii)
                                 else if (*q == '\0' || *q == ']') return 0;
                                 else if (*q == '\\') esc = true;
                                 else {
-                                        if (ascii) {
+                                        int i;
+                                        i = valid_utf8(q);
+                                        if (i == 0)
+                                                *q = '?';
+                                        else if (i == 1)
                                                 *q = FORCE2ASCII(*q);
-                                        } else {
-                                                int i;
-                                                i = valid_utf8(q);
-                                                if (i == 0)
-                                                        *q = '?';
-                                                else if (i == 1)
-                                                        *q = FORCE2ASCII(*q);
-                                                else
-                                                        q += (i-1); /* multi byte char */
-                                        }
+                                        else
+                                                q += (i-1); /* multi byte char */
                                 }
                                 q++;
                         }
@@ -1101,7 +1097,7 @@ printline_syslogprotocol(const char *hname, char *msg, const int flags, const in
         /* extract SD */
         NEXTFIELD(p);
         start = p;
-        sdlen = check_sd(p, false);
+        sdlen = check_sd(p);
         DPRINTF(D_DATA, "check_sd(\"%s\") returned %d\n", p, sdlen);
         
         if (sdlen == 1 && *p == '-') {
@@ -1316,7 +1312,7 @@ printline_bsdsyslog(const char *hname, char *msg, const int flags, const int pri
         start = p;
         msgidlen = check_msgid(p);
         if (msgidlen) /* check for SD in 2nd field */
-                sdlen = check_sd(p+msgidlen+1, true);
+                sdlen = check_sd(p+msgidlen+1);
                 
         if (msgidlen && sdlen) {
                 /* MSGID in 1st and SD in 2nd field
@@ -1337,7 +1333,7 @@ printline_bsdsyslog(const char *hname, char *msg, const int flags, const int pri
                 /* either no msgid or no SD in 2nd field
                  * --> check 1st field for SD */
                 DPRINTF(D_DATA, "No MSGID\n");
-                sdlen = check_sd(p, true);
+                sdlen = check_sd(p);
         }
         
         if (sdlen == 0) {
@@ -1392,7 +1388,7 @@ printline_kernelprintf(const char *hname, char *msg, const int flags, const int 
 
         /* assume there is no MSGID but there might be SD */
         p = msg;
-        sdlen = check_sd(p, false);
+        sdlen = check_sd(p);
         
         if (sdlen == 0) {
                 DPRINTF(D_DATA, "No SD\n");

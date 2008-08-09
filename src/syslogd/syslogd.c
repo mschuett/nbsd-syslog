@@ -235,7 +235,8 @@ void    logpath_add(char ***, int *, int *, char *);
 void    logpath_fileadd(char ***, int *, int *, char *);
 char *make_timestamp(time_t *, bool);
 unsigned check_timestamp(unsigned char *, char **, const bool, const bool);
-static inline unsigned valid_utf8(const char *);
+unsigned valid_utf8(const char *);
+uint_fast32_t get_utf8_value(const char*);
 char  *copy_utf8_ascii(char*, size_t);
 static unsigned check_sd(char*, const bool);
 static unsigned check_msgid(char *);
@@ -811,7 +812,7 @@ logpath_fileadd(char ***lp, int *szp, int *maxszp, char *file)
  * checks UTF-8 codepoint
  * returns either its length in bytes or 0 if *input is invalid
 */
-static inline unsigned
+unsigned
 valid_utf8(const char *c) {
         unsigned rc, nb;
 
@@ -846,6 +847,39 @@ valid_utf8(const char *c) {
         return rc;
 }
 #define UTF8CHARMAX 4
+
+/* 
+ * read UTF-8 value
+ * returns a the codepoint number
+ */
+uint_fast32_t
+get_utf8_value(const char *c) {
+        uint_fast32_t sum;
+        unsigned nb, i;
+
+        /* first byte gives sequence length */
+             if ((*c & 0x80) == 0x00) return *c;/* 0bbbbbbb -- ASCII */
+        else if ((*c & 0xc0) == 0x80) return 0; /* 10bbbbbb -- trailing byte */
+        else if ((*c & 0xe0) == 0xc0) {         /* 110bbbbb */
+                nb = 2;
+                sum = (*c & ~0xe0) & 0xff;
+        } else if ((*c & 0xf0) == 0xe0) {       /* 1110bbbb */
+                nb = 3;
+                sum = (*c & ~0xf0) & 0xff;
+        } else if ((*c & 0xf8) == 0xf0) {       /* 11110bbb */
+                nb = 4;
+                sum = (*c & ~0xf8) & 0xff;
+        } else return 0; /* UTF-8 allows only up to 4 bytes */
+
+        /* check trailing bytes -- 10bbbbbb */
+        i = 1;
+        while (i < nb) {
+                sum <<= 6;
+                sum |= ((*(c+i) & ~0xc0) & 0xff);
+                i++;
+        }
+        return sum;
+}
 
 /* note previous versions transscribe
  * control characters, e.g. \007 --> "^G"
@@ -1135,7 +1169,9 @@ copy_utf8_ascii(char *p, size_t p_len)
         
         MALLOC(dst, INIT_BUFSIZE);
         while (isrc < p_len) {
-                if (dstsize < idst + 4 * UTF8CHARMAX) {
+                if (dstsize < idst + 10) {
+                        /* check for enough space for \0 and a UTF-8
+                         * conversion; longest possible is <U+123456> */
                         tmp_dst = realloc(dst, dstsize + INIT_BUFSIZE);
                         if (!tmp_dst)
                                 break;
@@ -1156,10 +1192,8 @@ copy_utf8_ascii(char *p, size_t p_len)
                                 dst[idst++] = p[isrc++];
                 } else {  /* convert UTF-8 to ASCII */
                         dst[idst++] = '<';
-                        do {
-                                idst += sprintf(&dst[idst],
-                                        "%02x", (unsigned char)p[isrc++]);
-                        } while (--i);
+                        idst += sprintf(&dst[idst], "U+%x", get_utf8_value(&p[isrc]));
+                        isrc += i;
                         dst[idst++] = '>';
                 }
         }

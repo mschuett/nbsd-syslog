@@ -781,9 +781,10 @@ sign_msg_sign(struct buf_msg **bufferptr, char *sd, size_t linesize)
                         " sign_string_sign() failed\n");
                 buffer->sd = NULL;
                 DELREF(buffer);
+                FREEPTR(line);
                 return false;
         }
-
+        FREEPTR(line);
         sd[endptr-2] = '\0';
         newlinelen = strlcat(sd, signature, linesize);
         newlinelen = strlcat(sd, "\"]", linesize);

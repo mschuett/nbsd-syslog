@@ -1900,10 +1900,14 @@ format_buffer(struct buf_msg *buffer, char **line, size_t *ptr_linelen,
         DPRINTF(D_CALL, "format_buffer(%p)\n", buffer);
         if (!buffer) return false;
 
-        /* required fields */
-        assert(buffer->pri);
-        assert(buffer->timestamp);
-        assert(buffer->host || buffer->recvhost);
+        /* All buffer fields are set with strdup(). To avoid problems
+         * on memory exhaustion we allow them to be empty and replace
+         * the essential fields with already allocated generic values.
+         */
+        if (!buffer->timestamp)
+                buffer->timestamp = timestamp;
+        if (!buffer->host && !buffer->recvhost)
+                buffer->host = LocalFQDN;
         
         if (LogFacPri) {
                 const char *f_s = NULL, *p_s = NULL;
@@ -1939,16 +1943,16 @@ format_buffer(struct buf_msg *buffer, char **line, size_t *ptr_linelen,
         }
 
         /* hostname or FQDN */
-        if (BSDOutputFormat) {
+        hostname = (buffer->host ? buffer->host : buffer->recvhost);
+        if (BSDOutputFormat
+         && (shorthostname = strdup(hostname))) {
                 /* if the previous BSD output format with "host [recvhost]:"
                  * gets implemented, this is the right place to distinguish
                  * between buffer->host and buffer->recvhost
                  */
-                hostname = shorthostname =
-                        strdup(buffer->host ? buffer->host : buffer->recvhost);
                 trim_anydomain(shorthostname);
-        } else
-                hostname = (buffer->host ? buffer->host : buffer->recvhost);
+                hostname = shorthostname;
+        }
 
         /* new message formatting:
          * instead of using iov always assemble one complete TLS-ready line
@@ -1969,7 +1973,7 @@ format_buffer(struct buf_msg *buffer, char **line, size_t *ptr_linelen,
                         if (IS_BOM(buffer->msg))
                                 ascii_msg = copy_utf8_ascii(buffer->msg,
                                         buffer->msglen - 1);
-                        else /* assume already converted */
+                        else /* assume already converted at input */
                                 ascii_msg = buffer->msg;
                 }
                 msglen = snprintf(NULL, 0, "<%d>%s%.15s %s %s%s%s%s: %s%s%s",
@@ -2019,24 +2023,21 @@ format_buffer(struct buf_msg *buffer, char **line, size_t *ptr_linelen,
         DPRINTF(D_DATA, "formatted %d octets to: '%.*s' (linelen %d, "
                 "msglen %d, tlsprefixlen %d, prilen %d)\n", linelen,
                 linelen, *line, linelen, msglen, tlsprefixlen, prilen);
-        
+
         FREEPTR(shorthostname);
         if (ascii_sd != ascii_empty)
                 FREEPTR(ascii_sd);
         if (ascii_msg != ascii_empty
          && ascii_msg != buffer->msg)
                 FREEPTR(ascii_msg);
+
         if (ptr_linelen)      *ptr_linelen      = linelen;
         if (ptr_msglen)       *ptr_msglen       = msglen;
         if (ptr_tlsprefixlen) *ptr_tlsprefixlen = tlsprefixlen;
         if (ptr_prilen)       *ptr_prilen       = prilen;
         return true;
 }
-/* 
- * Added parameter struct buf_msg *buffer
- * If present (!= NULL) then a destination that is unable to send the
- * message can queue the message for later delivery.
- */
+
 /*
  * if qentry == NULL: new message, if temporarily undeliverable it will be enqueued
  * if qentry != NULL: a temporarily undeliverable message will not be enqueued,
@@ -2635,6 +2636,7 @@ domark(int fd, short event, void *ev)
                         BACKOFF(f);
                 }
         }
+        message_allqueues_check();
         RESTORE_SIGNALS(omask);
 
         /* Walk the dead queue, and see if we should signal somebody. */
@@ -2736,7 +2738,6 @@ loginfo(const char *fmt, ...)
 }
 
 #ifndef DISABLE_TLS
-/* used in init() and die() */
 static inline void
 free_incoming_tls_sockets(void)
 {
@@ -4045,12 +4046,7 @@ allocev(void)
         return ev;
 }
 
-/* 
- * seems like event_once uses always the same event object
- * and cannot be used for different timers (?)
- * 
- * *ev is allocated if necessary
- */
+/* *ev is allocated if necessary */
 void 
 schedule_event(struct event **ev, struct timeval *tv, void (*cb)(int, short, void *), void *arg)
 {
@@ -4182,6 +4178,7 @@ message_queue_purge(struct filed *f, const unsigned int del_entries, const int s
                 f, del_entries, strategy,
                 f->f_qelements, f->f_qsize);
 
+        /* reset state */
         (void)find_qentry_to_delete(&f->f_qhead, strategy, true);
 
         while (removed < del_entries
@@ -4195,8 +4192,6 @@ message_queue_purge(struct filed *f, const unsigned int del_entries, const int s
                 else
                         break;
         }
-
-        DPRINTF(D_BUFFER, "removed %d entries\n", removed);
         return removed;
 }
 
@@ -4209,9 +4204,25 @@ message_allqueues_purge()
         for (struct filed *f = Files; f; f = f->f_next)
                 sum += message_queue_purge(f,
                         f->f_qelements/10, PURGE_BY_PRIORITY);
+
+        DPRINTF(D_BUFFER,
+                "message_allqueues_purge(): removed %d buffer entries\n", sum);
         return sum;
 }
-                          
+
+/* run message_queue_purge() for all destinations to check limits */
+unsigned int
+message_allqueues_check()
+{
+        unsigned int sum = 0;
+
+        for (struct filed *f = Files; f; f = f->f_next)
+                sum += message_queue_purge(f, 0, PURGE_BY_PRIORITY);
+        DPRINTF(D_BUFFER,
+                "message_allqueues_check(): removed %d buffer entries\n", sum);
+        return sum;
+}
+
 struct buf_msg *
 buf_msg_new(const size_t len)
 {
@@ -4219,13 +4230,10 @@ buf_msg_new(const size_t len)
 
         CALLOC(newbuf, sizeof(*newbuf));
 
-        if (len) {/* len = 0 is valid */         
-                if (!(newbuf->msg = malloc(len))) {
-                        logerror("Couldn't allocate new message buffer");
-                } else {
-                        newbuf->msgorig = newbuf->msg;
-                        newbuf->msgsize = len;
-                }
+        if (len) { /* len = 0 is valid */
+                MALLOC(newbuf->msg, len);
+                newbuf->msgorig = newbuf->msg;
+                newbuf->msgsize = len;
         }
         return NEWREF(newbuf);
 }
@@ -4237,7 +4245,7 @@ buf_msg_free(struct buf_msg *buf)
                 return;
 
         buf->refcount--;
-        if (!buf->refcount) {
+        if (buf->refcount == 0) {
                 FREEPTR(buf->timestamp);
                 /* small optimizations: the host/recvhost may point to the
                  * global HostName/FQDN. of course this must not be free()d
@@ -4392,9 +4400,9 @@ dispatch_force_tls_reconnect(int fd, short event, void *ev)
 #endif /* !DISABLE_TLS */
 
 /*
- * return a timestamp in a static buffer
- * extended to format a timestamp given by parameter in_now
- * (no input parameter for tv -- would that be useful?)
+ * return a timestamp in a static buffer,
+ * either format the timestamp given by parameter in_now
+ * or use the current time if in_now is NULL.
  */
 char *
 make_timestamp(time_t *in_now, bool iso)

@@ -116,6 +116,7 @@ int deny_cert(struct tls_conn_settings *, char *, char *);
 bool read_certfile(X509 **, const char *);
 bool write_x509files(EVP_PKEY *, X509 *, const char *, const char *);
 bool mk_x509_cert(X509 **, EVP_PKEY **, int, int, int);
+bool x509_cert_add_subjectAltName(X509 *, X509V3_CTX *);
 int tls_examine_error(const char *, const SSL *, struct tls_conn_settings *, const int);
 
 bool get_fingerprint(const X509 *, char **, const char *);

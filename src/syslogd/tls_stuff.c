@@ -470,15 +470,21 @@ read_certfile(X509 **cert, const char *certfilename)
 int
 accept_cert(const char* reason, struct tls_conn_settings *conn_info, char *cur_fingerprint, char *cur_subjectline)
 {
-        if (cur_fingerprint)
-                conn_info->fingerprint = cur_fingerprint;
-        if (cur_subjectline)
-                conn_info->subject = cur_subjectline;
-
         loginfo("Established connection and accepted %s certificate "
                 "from %s due to %s. Subject is \"%s\", fingerprint is "
                 "\"%s\"", conn_info->incoming ? "server" : "client", 
                 conn_info->hostname, reason, cur_subjectline, cur_fingerprint);
+
+        if (cur_fingerprint && !conn_info->fingerprint)
+                conn_info->fingerprint = cur_fingerprint;
+        else
+                FREEPTR(cur_fingerprint);
+
+        if (cur_subjectline && !conn_info->subject)
+                conn_info->subject = cur_subjectline;
+        else
+                FREEPTR(cur_subjectline);
+
         return 1;        
 }
 int
@@ -581,15 +587,12 @@ check_peer_cert(int preverify_ok, X509_STORE_CTX *ctx)
 
                 /* else: now check allowed client fingerprints/certs */
                 SLIST_FOREACH(cred, &tls_opt.fprint_head, entries) {
-                        conn_info->fingerprint = cred->data;
-                        if (match_fingerprint(cur_cert, conn_info->fingerprint)) {
+                        if (match_fingerprint(cur_cert, cred->data)) {
                                 return accept_cert("matching fingerprint",
                                         conn_info, cur_fingerprint, cur_subjectline);
                         }
-                        conn_info->fingerprint = NULL;
                 }
                 SLIST_FOREACH_SAFE(cred, &tls_opt.cert_head, entries, tmp_cred) {
-                        /* error: will never be executed ?? */
                         if (match_certfile(cur_cert, cred->data))
                                 return accept_cert("matching certfile", conn_info,
                                         cur_fingerprint, cur_subjectline);

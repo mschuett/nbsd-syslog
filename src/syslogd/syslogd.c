@@ -627,7 +627,7 @@ getgroup:
         j = event_dispatch();
         /* normal termination via die(), reaching this is an error */
         DPRINTF(D_MISC, "event_dispatch() returned %d\n", j);
-        return j;
+        die(0, 0, NULL);
 }
 
 void
@@ -1684,7 +1684,7 @@ check_timestamp(unsigned char *from_buf, char **to_buf, const bool from_iso, con
                 struct tm parsed;
                 time_t p;
                 char tsbuf[MAX_TIMESTAMPLEN];
-                int i;
+                int i = 0;
 
                 DPRINTF(D_CALL, "check_timestamp(): convert ISO->BSD\n");
                 for(i = 0; i < MAX_TIMESTAMPLEN && from_buf[i] != '\0'
@@ -2843,6 +2843,12 @@ die(int fd, short event, void *ev)
                 FREEPTR(finet);
         }
 
+        /* free config options */
+        for (int i = 0; i < A_CNT(TypeInfo); i++) {
+                FREEPTR(TypeInfo[i].queue_length_string);
+                FREEPTR(TypeInfo[i].queue_size_string);
+        }
+
 #ifndef DISABLE_TLS
         FREEPTR(tls_opt.CAdir);
         FREEPTR(tls_opt.CAfile);
@@ -2977,14 +2983,15 @@ read_config_file(FILE *cf, struct filed **f_ptr)
                                          || sqentry->key > (LOG_NFACILITIES<<3)) {
                                                 DPRINTF(D_PARSE, "invalid sign_delim_sg2: %s\n", tmp_buf);
                                                 free(sqentry);
+                                                FREEPTR(tmp_buf);
                                         } else {
                                                 sqentry->data = tmp_buf;
                                                 if (STAILQ_EMPTY(&GlobalSign.sig2_delims))
                                                         STAILQ_INSERT_HEAD(&GlobalSign.sig2_delims, sqentry, entries);
                                                 else {
                                                         /* keep delimiters sorted */
-                                                        sqe1 = STAILQ_FIRST(&GlobalSign.sig2_delims);
-                                                        while (sqe1
+                                                        sqe2 = STAILQ_FIRST(&GlobalSign.sig2_delims);
+                                                        while ((sqe1 = sqe2)
                                                            && (sqe2 = STAILQ_NEXT(sqe1, entries))) {
                                                                 if (sqe2->key > sqentry->key)
                                                                         break;
@@ -3873,6 +3880,8 @@ socksetup(int af, const char *hostname)
                 s++;
         }
 
+        if (res)
+                freeaddrinfo(res);
         if (socks->fd == 0) {
                 free (socks);
                 if(Debug)
@@ -3880,9 +3889,6 @@ socksetup(int af, const char *hostname)
                 else
                         die(0, 0, NULL);
         }
-        if (res)
-                freeaddrinfo(res);
-
         return(socks);
 }
 

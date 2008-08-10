@@ -1823,7 +1823,6 @@ mk_x509_cert(X509 **x509p, EVP_PKEY **pkeyp, int bits, int serial, int days)
         X509_NAME      *name = NULL;
         X509_EXTENSION *ex = NULL;
         X509V3_CTX      ctx;
-        char *hostname = LocalFQDN;
 
         DPRINTF((D_CALL|D_TLS), "mk_x509_cert(%p, %p, %d, %d, %d)\n",
                 x509p, pkeyp, bits, serial, days);
@@ -1874,7 +1873,7 @@ mk_x509_cert(X509 **x509p, EVP_PKEY **pkeyp, int bits, int serial, int days)
         X509_NAME_add_entry_by_txt(name, "OU", MBSTRING_ASC,
                 (unsigned char *)"syslogd", -1, -1, 0);
         X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
-                (unsigned char *) hostname, -1, -1, 0);
+                (unsigned char *) LocalFQDN, -1, -1, 0);
         X509_set_issuer_name(cert, name);
 
         /*
@@ -1889,7 +1888,7 @@ mk_x509_cert(X509 **x509p, EVP_PKEY **pkeyp, int bits, int serial, int days)
         X509_EXTENSION_free(ex);
 
         ex = X509V3_EXT_conf_nid(NULL, &ctx, NID_netscape_ssl_server_name,
-                                hostname);
+                                LocalFQDN);
         X509_add_ext(cert, ex, -1);
         X509_EXTENSION_free(ex);
 
@@ -1912,8 +1911,11 @@ mk_x509_cert(X509 **x509p, EVP_PKEY **pkeyp, int bits, int serial, int days)
         (void)x509_cert_add_subjectAltName(cert, &ctx);
 
         if (!X509_sign(cert, pk, EVP_dss1())) {
-                ERR_print_errors_fp(stderr);
                 DPRINTF(D_TLS, "X509_sign() failed\n");
+                return false;
+        }
+        if (X509_verify(cert, pk) != 1) {
+                DPRINTF(D_TLS, "X509_verify() failed\n");
                 return false;
         }
 

@@ -249,6 +249,7 @@ static void dispatch_read_funix(int fd, short event, void *ev);
 
 unsigned int message_queue_purge(struct filed *f, const unsigned int, const int);
 unsigned int message_allqueues_purge(void);
+unsigned int message_allqueues_check(void);
 void send_queue(struct filed *);
 static struct buf_queue *find_qentry_to_delete(const struct buf_queue_head *, const int, const bool);
 struct buf_msg *buf_msg_new(const size_t);
@@ -2729,12 +2730,8 @@ loginfo(const char *fmt, ...)
         va_end(ap);
         (void)snprintf(buf, sizeof(buf), "%s: %s", appname, tmpbuf);
 
-        if (daemonized) 
-                logmsg_async(LOG_SYSLOG|LOG_INFO, NULL, buf, ADDDATE);
-        if (!daemonized && Debug)
-                DPRINTF(D_MISC, "%s\n", buf);
-        if (!daemonized && !Debug)
-                printf("%s\n", buf);
+        DPRINTF(D_MISC, "%s\n", buf);
+        logmsg_async(LOG_SYSLOG|LOG_INFO, NULL, buf, ADDDATE);
 }
 
 #ifndef DISABLE_TLS

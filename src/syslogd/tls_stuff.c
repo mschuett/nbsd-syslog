@@ -37,6 +37,39 @@ const char *TLS_CONN_STATES[] = {
         "ST_CLOSING1",
         "ST_CLOSING2"};
 
+/* precomputed DH parameter */
+#ifndef HEADER_DH_H
+#include <openssl/dh.h>
+#endif
+DH *
+get_dh1024()
+{
+        static unsigned char dh1024_p[]={
+                0x94,0xBC,0xC4,0x71,0xD4,0xD3,0x2B,0x17,0x69,0xEA,0x82,0x1B,
+                0x0F,0x86,0x45,0x57,0xF8,0x86,0x2C,0xC8,0xF5,0x37,0x1F,0x1F,
+                0x12,0xDA,0x2C,0x62,0x4C,0xF6,0x95,0xF0,0xE4,0x6A,0x63,0x00,
+                0x32,0x54,0x5F,0xA9,0xAA,0x2E,0xD2,0xD3,0xA5,0x7A,0x4E,0xCF,
+                0xE8,0x2A,0xF6,0xAB,0xAF,0xD3,0x71,0x3E,0x75,0x9E,0x6B,0xF3,
+                0x2E,0x6D,0x97,0x42,0xC2,0x45,0xC0,0x03,0xE1,0x17,0xA4,0x39,
+                0xF6,0x36,0xA7,0x11,0xBD,0x30,0xF6,0x6F,0x21,0xBF,0x28,0xE4,
+                0xF9,0xE1,0x1E,0x48,0x72,0x58,0xA9,0xC8,0x61,0x65,0xDB,0x66,
+                0x36,0xA3,0x77,0x0A,0x81,0x79,0x2C,0x45,0x1E,0x97,0xA6,0xB1,
+                0xD9,0x25,0x9C,0x28,0x96,0x91,0x40,0xF8,0xF6,0x86,0x11,0x9C,
+                0x88,0xEC,0xA6,0xBA,0x9F,0x4F,0x85,0x43,
+                };
+        static unsigned char dh1024_g[]={
+                0x02,
+                };
+        DH *dh;
+
+        if ((dh=DH_new()) == NULL) return(NULL);
+        dh->p=BN_bin2bn(dh1024_p,sizeof(dh1024_p),NULL);
+        dh->g=BN_bin2bn(dh1024_g,sizeof(dh1024_g),NULL);
+        if ((dh->p == NULL) || (dh->g == NULL))
+                { DH_free(dh); return(NULL); }
+        return(dh);
+}
+
 #define ST_CHANGE(x, y) do { if ((x) != (y)) { \
                 DPRINTF(D_TLS, "Change state: %s --> %s\n", \
                         TLS_CONN_STATES[x], TLS_CONN_STATES[y]); \
@@ -98,7 +131,7 @@ init_global_TLS_CTX(const char *keyfilename, const char *certfilename,
         EVP_PKEY *pkey = NULL;
         X509     *cert = NULL;
         FILE *certfile = NULL;
-        FILE *keyfile  = NULL;
+        FILE  *keyfile = NULL;
         
         x509verify = getVerifySetting(strx509verify);
         if (x509verify != X509VERIFY_ALWAYS)
@@ -210,14 +243,31 @@ init_global_TLS_CTX(const char *keyfilename, const char *certfilename,
                 }
         }
         /* peer verification */
-        if ((x509verify == X509VERIFY_NONE) || (x509verify == X509VERIFY_IFPRESENT))
+        if ((x509verify == X509VERIFY_NONE)
+         || (x509verify == X509VERIFY_IFPRESENT))
                 /* ask for cert, but a client does not have to send one */
                 SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, check_peer_cert);
         else
                 /* default: ask for cert and check it */
-                SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, check_peer_cert);
+                SSL_CTX_set_verify(ctx,
+                        SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT,
+                        check_peer_cert);
 
-        (void)SSL_CTX_set_options(ctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3);
+        /* generate DH parameters instead of using precomputed one
+         * -- takes a few seconds
+        DH   *dhparams = NULL;
+#define TLS_DH_PRIME_LEN 256
+#define TLS_DH_GENERATOR 2
+        if (!(dhparams = DH_generate_parameters(TLS_DH_PRIME_LEN,
+                TLS_DH_GENERATOR, NULL, NULL)))
+                logerror("unable to generate DH parameters "
+                        "needed for TLS with DSA keys");
+        SSL_CTX_set_tmp_dh(ctx, dhparams);
+        */
+        SSL_CTX_set_tmp_dh(ctx, get_dh1024());
+
+        (void)SSL_CTX_set_options(ctx,
+                SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_SINGLE_DH_USE);
         (void)SSL_CTX_set_mode(ctx, SSL_MODE_AUTO_RETRY);
         return ctx;
 }

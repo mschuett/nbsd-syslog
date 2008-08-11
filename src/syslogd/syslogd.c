@@ -1671,8 +1671,8 @@ check_timestamp(unsigned char *from_buf, char **to_buf, const bool from_iso, con
         if (!from_iso && !to_iso) {
                 /* copy BSD timestamp */
                 DPRINTF(D_CALL, "check_timestamp(): copy BSD timestamp\n");
-                *to_buf = strndup((char *)from_buf, BSD_TIMESTAMPLEN-1);
-                return BSD_TIMESTAMPLEN-1;
+                *to_buf = strndup((char *)from_buf, BSD_TIMESTAMPLEN);
+                return BSD_TIMESTAMPLEN;
         } else if (from_iso && to_iso) {
                 /* copy ISO timestamp */
                 DPRINTF(D_CALL, "check_timestamp(): copy ISO timestamp\n");
@@ -2125,11 +2125,13 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
                 char *hash = NULL;
                 struct signature_group_t *sg;
 
-                if ((sg = sign_get_sg(buffer->pri, f))
-                 && sign_msg_hash(line + tlsprefixlen, &hash))
-                        newhash = sign_append_hash(hash, sg);
-                else
-                        DPRINTF(D_SIGN, "Unable to hash line \"%s\"", line);
+                if ((sg = sign_get_sg(buffer->pri, f))) {
+                        if (sign_msg_hash(line + tlsprefixlen, &hash))
+                                newhash = sign_append_hash(hash, sg);
+                        else
+                                DPRINTF(D_SIGN,
+                                        "Unable to hash line \"%s\"\n", line);
+                }
         }
 #endif /* !DISABLE_SIGN */
 
@@ -2689,6 +2691,7 @@ logerror(const char *fmt, ...)
         va_list ap;
         char tmpbuf[BUFSIZ];
         char buf[BUFSIZ];
+        char *outbuf;
 
         /* If there's an error while trying to log an error, give up. */
         if (logerror_running)
@@ -2699,18 +2702,21 @@ logerror(const char *fmt, ...)
         (void)vsnprintf(tmpbuf, sizeof(tmpbuf), fmt, ap);
         va_end(ap);
 
-        if (errno)
-                (void)snprintf(buf, sizeof(buf), "%s: %s: %s", 
-                    appname, tmpbuf, strerror(errno));
-        else
-                (void)snprintf(buf, sizeof(buf), "%s: %s", appname, tmpbuf);
-
+        if (errno) {
+                (void)snprintf(buf, sizeof(buf), "%s: %s", 
+                    tmpbuf, strerror(errno));
+                outbuf = buf;
+        } else {
+                (void)snprintf(buf, sizeof(buf), "%s", tmpbuf);
+                outbuf = tmpbuf;
+        }
+        
         if (daemonized) 
-                logmsg_async(LOG_SYSLOG|LOG_ERR, NULL, buf, ADDDATE);
+                logmsg_async(LOG_SYSLOG|LOG_ERR, NULL, outbuf, ADDDATE);
         if (!daemonized && Debug)
-                DPRINTF(D_MISC, "%s\n", buf);
+                DPRINTF(D_MISC, "%s\n", outbuf);
         if (!daemonized && !Debug)
-                printf("%s\n", buf);
+                printf("%s\n", outbuf);
 
         logerror_running = 0;
 }
@@ -2722,13 +2728,11 @@ void
 loginfo(const char *fmt, ...)
 {
         va_list ap;
-        char tmpbuf[BUFSIZ];
         char buf[BUFSIZ];
 
         va_start(ap, fmt);
-        (void)vsnprintf(tmpbuf, sizeof(tmpbuf), fmt, ap);
+        (void)vsnprintf(buf, sizeof(buf), fmt, ap);
         va_end(ap);
-        (void)snprintf(buf, sizeof(buf), "%s: %s", appname, tmpbuf);
 
         DPRINTF(D_MISC, "%s\n", buf);
         logmsg_async(LOG_SYSLOG|LOG_INFO, NULL, buf, ADDDATE);

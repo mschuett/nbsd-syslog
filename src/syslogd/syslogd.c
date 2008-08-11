@@ -2992,8 +2992,6 @@ read_config_file(FILE *cf, struct filed **f_ptr)
                 {"tls_bindhost",          &tls_opt.bindhost},
                 {"tls_server",            &tls_opt.server},
                 {"tls_gen_cert",          &tls_opt.gen_cert},
-                {"tls_reconnect_interval",&tls_opt.reconnect_interval_str},
-                {"tls_reconnect_timeout", &tls_opt.reconnect_giveup_str},
                 /* special cases in parsing */
                 {"tls_allow_fingerprints",&tmp_buf},
                 {"tls_allow_clientcerts", &tmp_buf},
@@ -3092,23 +3090,16 @@ read_config_file(FILE *cf, struct filed **f_ptr)
         /* convert strings to integer values */
         for (i = 0; i < A_CNT(TypeInfo); i++) {
                 if (!TypeInfo[i].queue_length_string
-                 || dehumanize_number(TypeInfo[i].queue_length_string, &TypeInfo[i].queue_length) == -1)
-                        TypeInfo[i].queue_length = strtol(TypeInfo[i].default_length_string, NULL, 10);
+                 || dehumanize_number(TypeInfo[i].queue_length_string,
+                        &TypeInfo[i].queue_length) == -1)
+                        TypeInfo[i].queue_length = strtol(
+                                TypeInfo[i].default_length_string, NULL, 10);
                 if (!TypeInfo[i].queue_size_string
-                 || dehumanize_number(TypeInfo[i].queue_size_string, &TypeInfo[i].queue_size) == -1)
-                        TypeInfo[i].queue_size = strtol(TypeInfo[i].default_size_string, NULL, 10);
+                 || dehumanize_number(TypeInfo[i].queue_size_string,
+                        &TypeInfo[i].queue_size) == -1)
+                        TypeInfo[i].queue_size = strtol(
+                                TypeInfo[i].default_size_string, NULL, 10);
         }
-#ifndef DISABLE_TLS
-        /* either convert or set default values */
-        if (!tls_opt.reconnect_interval_str
-         || dehumanize_number(tls_opt.reconnect_interval_str, &tls_opt.reconnect_interval)) {
-                tls_opt.reconnect_interval = TLS_RECONNECT_SEC;
-        }
-        if (!tls_opt.reconnect_giveup_str
-         || dehumanize_number(tls_opt.reconnect_giveup_str, &tls_opt.reconnect_giveup)) {
-                tls_opt.reconnect_giveup = RECONNECT_GIVEUP;
-        }
-#endif /* !DISABLE_TLS */
 
 #ifndef DISABLE_SIGN
         if (sign_sg_str) {

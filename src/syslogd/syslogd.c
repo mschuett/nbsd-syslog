@@ -211,6 +211,7 @@ int     getmsgbufsize(void);
 char   *getLocalFQDN(void);
 struct socketEvent* socksetup(int, const char *);
 void    read_config_file(FILE*, struct filed**);
+void    store_sign_delim_sg2(char*);
 void    init(int fd, short event, void *ev);  /* SIGHUP kevent dispatch routine */
 void    logerror(const char *, ...);
 void    loginfo(const char *, ...);
@@ -2923,31 +2924,37 @@ store_sign_delim_sg2(char *tmp_buf)
                 DPRINTF(D_PARSE, "invalid sign_delim_sg2: %s\n", tmp_buf);
                 free(sqentry);
                 FREEPTR(tmp_buf);
-        } else {
-                sqentry->data = tmp_buf;
-                if (STAILQ_EMPTY(&GlobalSign.sig2_delims))
-                        STAILQ_INSERT_HEAD(&GlobalSign.sig2_delims,
-                                sqentry, entries);
-                else {
-                        /* keep delimiters sorted */
-                        sqe2 = STAILQ_FIRST(&GlobalSign.sig2_delims);
-                        while ((sqe1 = sqe2)
-                           && (sqe2 = STAILQ_NEXT(sqe1, entries))) {
-                                if (sqe2->key > sqentry->key)
-                                        break;
-                                else if (sqe2->key == sqentry->key) {
-                                        DPRINTF(D_PARSE,
-                                                "duplicate sign_delim_sg2: "
-                                                "%s\n", tmp_buf);
-                                        STAILQ_REMOVE(&GlobalSign.sig2_delims,
-                                                sqe2, string_queue, entries);
-                                        break;
-                                }
-                        }
-                        STAILQ_INSERT_AFTER(&GlobalSign.sig2_delims, sqe1,
-                                sqentry, entries);
+                return;
+        }
+        sqentry->data = tmp_buf;
+        
+        if (STAILQ_EMPTY(&GlobalSign.sig2_delims)) {
+                STAILQ_INSERT_HEAD(&GlobalSign.sig2_delims,
+                        sqentry, entries);
+                return;
+        }
+
+        /* keep delimiters sorted */
+        sqe1 = sqe2 = STAILQ_FIRST(&GlobalSign.sig2_delims);
+        if (sqe1->key > sqentry->key) {
+                STAILQ_INSERT_HEAD(&GlobalSign.sig2_delims,
+                        sqentry, entries);
+                return;
+        }
+        
+        while ((sqe1 = sqe2)
+           && (sqe2 = STAILQ_NEXT(sqe1, entries))) {
+                if (sqe2->key > sqentry->key) {
+                        break;
+                } else if (sqe2->key == sqentry->key) {
+                        DPRINTF(D_PARSE, "duplicate sign_delim_sg2: %s\n",
+                                tmp_buf);
+                        FREEPTR(sqentry);    
+                        FREEPTR(tmp_buf);
+                        return;
                 }
         }
+        STAILQ_INSERT_AFTER(&GlobalSign.sig2_delims, sqe1, sqentry, entries);
 }
 #endif /* !DISABLE_SIGN */
 

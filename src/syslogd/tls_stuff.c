@@ -253,19 +253,7 @@ init_global_TLS_CTX(const char *keyfilename, const char *certfilename,
                         SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT,
                         check_peer_cert);
 
-        /* generate DH parameters instead of using precomputed one
-         * -- takes a few seconds
-        DH   *dhparams = NULL;
-#define TLS_DH_PRIME_LEN 256
-#define TLS_DH_GENERATOR 2
-        if (!(dhparams = DH_generate_parameters(TLS_DH_PRIME_LEN,
-                TLS_DH_GENERATOR, NULL, NULL)))
-                logerror("unable to generate DH parameters "
-                        "needed for TLS with DSA keys");
-        SSL_CTX_set_tmp_dh(ctx, dhparams);
-        */
         SSL_CTX_set_tmp_dh(ctx, get_dh1024());
-
         (void)SSL_CTX_set_options(ctx,
                 SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_SINGLE_DH_USE);
         (void)SSL_CTX_set_mode(ctx, SSL_MODE_AUTO_RETRY);

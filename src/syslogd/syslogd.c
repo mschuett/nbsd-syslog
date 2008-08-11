@@ -3367,6 +3367,18 @@ init(int fd, short event, void *ev)
         }
         Files = newf;
 
+#ifndef DISABLE_SIGN
+        /* only initialize -sign if actually used */
+        if (GlobalSign.sg == 0 || GlobalSign.sg == 1 || GlobalSign.sg == 2)
+                (void)sign_global_init(Files);
+        else if (GlobalSign.sg == 3)
+                for (f = Files; f; f = f->f_next)
+                        if (f->f_flags & FFLAG_SIGN) {
+                                (void)sign_global_init(Files);
+                                break;
+                        }
+#endif /* !DISABLE_SIGN */
+
         Initialized = 1;
 
         if (Debug) {
@@ -3465,18 +3477,6 @@ init(int fd, short event, void *ev)
         if (oldLocalFQDN && strcmp(oldLocalFQDN, LocalFQDN) != 0)
                 loginfo("host name changed, \"%s\" to \"%s\"",
                     oldLocalFQDN, LocalFQDN);
-
-#ifndef DISABLE_SIGN
-        /* only initialize -sign if actually used */
-        if (GlobalSign.sg == 0 || GlobalSign.sg == 1 || GlobalSign.sg == 2)
-                (void)sign_global_init(Files);
-        else if (GlobalSign.sg == 3)
-                for (f = Files; f; f = f->f_next)
-                        if (f->f_flags & FFLAG_SIGN) {
-                                (void)sign_global_init(Files);
-                                break;
-                        }
-#endif /* !DISABLE_SIGN */
 
         RESTORE_SIGNALS(omask);
 }

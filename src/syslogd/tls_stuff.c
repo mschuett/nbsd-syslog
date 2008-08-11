@@ -553,6 +553,7 @@ accept_cert(const char* reason, struct tls_conn_settings *conn_info,
         else
                 FREEPTR(cur_subjectline);
 
+        conn_info->accepted = 1;
         return 1;        
 }
 int
@@ -600,8 +601,10 @@ check_peer_cert(int preverify_ok, X509_STORE_CTX *ctx)
         (void)get_fingerprint(cur_cert, &cur_fingerprint, NULL);
         DPRINTF((D_TLS|D_CALL), "check cert for connection with %s. "
                 "depth is %d, preverify is %d, subject is %s, fingerprint "
-                "is %s, conn_info@%p\n", conn_info->hostname, cur_depth, 
-                preverify_ok, cur_subjectline, cur_fingerprint, conn_info);
+                "is %s, conn_info@%p%s\n", conn_info->hostname, cur_depth, 
+                preverify_ok, cur_subjectline, cur_fingerprint, conn_info,
+                (conn_info->accepted ? ", cb was already called" : ""));
+
         if (Debug && !preverify_ok) {
                 DPRINTF(D_TLS, "openssl verify error:"
                         "num=%d:%s:depth=%d:%s\t\n", cur_err,
@@ -650,6 +653,14 @@ check_peer_cert(int preverify_ok, X509_STORE_CTX *ctx)
                 FREEPTR(cur_subjectline);
                 return 1;
         }
+
+
+        /* When using DSA keys this callback gets called twice.
+         * I have no idea why, but this shortcut avoids
+         * multiple log messages for every new connection.
+         */
+        if (conn_info->accepted)
+                return 1;
 
         if (conn_info->x509verify == X509VERIFY_NONE)
                 return accept_cert("disabled verification", conn_info,

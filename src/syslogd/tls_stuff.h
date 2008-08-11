@@ -29,8 +29,14 @@
 /* backoff connection attempts */
 #define RECONNECT_BACKOFF_FACTOR 15/10
 #define RECONNECT_BACKOFF(x)     (x) = (x) * RECONNECT_BACKOFF_FACTOR
-/* abandon connection attempts after n sec */
-#define RECONNECT_GIVEUP         60*60*24  /* 1d */
+/* abandon connection attempts after n sec
+ * This has to be <= 5h (with 10sec initial interval),
+ * otherwise a daily SIGHUP from newsylog will reset
+ * all timers and the giveup time will never be reached
+ * 
+ * set here: 2h, reached after ca. 7h of reconnecting 
+ */
+#define RECONNECT_GIVEUP         60*60*2
 
 /* default algorithm for certificate fingerprints */
 #define DEFAULT_FINGERPRINT_ALG "SHA1"
@@ -75,7 +81,8 @@
  * 
  */
 struct tls_conn_settings {
-        unsigned int  x509verify:2, /* kind of validation needed     */
+        unsigned int  accepted:1,   /* workaround cf. check_peer_cert*/
+                      x509verify:2, /* kind of validation needed     */
                       incoming:1,   /* set if we are server          */
                       state:4;      /* outgoing connection state     */
         struct event *event;        /* event for read/write activity */

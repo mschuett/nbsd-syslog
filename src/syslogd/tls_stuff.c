@@ -258,14 +258,22 @@ init_global_TLS_CTX()
                         check_peer_cert);
 
         if (SSL_CTX_set_tmp_dh(ctx, get_dh1024()) != 1)
-                logerror("SSL_CTX_set_tmp_dh() failed: %s", ERR_error_string(ERR_get_error(), NULL));
+                logerror("SSL_CTX_set_tmp_dh() failed: %s",
+                        ERR_error_string(ERR_get_error(), NULL));
 
         /* make sure the OpenSSL error queue is empty */    
         unsigned long err;
-        while ((err = ERR_get_error())) {
-                logerror("Unexpected OpenSSL error: %s", ERR_error_string(err, NULL));
-        }
+        while ((err = ERR_get_error()))
+                logerror("Unexpected OpenSSL error: %s",
+                        ERR_error_string(err, NULL));
 
+
+        /* On successful init the status message is not logged immediately
+         * but passed to the caller. The reason is that init() can continue
+         * to initialize syslog-sign. When the status message is logged
+         * after that it will get a valid signature and not cause errors
+         * with signature verification. 
+         */
         char *fp = NULL, *cn = NULL;
         if (cert || read_certfile(&cert, certfilename)) {
                 get_fingerprint(cert, &fp, NULL);

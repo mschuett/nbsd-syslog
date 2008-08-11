@@ -32,6 +32,7 @@ extern struct tls_global_options_t tls_opt;
 
 /* definitions in syslogd.c */
 extern short    Debug;
+extern bool     BSDOutputFormat;
 extern unsigned GlobalMsgCounter;
 extern time_t   now;
 extern char     timestamp[];
@@ -759,7 +760,7 @@ sign_msg_sign(struct buf_msg **bufferptr, char *sd, size_t linesize)
 
         /* set up buffer */
         buffer = buf_msg_new(0);
-        buffer->timestamp = strdup(make_timestamp(NULL, true));
+        buffer->timestamp = strdup(make_timestamp(NULL, !BSDOutputFormat));
         buffer->prog = appname;
         buffer->pid = include_pid;
         buffer->recvhost = buffer->host = LocalFQDN;

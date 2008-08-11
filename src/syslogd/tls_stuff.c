@@ -142,8 +142,8 @@ init_global_TLS_CTX(const char *keyfilename, const char *certfilename,
         (void) SSL_library_init();
         OpenSSL_add_all_digests();
         if (!(ctx = SSL_CTX_new(SSLv23_method()))) {
-                logerror("Unable to initialize OpenSSL");
-                ERR_print_errors_fp(stderr);
+                logerror("Unable to initialize OpenSSL: %s",
+                        ERR_error_string(ERR_get_error(), NULL));
                 die(0,0,NULL);
         }
 
@@ -190,8 +190,8 @@ init_global_TLS_CTX(const char *keyfilename, const char *certfilename,
                 if (!SSL_CTX_use_PrivateKey(ctx, pkey)
                  || !SSL_CTX_use_certificate(ctx, cert)) {
                         logerror("Unable to use generated private "
-                                "key and certificate");
-                        ERR_print_errors_fp(stderr);
+                                "key and certificate: %s",
+                                ERR_error_string(ERR_get_error(), NULL));
                         die(0,0,NULL);  /* any better reaction? */
                  }
         } else {
@@ -200,17 +200,17 @@ init_global_TLS_CTX(const char *keyfilename, const char *certfilename,
                                                         SSL_FILETYPE_PEM)
                  || !SSL_CTX_use_certificate_chain_file(ctx, certfilename)) {
                         logerror("Unable to load private key and "
-                                "certificate from files \"%s\" and \"%s\"",
-                                keyfilename, certfilename);
-                                ERR_print_errors_fp(stderr);
+                                "certificate from files \"%s\" and \"%s\": %s",
+                                keyfilename, certfilename,
+                                ERR_error_string(ERR_get_error(), NULL));
                                 die(0,0,NULL);  /* any better reaction? */
                         }
         }
         if (!SSL_CTX_check_private_key(ctx)) {
                 logerror("Private key \"%s\" does not match "
-                        "certificate \"%s\"",
-                        keyfilename, certfilename);
-                ERR_print_errors_fp(stderr);
+                        "certificate \"%s\": %s",
+                        keyfilename, certfilename,
+                        ERR_error_string(ERR_get_error(), NULL));
                 die(0,0,NULL);
         }
 
@@ -232,18 +232,27 @@ init_global_TLS_CTX(const char *keyfilename, const char *certfilename,
         free(fp);
 
         if (CAfile || CApath) {
-                if (!SSL_CTX_load_verify_locations(ctx, CAfile, CApath)) {
+                if (SSL_CTX_load_verify_locations(ctx, CAfile, CApath) != 1) {
                 	if (CAfile && CApath)
 	                        logerror("unable to load trust anchors from "
-	                        	"\"%s\" and \"%s\"\n", CAfile, CApath);
+	                        	"\"%s\" and \"%s\": %s\n",
+                                        CAfile, CApath, ERR_error_string(
+                                        ERR_get_error(), NULL));
 	                else
 	                        logerror("unable to load trust anchors from "
-	                        	"\"%s\"\n", CAfile ? CAfile : CApath);
-                        ERR_print_errors_fp(stderr);
+	                        	"\"%s\": %s\n", (CAfile?CAfile:CApath),
+                                        ERR_error_string(
+                                        ERR_get_error(), NULL));
                 } else {
                         DPRINTF(D_TLS, "loaded trust anchors\n");
                 }
         }
+
+        /* options */
+        (void)SSL_CTX_set_options(ctx,
+                SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_SINGLE_DH_USE);
+        (void)SSL_CTX_set_mode(ctx, SSL_MODE_AUTO_RETRY);
+
         /* peer verification */
         if ((x509verify == X509VERIFY_NONE)
          || (x509verify == X509VERIFY_IFPRESENT))
@@ -255,10 +264,14 @@ init_global_TLS_CTX(const char *keyfilename, const char *certfilename,
                         SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT,
                         check_peer_cert);
 
-        SSL_CTX_set_tmp_dh(ctx, get_dh1024());
-        (void)SSL_CTX_set_options(ctx,
-                SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_SINGLE_DH_USE);
-        (void)SSL_CTX_set_mode(ctx, SSL_MODE_AUTO_RETRY);
+        if (SSL_CTX_set_tmp_dh(ctx, get_dh1024()) != 1)
+                logerror("SSL_CTX_set_tmp_dh() failed: %s", ERR_error_string(ERR_get_error(), NULL));
+
+        /* make sure the OpenSSL error queue is empty */    
+        unsigned long err;
+        while ((err = ERR_get_error())) {
+                logerror("Unexpected OpenSSL error: %s", ERR_error_string(err, NULL));
+        }
         return ctx;
 }
 /*
@@ -1193,7 +1206,7 @@ dispatch_tls_accept(int fd, short event, void *arg)
                 return;
         }
         /* else */
-        MALLOC(tls_in, sizeof(*tls_in));
+        CALLOC(tls_in, sizeof(*tls_in));
         CALLOC(tls_in->inbuf, TLS_MIN_LINELENGTH);
 
         tls_in->tls_conn = conn_info;

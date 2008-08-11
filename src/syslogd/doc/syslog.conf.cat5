@@ -331,4 +331,4 @@ BBUUGGSS
      ple ``mail.crit;*.err'' will select ``mail'' facility messages at the
      level of ``err'' or higher, not at the level of ``crit'' or higher.
 
-NetBSD 4.0                     November 18, 2004                    NetBSD 4.0
+NetBSD 4.0                      August 8, 2008                      NetBSD 4.0

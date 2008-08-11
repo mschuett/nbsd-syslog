@@ -3366,19 +3366,6 @@ init(int fd, short event, void *ev)
                 free((char *)f);
         }
         Files = newf;
-
-#ifndef DISABLE_SIGN
-        /* only initialize -sign if actually used */
-        if (GlobalSign.sg == 0 || GlobalSign.sg == 1 || GlobalSign.sg == 2)
-                (void)sign_global_init(Files);
-        else if (GlobalSign.sg == 3)
-                for (f = Files; f; f = f->f_next)
-                        if (f->f_flags & FFLAG_SIGN) {
-                                (void)sign_global_init(Files);
-                                break;
-                        }
-#endif /* !DISABLE_SIGN */
-
         Initialized = 1;
 
         if (Debug) {
@@ -3453,6 +3440,49 @@ init(int fd, short event, void *ev)
                 DPRINTF(D_PARSE, "Accepting peer certificate with fingerprint: \"%s\"\n", cred->data);
         }
 
+        /* Note: The order of initialization is important because syslog-sign
+         * should use the TLS cert for signing. -- So we check first if TLS
+         * will be used and initialize it before starting -sign.
+         * 
+         * This means that if we are a client without TLS destinations TLS
+         * will not be initialized and syslog-sign will generate a new key.
+         * -- Even if the user has set a usable tls_cert.
+         * Is this the expected behaviour? The alternative would be to always
+         * initialize the TLS structures, even if they will not be needed
+         * (or only needed to read the DSA key for -sign).
+         */
+
+        /* Initialize TLS only if used */ 
+        char *tls_status_msg = NULL;
+        if (tls_opt.server)
+                tls_status_msg = init_global_TLS_CTX();
+        else 
+                for (f = Files; f; f = f->f_next) {
+                        if (f->f_type != F_TLS)
+                                continue;
+                        tls_status_msg = init_global_TLS_CTX();
+                        break;
+                }
+
+#endif /* !DISABLE_TLS */
+
+#ifndef DISABLE_SIGN
+        /* only initialize -sign if actually used */
+        if (GlobalSign.sg == 0 || GlobalSign.sg == 1 || GlobalSign.sg == 2)
+                (void)sign_global_init(Files);
+        else if (GlobalSign.sg == 3)
+                for (f = Files; f; f = f->f_next)
+                        if (f->f_flags & FFLAG_SIGN) {
+                                (void)sign_global_init(Files);
+                                break;
+                        }
+#endif /* !DISABLE_SIGN */
+
+#ifndef DISABLE_TLS
+        if (tls_status_msg) {
+                loginfo(tls_status_msg);
+                free(tls_status_msg);
+        }
         DPRINTF((D_NET|D_TLS), "Preparing sockets for TLS\n");
         TLS_Listen_Set = socksetup_tls(PF_UNSPEC, tls_opt.bindhost, tls_opt.bindport);
 

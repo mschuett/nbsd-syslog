@@ -115,7 +115,7 @@ struct tls_send_msg {
 #define TLS_PERM_ERROR  8        /* non-recoverable error condition, closed TLS and socket */
 
 /* global TLS setup and utility */
-SSL_CTX *init_global_TLS_CTX(const char *, const char *, const char *, const char *, const char *);
+char *init_global_TLS_CTX(void);
 struct socketEvent *socksetup_tls(const int, const char *, const char *);
 int check_peer_cert(int, X509_STORE_CTX *);
 int accept_cert(const char* , struct tls_conn_settings *, char *, char *);

@@ -119,14 +119,19 @@ getVerifySetting(const char *x509verifystring)
                 return X509VERIFY_ALWAYS;
 }
 /*
- * init OpenSSL lib and one context. returns NULL on error, otherwise SSL_CTX
- * all pointer arguments may be NULL (at least for clients)
- * x509verify determines the level of certificate validation
+ * init OpenSSL lib and one context.
+ * returns NULL if global context already exists.
+ * returns a status message on successfull init (to be free()d by caller).
+ * calls die() on serious error.
  */
-SSL_CTX *
-init_global_TLS_CTX(const char *keyfilename, const char *certfilename,
-                const char *CAfile, const char *CApath, const char *strx509verify)
+char*
+init_global_TLS_CTX()
 {
+        const char *keyfilename   = tls_opt.keyfile;
+        const char *certfilename  = tls_opt.certfile;
+        const char *CAfile        = tls_opt.CAfile;
+        const char *CApath        = tls_opt.CAdir;
+
         SSL_CTX *ctx;
         unsigned int x509verify = X509VERIFY_ALWAYS;
         EVP_PKEY *pkey = NULL;
@@ -134,7 +139,12 @@ init_global_TLS_CTX(const char *keyfilename, const char *certfilename,
         FILE *certfile = NULL;
         FILE  *keyfile = NULL;
         
-        x509verify = getVerifySetting(strx509verify);
+        char statusmsg[1024];
+        
+        if (tls_opt.global_TLS_CTX) /* already initialized */
+                return NULL;
+
+        x509verify = getVerifySetting(tls_opt.x509verify);
         if (x509verify != X509VERIFY_ALWAYS)
                 loginfo("insecure configuration, peer authentication disabled");
 
@@ -166,7 +176,7 @@ init_global_TLS_CTX(const char *keyfilename, const char *certfilename,
                 }
 
                 loginfo("Generating a self-signed certificate and writing "
-                        "files \"%s\" and \"%s\"",keyfilename, certfilename);
+                        "files \"%s\" and \"%s\"", keyfilename, certfilename);
                 if (!mk_x509_cert(&cert, &pkey, TLS_GENCERT_BITS,
                         TLS_GENCERT_SERIAL, TLS_GENCERT_DAYS)) {
                         logerror("Unable to generate new certificate.");
@@ -214,23 +224,6 @@ init_global_TLS_CTX(const char *keyfilename, const char *certfilename,
                 die(0,0,NULL);
         }
 
-        char *fp = NULL, *cn = NULL;
-        
-        if (!cert && !read_certfile(&cert, certfilename))
-                fp = cn = NULL;
-        else {
-                get_fingerprint(cert, &fp, NULL);
-                get_commonname(cert, &cn);
-        }
-        DPRINTF(D_TLS, "loaded and checked own certificate\n");
-        loginfo("Initialize SSL context using library \"%s\"."
-                " Load certificate from file \"%s\" with CN "
-                "\"%s\" and fingerprint \"%s\"",
-                SSLeay_version(SSLEAY_VERSION),
-                certfilename, cn, fp);
-        free(cn);
-        free(fp);
-
         if (CAfile || CApath) {
                 if (SSL_CTX_load_verify_locations(ctx, CAfile, CApath) != 1) {
                 	if (CAfile && CApath)
@@ -272,8 +265,26 @@ init_global_TLS_CTX(const char *keyfilename, const char *certfilename,
         while ((err = ERR_get_error())) {
                 logerror("Unexpected OpenSSL error: %s", ERR_error_string(err, NULL));
         }
-        return ctx;
+
+        char *fp = NULL, *cn = NULL;
+        if (cert || read_certfile(&cert, certfilename)) {
+                get_fingerprint(cert, &fp, NULL);
+                get_commonname(cert, &cn);
+        }
+        DPRINTF(D_TLS, "loaded and checked own certificate\n");
+        snprintf(statusmsg, sizeof(statusmsg),
+                "Initialized TLS settings using library \"%s\". "
+                "Use certificate from file \"%s\" with CN \"%s\" "
+                "and fingerprint \"%s\"", SSLeay_version(SSLEAY_VERSION),
+                certfilename, cn, fp);
+        free(cn);
+        free(fp);
+
+        tls_opt.global_TLS_CTX = ctx;
+        return strdup(statusmsg);
 }
+
+
 /*
  * get fingerprint of cert
  * returnstring will be allocated and should be free()d by the caller
@@ -735,14 +746,9 @@ socksetup_tls(const int af, const char *bindhostname, const char *port)
         const int on = 1;
         struct socketEvent *s, *socks;
 
-        if(!tls_opt.server)
+        if(!tls_opt.server
+        || !tls_opt.global_TLS_CTX)
                 return(NULL);
-
-        if (!tls_opt.global_TLS_CTX)
-                tls_opt.global_TLS_CTX = init_global_TLS_CTX(tls_opt.keyfile,
-                                        tls_opt.certfile, tls_opt.CAfile,
-                                        tls_opt.CAdir, tls_opt.x509verify);
-
 
         memset(&hints, 0, sizeof(hints));
         hints.ai_flags = AI_PASSIVE;
@@ -900,10 +906,7 @@ tls_connect(struct tls_conn_settings *conn_info)
         assert(conn_info->state == ST_NONE);
         
         if(!tls_opt.global_TLS_CTX)
-                tls_opt.global_TLS_CTX = init_global_TLS_CTX(
-                        tls_opt.keyfile, tls_opt.certfile,
-                        tls_opt.CAfile, tls_opt.CAdir,
-                        tls_opt.x509verify);
+                return false;
         
         memset(&hints, 0, sizeof(hints));
         hints.ai_family = AF_UNSPEC;

@@ -2,6 +2,9 @@
 #
 # verify logfile with syslog-sign messages
 #
+# written for simplicity and keeps everything in memory
+# so there is much room for optimization
+#
 # tested with PKIX DSA key (type 'C') and DER encoded DSA key (type 'K')
 #
 # Martin Schuette, 2008
@@ -70,7 +73,17 @@ if ($out) {
 print STDERR "reading input...\n" unless $quiet;
 while (<>) {
     chomp;
+	# syslog-protocol
     if (/^<\d+>1 \S+ (\S+) \S+ \S+ \S+ \[ssign-cert VER="(\d+)" RSID="(\d+)" SG="(\d+)" SPRI="(\d+)" TBPL="(\d+)" INDEX="(\d+)" FLEN="(\d+)" FRAG="([^"]+)" SIGN="(\S+)"\]/o
+      ) {
+        #(  $host,  $ver,  $rsid, $sg,   $spri, $tbpl,
+        #   $index, $flen, $frag, $sign, $text )
+        push @CBlist, [ $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $_ ];
+        print STDERR
+          "--Found ssign-cert ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)\n"
+          if $verbose;
+	# BSD Syslog
+    } elsif (/^<\d+>[A-Z][a-z]{2} [ \d]\d \d\d:\d\d:\d\d (\S+) \S+(?:\[\S+\])?: \[ssign-cert VER="(\d+)" RSID="(\d+)" SG="(\d+)" SPRI="(\d+)" TBPL="(\d+)" INDEX="(\d+)" FLEN="(\d+)" FRAG="([^"]+)" SIGN="(\S+)"\]/o
       ) {
         #(  $host,  $ver,  $rsid, $sg,   $spri, $tbpl,
         #   $index, $flen, $frag, $sign, $text )
@@ -80,6 +93,13 @@ while (<>) {
           if $verbose;
     } elsif (
         /^<\d+>1 \S+ (\S+) \S+ \S+ \S+ \[ssign VER="(\d+)" RSID="(\d+)" SG="(\d+)" SPRI="(\d+)" GBC="(\d+)" FMN="(\d+)" CNT="(\d+)" HB="([^"]+)" SIGN="(\S+)"\]/o
+      ) {
+        # ( $host, $ver, $rsid, $sg, $spri, $gbc, $fmn, $cnt, $hb, $sign, $text )
+        push @SBlist, [ $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $_ ];
+        print STDERR "--Found ssign ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)\n"
+          if $verbose;
+    } elsif (
+        /^<\d+>[A-Z][a-z]{2} [ \d]\d \d\d:\d\d:\d\d (\S+) \S+(?:\[\S+\])?: \[ssign VER="(\d+)" RSID="(\d+)" SG="(\d+)" SPRI="(\d+)" GBC="(\d+)" FMN="(\d+)" CNT="(\d+)" HB="([^"]+)" SIGN="(\S+)"\]/o
       ) {
         # ( $host, $ver, $rsid, $sg, $spri, $gbc, $fmn, $cnt, $hb, $sign, $text )
         push @SBlist, [ $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $_ ];
@@ -269,7 +289,7 @@ if ($unsigned_out) {
 }
 
 if ($out && !$unsigned_out) {
-    open( STDOUT, ">& OLDOUT" ) || die "can't open stdout: $!";
+    open( STDOUT, ">&", OLDOUT ) || die "can't open stdout: $!";
 }
 
 if ( !( $sha1 && $sha256 ) ) {

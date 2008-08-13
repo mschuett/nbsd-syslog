@@ -194,86 +194,106 @@ int     UniquePriority = 0;     /* only log specified priority */
 int     LogFacPri = 0;          /* put facility and priority in log messages: */
                                 /* 0=no, 1=numeric, 2=names */
 bool    BSDOutputFormat = false;/* if true emit traditional BSD Syslog lines,
-                                   otherwise new syslog-protocol lines */
-char  appname[]   = "syslogd";         /* the APPNAME for own messages */
-char *include_pid = NULL; /* include PID for own messages, NULL disables */
+                                 * otherwise new syslog-protocol lines
+                                 * 
+                                 * Open Issue: having a global flag is the
+                                 * easiest solution. If we get a more detailed
+                                 * config file this could/should be changed
+                                 * into a destination-specific flag.
+                                 * Most output code should be ready to handle
+                                 * this, it will only break some syslog-sign
+                                 * configurations (e.g. with SG="0").
+                                 */
+char    appname[]   = "syslogd";/* the APPNAME for own messages */
+char   *include_pid = NULL;     /* include PID in own messages */
 
-void    cfline(const unsigned int, char *, struct filed *, char *, char *);
-char   *cvthname(struct sockaddr_storage *);
-void    deadq_enter(pid_t, const char *);
-int     deadq_remove(pid_t);
-int     decode(const char *, CODE *);
-void    die(int fd, short event, void *ev) /* SIGTERM kevent dispatch routine */
-    __attribute__((__noreturn__));
-void    domark(int fd, short event, void *ev);/* timer kevent dispatch routine */
-bool    format_buffer(struct buf_msg*, char**, size_t*, size_t*, size_t*, size_t*);
-void    fprintlog(struct filed *, struct buf_msg *, struct buf_queue *);
-int     getmsgbufsize(void);
-char   *getLocalFQDN(void);
-struct socketEvent* socksetup(int, const char *);
-void    read_config_file(FILE*, struct filed**);
-void    store_sign_delim_sg2(char*);
-void    init(int fd, short event, void *ev);  /* SIGHUP kevent dispatch routine */
-void    logerror(const char *, ...)
-    __attribute__((__format__(__printf__,1,2)));
-void    loginfo(const char *, ...)
-    __attribute__((__format__(__printf__,1,2)));
-void    logmsg_async(const int, const char *, const char *, const int);
-void    logmsg(struct buf_msg *);
-void    log_deadchild(pid_t, int, const char *);
-int     matches_spec(const char *, const char *,
-                     char *(*)(const char *, const char *));
-void    printline(const char *, char *, const int);
+
+/* init and setup */
+int             main(int, char *[]);
+void            usage(void) __attribute__((__noreturn__));
+void            logpath_add(char ***, int *, int *, char *);
+void            logpath_fileadd(char ***, int *, int *, char *);
+void            init(int fd, short event, void *ev);  /* SIGHUP kevent dispatch routine */
+struct socketEvent*
+                socksetup(int, const char *);
+int             getmsgbufsize(void);
+char           *getLocalFQDN(void);
+void            trim_localdomain(char *);
+void            trim_anydomain(char *);
+/* pipe & subprocess handling */
+int             p_open(char *, pid_t *);
+void            deadq_enter(pid_t, const char *);
+int             deadq_remove(pid_t);
+void            log_deadchild(pid_t, int, const char *);
+void            reapchild(int fd, short event, void *ev); /* SIGCHLD kevent dispatch routine */
+/* input message parsing & formatting */
+char           *cvthname(struct sockaddr_storage *);
+void            printsys(char *);
+void            printline(const char *, char *, const int);
 struct buf_msg *printline_syslogprotocol(const char*, char*, const int, const int);
 struct buf_msg *printline_bsdsyslog(const char*, char*, const int, const int);
 struct buf_msg *printline_kernelprintf(const char*, char*, const int, const int);
-void    printsys(char *);
-int     p_open(char *, pid_t *);
-void    trim_localdomain(char *);
-void    trim_anydomain(char *);
-void    reapchild(int fd, short event, void *ev); /* SIGCHLD kevent dispatch routine */
-void    usage(void)
-    __attribute__((__noreturn__));
-void    wallmsg(struct filed *, struct iovec *, size_t);
-int     main(int, char *[]);
-void    logpath_add(char ***, int *, int *, char *);
-void    logpath_fileadd(char ***, int *, int *, char *);
-char *make_timestamp(time_t *, bool);
-unsigned check_timestamp(unsigned char *, char **, const bool, const bool);
-unsigned valid_utf8(const char *);
-uint_fast32_t get_utf8_value(const char*);
-char  *copy_utf8_ascii(char*, size_t);
+unsigned        check_timestamp(unsigned char *, char **, const bool, const bool);
+char           *make_timestamp(time_t *, bool);
+char           *copy_utf8_ascii(char*, size_t);
+uint_fast32_t   get_utf8_value(const char*);
+unsigned        valid_utf8(const char *);
 static unsigned check_sd(char*);
 static unsigned check_msgid(char *);
-
-struct event *allocev(void)
-    __attribute__((malloc));
-void schedule_event(struct event **, struct timeval *, void (*)(int, short, void *), void *);
-static void dispatch_read_klog(int fd, short event, void *ev);
-static void dispatch_read_finet(int fd, short event, void *ev);
-static void dispatch_read_funix(int fd, short event, void *ev);
-
-unsigned int message_queue_purge(struct filed *f, const unsigned int, const int);
-unsigned int message_allqueues_purge(void);
-unsigned int message_allqueues_check(void);
-void send_queue(struct filed *);
-static struct buf_queue *find_qentry_to_delete(const struct buf_queue_head *, const int, const bool);
-struct buf_msg *buf_msg_new(const size_t)
-    __attribute__((malloc));
-void buf_msg_free(struct buf_msg *msg);
-size_t buf_queue_obj_size(struct buf_queue*);
-bool message_queue_remove(struct filed *, struct buf_queue *);
-struct buf_queue *message_queue_add(struct filed *, struct buf_msg *);
-void message_queue_freeall(struct filed *);
-#ifndef DISABLE_TLS
-static inline void free_incoming_tls_sockets(void);
-void free_cred_SLIST(struct peer_cred_head *);
-#endif /* !DISABLE_TLS */
+/* event handling */
+struct event   *allocev(void) __attribute__((malloc));
+void            schedule_event(struct event **, struct timeval *,
+                        void (*)(int, short, void *), void *);
+static void     dispatch_read_klog(int fd, short event, void *ev);
+static void     dispatch_read_finet(int fd, short event, void *ev);
+static void     dispatch_read_funix(int fd, short event, void *ev);
+static void     domark(int fd, short event, void *ev); /* timer kevent dispatch routine */
+void            die(int fd, short event, void *ev)
+                __attribute__((__noreturn__)); /* SIGTERM kevent dispatch routine */
+/* log messages */
+void            logerror(const char *, ...)
+                __attribute__((__format__(__printf__,1,2)));
+void            loginfo(const char *, ...)
+                __attribute__((__format__(__printf__,1,2)));
+void            logmsg_async(const int, const char *, const char *, const int);
+void            logmsg(struct buf_msg *);
+int             matches_spec(const char *, const char *,
+                char *(*)(const char *, const char *));
+bool            format_buffer(struct buf_msg*, char**,
+                size_t*, size_t*, size_t*, size_t*);
+void            fprintlog(struct filed *, struct buf_msg *, struct buf_queue *);
+void            wallmsg(struct filed *, struct iovec *, size_t);
+/* buffer & queue functions */
+struct buf_msg *buf_msg_new(const size_t) __attribute__((malloc));
+void            buf_msg_free(struct buf_msg *msg);
+unsigned        message_queue_purge(struct filed *f, const unsigned, const int);
+unsigned        message_allqueues_purge(void);
+unsigned        message_allqueues_check(void);
+void            send_queue(struct filed *);
+static struct buf_queue *
+                find_qentry_to_delete(const struct buf_queue_head *, const int, const bool);
+struct buf_queue *
+                message_queue_add(struct filed *, struct buf_msg *);
+bool            message_queue_remove(struct filed *, struct buf_queue *);
+void            message_queue_freeall(struct filed *);
+size_t          buf_queue_obj_size(struct buf_queue*);
 /* configuration & parsing */
-bool copy_string(char **, const char *, const char *);
-bool copy_config_value_quoted(const char *, char **, char **);
-bool copy_config_value(const char *, char **, char **, const char *, const int);
-bool copy_config_value_word(char **, char **);
+void            cfline(const unsigned, char *, struct filed *, char *, char *);
+void            read_config_file(FILE*, struct filed**);
+void            store_sign_delim_sg2(char*);
+int             decode(const char *, CODE *);
+bool            copy_string(char **, const char *, const char *);
+bool            copy_config_value_quoted(const char *, char **, char **);
+bool            copy_config_value(const char *, char **, char **, const char *, const int);
+bool            copy_config_value_word(char **, char **);
+
+/* config parsing */
+#ifndef DISABLE_TLS
+void            free_cred_SLIST(struct peer_cred_head *);
+static inline void
+                free_incoming_tls_sockets(void);
+struct filed   *get_f_by_conninfo(struct tls_conn_settings *conn_info);
+#endif /* !DISABLE_TLS */
 
 /* for make_timestamp() */
 #define TIMESTAMPBUFSIZE 35
@@ -295,8 +315,6 @@ struct TLS_Incoming TLS_Incoming_Head = \
         SLIST_HEAD_INITIALIZER(TLS_Incoming_Head);
 extern char *SSL_ERRCODE[];
 struct tls_global_options_t tls_opt;
-
-struct filed *get_f_by_conninfo(struct tls_conn_settings *conn_info);
 #endif /* !DISABLE_TLS */
 
 int
@@ -2602,7 +2620,7 @@ trim_anydomain(char *host)
         }
 }
 
-void
+static void
 domark(int fd, short event, void *ev)
 {
         struct event *ev_pass = (struct event *)ev;
@@ -3545,7 +3563,7 @@ init(int fd, short event, void *ev)
  * Crack a configuration file line
  */
 void
-cfline(const unsigned int linenum, char *line, struct filed *f, char *prog, char *host)
+cfline(const unsigned linenum, char *line, struct filed *f, char *prog, char *host)
 {
         struct addrinfo hints, *res;
         int    error, i, pri, syncfile;
@@ -4235,9 +4253,9 @@ find_qentry_to_delete(const struct buf_queue_head *head,
  *      this is much slower but might be desirable when unsent messages have
  *      to be deleted, e.g. in call from domark() 
  */
-unsigned int
+unsigned
 message_queue_purge(struct filed *f,
-        const unsigned int del_entries, const int strategy)
+        const unsigned del_entries, const int strategy)
 {
         int removed = 0;
         struct buf_queue *qentry = NULL;
@@ -4265,10 +4283,10 @@ message_queue_purge(struct filed *f,
 }
 
 /* run message_queue_purge() for all destinations to free memory */
-unsigned int
+unsigned
 message_allqueues_purge()
 {
-        unsigned int sum = 0;
+        unsigned sum = 0;
 
         for (struct filed *f = Files; f; f = f->f_next)
                 sum += message_queue_purge(f,
@@ -4280,10 +4298,10 @@ message_allqueues_purge()
 }
 
 /* run message_queue_purge() for all destinations to check limits */
-unsigned int
+unsigned
 message_allqueues_check()
 {
-        unsigned int sum = 0;
+        unsigned sum = 0;
 
         for (struct filed *f = Files; f; f = f->f_next)
                 sum += message_queue_purge(f, 0, PURGE_BY_PRIORITY);

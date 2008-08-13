@@ -86,8 +86,9 @@ static void	openlog_unlocked_r(const char *, int, int,
     struct syslog_data *);
 static void	disconnectlog_r(struct syslog_data *);
 static void	connectlog_r(struct syslog_data *);
-static void     insert_fmt_m(const char *, char *, size_t *, const int, const int)
-static va_list	consume_va_args(const char *fmt0, va_list ap);
+static void     insert_fmt_m(const char *, char *, size_t *, const int,
+    const int);
+static va_list	consume_va_args(const char *, va_list);
 
 #define LOG_SIGNAL_SAFE	(int)0x80000000
  
@@ -122,19 +123,19 @@ vsyslog(int pri, const char *fmt, va_list ap)
  *      like syslog but take additional arguments for MSGID and SD
  */
 void
-syslogp(int pri, const char *msgid, const char *sdfmt, const char *msgfmt, ...)
+syslogp(int pri, const char *msgid, const char *sdata, const char *msgfmt, ...)
 {
         va_list ap;
 
         va_start(ap, msgfmt);
-        vsyslogp(pri, msgid, sdfmt, msgfmt, ap);
+        vsyslogp(pri, msgid, sdata, msgfmt, ap);
         va_end(ap);
 }
 
 void
-vsyslogp(int pri, const char *msgid, const char *sdfmt, const char *msgfmt, va_list ap)
+vsyslogp(int pri, const char *msgid, const char *sdata, const char *msgfmt, va_list ap)
 {
-        vsyslogp_r(pri, &sdata, msgid, sdfmt, msgfmt, ap);
+        vsyslogp_r(pri, &sdata, msgid, sdata, msgfmt, ap);
 }
 
 void
@@ -170,12 +171,12 @@ syslog_r(int pri, struct syslog_data *data, const char *fmt, ...)
 
 void
 syslogp_r(int pri, struct syslog_data *data, const char *msgid,
-        const char *sdfmt, const char *msgfmt, ...)
+        const char *sdata, const char *msgfmt, ...)
 {
         va_list ap;
 
         va_start(ap, msgfmt);
-        vsyslogp_r(pri, data, msgid, sdfmt, msgfmt, ap);
+        vsyslogp_r(pri, data, msgid, sdata, msgfmt, ap);
         va_end(ap);
 }
 
@@ -191,12 +192,12 @@ syslog_ss(int pri, struct syslog_data *data, const char *fmt, ...)
 
 void
 syslogp_ss(int pri, struct syslog_data *data, const char *msgid,
-        const char *sdfmt, const char *msgfmt, ...)
+        const char *sdata, const char *msgfmt, ...)
 {
         va_list ap;
 
         va_start(ap, msgfmt);
-        vsyslogp_r(pri | LOG_SIGNAL_SAFE, data, msgid, sdfmt, msgfmt, ap);
+        vsyslogp_r(pri | LOG_SIGNAL_SAFE, data, msgid, sdata, msgfmt, ap);
         va_end(ap);
 }
 
@@ -208,9 +209,9 @@ vsyslog_ss(int pri, struct syslog_data *data, const char *fmt, va_list ap)
 
 void
 vsyslogp_ss(int pri, struct syslog_data *data, const char *msgid,
-        const char *sdfmt, const char *msgfmt, va_list ap)
+        const char *sdata, const char *msgfmt, va_list ap)
 {
-        vsyslogp_r(pri | LOG_SIGNAL_SAFE, data, msgid, sdfmt, msgfmt, ap);
+        vsyslogp_r(pri | LOG_SIGNAL_SAFE, data, msgid, sdata, msgfmt, ap);
 }
 
 
@@ -222,10 +223,10 @@ vsyslog_r(int pri, struct syslog_data *data, const char *fmt, va_list ap)
 
 void
 vsyslogp_r(int pri, struct syslog_data *data, const char *msgid,
-        const char *sdfmt, const char *msgfmt, va_list ap)
+        const char *sdata, const char *msgfmt, va_list ap)
 {
         size_t cnt, prlen;
-        char ch, *p, *t;
+        char *p;
         const char *fmt;
         time_t now;
         struct tm tmnow;
@@ -234,7 +235,7 @@ vsyslogp_r(int pri, struct syslog_data *data, const char *msgid,
 #define FMT_LEN         1024
         char *stdp = NULL;      /* pacify gcc */
         char tbuf[TBUF_LEN], fmt_cpy[FMT_LEN];
-        size_t tbuf_left, fmt_left;
+        size_t tbuf_left;
         int signal_safe = pri & LOG_SIGNAL_SAFE;
 
         pri &= ~LOG_SIGNAL_SAFE;
@@ -332,21 +333,22 @@ vsyslogp_r(int pri, struct syslog_data *data, const char *msgid,
          */
 
         fmt = msgid;
-        if (fmt == NULL)
-                prlen = snprintf_ss(p, tbuf_left, "- ");
-        else {
+        if (fmt != NULL && *fmt != '\0') {
                 if (signal_safe)
                         prlen = vsnprintf_ss(p, tbuf_left, fmt, ap);
                 else
                         prlen = vsnprintf(p, tbuf_left, fmt, ap);
                 ap = consume_va_args(fmt, ap);
         }
+        else
+                prlen = snprintf_ss(p, tbuf_left, "-");
         DEC();
 
-        fmt = sdfmt;
-        if (fmt == NULL)
-                prlen = snprintf_ss(p, tbuf_left, "- ");
-        else {
+        prlen = snprintf_ss(p, tbuf_left, " ");
+        DEC();
+
+        fmt = sdata;
+        if (fmt != NULL && *fmt != '\0') {
                 insert_fmt_m(fmt, fmt_cpy, &prlen, saved_errno, signal_safe);
 
                 if (signal_safe)
@@ -354,13 +356,16 @@ vsyslogp_r(int pri, struct syslog_data *data, const char *msgid,
                 else
                         prlen = vsnprintf(p, tbuf_left, fmt_cpy, ap);
                 ap = consume_va_args(fmt, ap);
-        }
+        } else
+                prlen = snprintf_ss(p, tbuf_left, "-");
         DEC();
-        
-        fmt = msgfmt;
-        if (fmt != NULL) {
-                insert_fmt_m(fmt, fmt_cpy, &prlen, saved_errno, signal_safe);
 
+        fmt = msgfmt;
+        if (fmt != NULL && *fmt != '\0') {
+                prlen = snprintf_ss(p, tbuf_left, " ");
+                DEC();
+
+                insert_fmt_m(fmt, fmt_cpy, &prlen, saved_errno, signal_safe);
                 if (signal_safe)
                         prlen = vsnprintf_ss(p, tbuf_left, fmt_cpy, ap);
                 else

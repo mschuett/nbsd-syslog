@@ -251,18 +251,6 @@ vsyslogp_r(int pri, struct syslog_data *data, const char *msgid,
                 pri |= data->log_fac;
 
         /* Build the message. */
-        
-        /*
-         * Although it's tempting, we can't ignore the possibility of
-         * overflowing the buffer when assembling the "fixed" portion
-         * of the message.  Strftime's "%h" directive expands to the
-         * locale's abbreviated month name, but if the user has the
-         * ability to construct to his own locale files, it may be
-         * arbitrarily long.
-         */
-         if (!signal_safe)
-                (void)time(&now);
-
         p = tbuf;  
         tbuf_left = TBUF_LEN;
         
@@ -279,9 +267,12 @@ vsyslogp_r(int pri, struct syslog_data *data, const char *msgid,
 
         if (!signal_safe) {
                 struct timeval tv;
+                (void)time(&now);
+
                 /* strftime() implies tzset(), localtime_r() doesn't. */
                 tzset();
                 localtime_r(&now, &tmnow);
+
                 prlen = strftime(p, tbuf_left, "%FT%T", &tmnow);
                 DEC();
                 if (gettimeofday(&tv, NULL) != -1) {
@@ -298,10 +289,12 @@ vsyslogp_r(int pri, struct syslog_data *data, const char *msgid,
                         p[prlen-2] = ':';
                         prlen += 1;
                 }
-                DEC();
-                prlen = snprintf_ss(p, tbuf_left, " %s ", hostname);
-                DEC();
+        } else {
+                prlen = snprintf_ss(p, tbuf_left, "-", hostname);
         }
+        DEC();
+        prlen = snprintf_ss(p, tbuf_left, " %s ", hostname);
+        DEC();
 
         if (data->log_stat & LOG_PERROR)
                 stdp = p;

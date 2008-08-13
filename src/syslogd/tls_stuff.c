@@ -1166,7 +1166,7 @@ tls_reconnect(int fd, short event, void *arg)
         assert(conn_info->state == ST_NONE);
 
         if (!tls_connect(conn_info)) {
-                if (conn_info->reconnect > RECONNECT_GIVEUP) {
+                if (conn_info->reconnect > TLS_RECONNECT_GIVEUP) {
                         logerror("Unable to connect to TLS server %s, "
                                 "giving up now", conn_info->hostname);
                         message_queue_freeall(get_f_by_conninfo(conn_info));

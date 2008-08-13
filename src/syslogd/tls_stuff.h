@@ -36,7 +36,7 @@
  * 
  * set here: 2h, reached after ca. 7h of reconnecting 
  */
-#define RECONNECT_GIVEUP         60*60*2
+#define TLS_RECONNECT_GIVEUP         60*60*2
 
 /* default algorithm for certificate fingerprints */
 #define DEFAULT_FINGERPRINT_ALG "SHA1"

@@ -1854,16 +1854,18 @@ logmsg(struct buf_msg *buffer)
                 /*
                  * suppress duplicate lines to this file unless NoRepeat
                  */
+#define MSG_FIELD_EQ(x) ((!buffer->x && !f->f_prevmsg->x) ||    \
+                        (buffer->x && f->f_prevmsg->x &&        \
+                        !strcmp(buffer->x, f->f_prevmsg->x)))
+
                 if ((buffer->flags & MARK) == 0 &&
                      f->f_prevmsg &&
                      buffer->msglen == f->f_prevmsg->msglen &&
-                    !NoRepeat &&
-                    (buffer->host && f->f_prevmsg->host &&
-                    !strcasecmp(buffer->host, f->f_prevmsg->host)) &&
-                    ((buffer->sd && f->f_prevmsg->sd &&
-                    !strcmp(buffer->sd, f->f_prevmsg->sd)) ||
-                    (buffer->msg && f->f_prevmsg->msg &&
-                    !strcmp(buffer->msg, f->f_prevmsg->msg)))) {
+                     !NoRepeat &&
+                     MSG_FIELD_EQ(host) &&
+                     MSG_FIELD_EQ(sd) &&
+                     MSG_FIELD_EQ(msg)
+                    ) {
                         f->f_prevcount++;
                         DPRINTF(D_DATA, "Msg repeated %d times, %ld sec of %d\n",
                             f->f_prevcount, (long)(now - f->f_time),

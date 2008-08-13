@@ -86,8 +86,6 @@ static void	openlog_unlocked_r(const char *, int, int,
     struct syslog_data *);
 static void	disconnectlog_r(struct syslog_data *);
 static void	connectlog_r(struct syslog_data *);
-static void     insert_fmt_m(const char *, char *, size_t *, const int,
-    const int);
 
 #define LOG_SIGNAL_SAFE	(int)0x80000000
  
@@ -225,7 +223,7 @@ vsyslogp_r(int pri, struct syslog_data *data, const char *msgid,
         const char *sdfmt, const char *msgfmt, va_list ap)
 {
         size_t cnt, prlen;
-        char *p;
+        char ch, *p, *t;
         time_t now;
         struct tm tmnow;
         int fd, saved_errno;
@@ -233,7 +231,8 @@ vsyslogp_r(int pri, struct syslog_data *data, const char *msgid,
 #define FMT_LEN         1024
         char *stdp = NULL;      /* pacify gcc */
         char tbuf[TBUF_LEN], fmt_cpy[FMT_LEN], fmt_cat[FMT_LEN] = "";
-        size_t tbuf_left;
+        size_t tbuf_left, fmt_left;
+        char *fmt = fmt_cat;
         int signal_safe = pri & LOG_SIGNAL_SAFE;
 
         pri &= ~LOG_SIGNAL_SAFE;
@@ -342,8 +341,39 @@ vsyslogp_r(int pri, struct syslog_data *data, const char *msgid,
                 strlcat(fmt_cat, " ", FMT_LEN);
                 strlcat(fmt_cat, msgfmt, FMT_LEN);
         }
-        insert_fmt_m(fmt_cat, fmt_cpy, &prlen, saved_errno, signal_safe);
 
+        /* 
+         * We wouldn't need this mess if printf handled %m, or if 
+         * strerror() had been invented before syslog().
+         */
+        for (t = fmt_cpy, fmt_left = FMT_LEN; (ch = *fmt) != '\0'; ++fmt) {
+                if (ch == '%' && fmt[1] == 'm') {
+                        char ebuf[128];
+                        ++fmt;
+                        if (signal_safe ||
+                            strerror_r(saved_errno, ebuf, sizeof(ebuf)))
+                                prlen = snprintf_ss(t, fmt_left, "Error %d", 
+                                    saved_errno);
+                        else
+                                prlen = snprintf_ss(t, fmt_left, "%s", ebuf);
+                        if (prlen >= fmt_left)
+                                prlen = fmt_left - 1;
+                        t += prlen;
+                        fmt_left -= prlen;
+                } else if (ch == '%' && fmt[1] == '%' && fmt_left > 2) {
+                        *t++ = '%';
+                        *t++ = '%';
+                        fmt++;
+                        fmt_left -= 2;
+                } else {
+                        if (fmt_left > 1) {
+                                *t++ = ch;
+                                fmt_left--;
+                        }
+                }
+        }
+        *t = '\0';
+        
         if (signal_safe)
                 prlen = vsnprintf_ss(p, tbuf_left, fmt_cpy, ap);
         else
@@ -523,46 +553,4 @@ setlogmask_r(int pmask, struct syslog_data *data)
 	if (pmask != 0)
 		data->log_mask = pmask;
 	return omask;
-}
-
-/* 
- * We wouldn't need this mess if printf handled %m, or if 
- * strerror() had been invented before syslog().
- */
-static void
-insert_fmt_m(const char *fmt, char *fmt_cpy, size_t *prlen_ptr,
-        const int saved_errno, const int signal_safe)
-{
-        char ch;
-        char *t;
-        size_t fmt_left;
-        size_t prlen = *prlen_ptr;
-
-        for (t = fmt_cpy, fmt_left = FMT_LEN; (ch = *fmt) != '\0'; ++fmt) {
-                if (ch == '%' && fmt[1] == 'm') {
-                        char ebuf[128];
-                        ++fmt;
-                        if (signal_safe ||
-                            strerror_r(saved_errno, ebuf, sizeof(ebuf)))
-                                prlen = snprintf_ss(t, fmt_left, "Error %d", 
-                                    saved_errno);
-                        else
-                                prlen = snprintf_ss(t, fmt_left, "%s", ebuf);
-                        if (prlen >= fmt_left)
-                                prlen = fmt_left - 1;
-                        t += prlen;
-                        fmt_left -= prlen;
-                } else if (ch == '%' && fmt[1] == '%' && fmt_left > 2) {
-                        *t++ = '%';
-                        *t++ = '%';
-                        fmt++;
-                        fmt_left -= 2;
-                } else {
-                        if (fmt_left > 1) {
-                                *t++ = ch;
-                                fmt_left--;
-                        }
-                }
-        }
-        *t = '\0';
 }

@@ -81,7 +81,7 @@
  * 
  */
 struct tls_conn_settings {
-        unsigned int  accepted:1,   /* workaround cf. check_peer_cert*/
+        unsigned      accepted:1,   /* workaround cf. check_peer_cert*/
                       x509verify:2, /* kind of validation needed     */
                       incoming:1,   /* set if we are server          */
                       state:4;      /* outgoing connection state     */
@@ -93,7 +93,7 @@ struct tls_conn_settings {
         char         *subject;      /* configured hostname in cert   */
         char         *fingerprint;  /* fingerprint of peer cert      */
         char         *certfile;     /* copy of peer cert             */
-        unsigned int  reconnect;    /* seconds between reconnects    */
+        unsigned      reconnect;    /* seconds between reconnects    */
         char          errorcount;   /* to close conn. after errors   */
 };
 
@@ -104,7 +104,7 @@ struct tls_send_msg {
         struct buf_queue *qentry;
         char           *line;      /* formatted message */
         size_t          linelen;
-        unsigned int    offset;    /* in case of partial writes */
+        unsigned        offset;    /* in case of partial writes */
 };
 
 /* return values for TLS_examine_error() */

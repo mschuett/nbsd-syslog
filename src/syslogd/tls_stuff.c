@@ -102,10 +102,10 @@ extern void buf_msg_free(struct buf_msg *msg);
 extern void message_queue_freeall(struct filed *);
 extern bool copy_string(char **, const char *, const char *);
 extern bool copy_config_value_quoted(const char *, char **, char **);
-extern unsigned int message_allqueues_purge(void);
-static unsigned int getVerifySetting(const char *x509verifystring);
+extern unsigned message_allqueues_purge(void);
+static unsigned getVerifySetting(const char *x509verifystring);
 
-static unsigned int
+static unsigned
 getVerifySetting(const char *x509verifystring)
 {
         if (!x509verifystring)
@@ -133,7 +133,7 @@ init_global_TLS_CTX()
         const char *CApath        = tls_opt.CAdir;
 
         SSL_CTX *ctx;
-        unsigned int x509verify = X509VERIFY_ALWAYS;
+        unsigned x509verify = X509VERIFY_ALWAYS;
         EVP_PKEY *pkey = NULL;
         X509     *cert = NULL;
         FILE *certfile = NULL;
@@ -305,7 +305,7 @@ get_fingerprint(const X509 *cert, char **returnstring, const char *alg_name)
 #define MAX_ALG_NAME_LENGTH 8
         unsigned char md[EVP_MAX_MD_SIZE];
         char fp_val[4];
-        unsigned int len, memsize, i = 0;
+        unsigned len, memsize, i = 0;
         EVP_MD *digest;
 
         DPRINTF(D_TLS, "get_fingerprint(cert, %p, \"%s\")\n",
@@ -332,7 +332,7 @@ get_fingerprint(const X509 *cert, char **returnstring, const char *alg_name)
         /* append the fingeprint data */
         for (i = 0; i < len; i++) {
                 (void)snprintf(fp_val, sizeof(fp_val),
-                        "%02X:", (unsigned int) md[i]);
+                        "%02X:", (unsigned) md[i]);
                 (void)strlcat(*returnstring, fp_val, memsize);
         }
         return true;
@@ -1475,8 +1475,8 @@ tls_split_messages(struct TLS_Incoming_Conn *c)
 {
 /* define only to make it better readable */
 #define MSG_END_OFFSET (c->cur_msg_start + c->cur_msg_len)
-        unsigned int offset = 0;
-        unsigned int msglen = 0;
+        unsigned offset = 0;
+        unsigned msglen = 0;
         char *newbuf;
         char buf_char;
         

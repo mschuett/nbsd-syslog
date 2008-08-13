@@ -50,7 +50,7 @@ extern void  buf_msg_free(struct buf_msg *msg);
 extern char *make_timestamp(time_t*, bool);
 extern struct buf_msg 
             *buf_msg_new(const size_t);
-extern unsigned int message_allqueues_purge(void);
+extern unsigned message_allqueues_purge(void);
 
 /*
  * init all SGs for a given algorithm 
@@ -693,7 +693,7 @@ sign_msg_hash(char *line, char **hash)
         unsigned char md_value[EVP_MAX_MD_SIZE];
         unsigned char md_b64[EVP_MAX_MD_SIZE*2];
         /* TODO: exact expression for b64 length? */
-        unsigned int md_len = 0;
+        unsigned md_len = 0;
 
         DPRINTF((D_CALL|D_SIGN), "sign_msg_hash('%s')\n", line);
         
@@ -816,7 +816,7 @@ sign_string_sign(char *line, char **signature)
         char buf[SIGN_MAX_LENGTH+1];
         unsigned char sig_value[SIGN_B64SIGLEN_DSS];
         unsigned char sig_b64[SIGN_B64SIGLEN_DSS];
-        unsigned int sig_len = 0;
+        unsigned sig_len = 0;
         char *p, *q;
         /* 
          * The signature is calculated over the completely formatted

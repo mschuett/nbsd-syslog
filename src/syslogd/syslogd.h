@@ -102,23 +102,23 @@
 
 /* message buffer container used for processing, formatting, and queueing */
 struct buf_msg {
-        unsigned int refcount;
-        int          pri;
-        int          flags;
-        char        *timestamp;
-        char        *recvhost;
-        char        *host;
-        char        *prog;
-        char        *pid;
-        char        *msgid;
-        char        *sd;        /* structured data */
-        char        *msg;       /* message content */
-        char        *msgorig;   /* in case we advance *msg beyond header fields
+        unsigned refcount;
+        int      pri;
+        int      flags;
+        char    *timestamp;
+        char    *recvhost;
+        char    *host;
+        char    *prog;
+        char    *pid;
+        char    *msgid;
+        char    *sd;        /* structured data */
+        char    *msg;       /* message content */
+        char    *msgorig;   /* in case we advance *msg beyond header fields
                                    we still want to free() the original ptr  */
-        size_t       msglen;    /* strlen(msg) */
-        size_t       msgsize;   /* allocated memory size   */
-        unsigned int tlsprefixlen; /* bytes for the TLS length prefix */
-        unsigned int prilen;       /* bytes for priority and version  */
+        size_t   msglen;    /* strlen(msg) */
+        size_t   msgsize;   /* allocated memory size   */
+        unsigned tlsprefixlen; /* bytes for the TLS length prefix */
+        unsigned prilen;       /* bytes for priority and version  */
 };
 
 /* queue of messages */
@@ -335,7 +335,7 @@ struct filed {
         struct signature_group_t *f_sg;      /* one signature group */
 #endif /* !DISABLE_SIGN */
         struct buf_queue_head f_qhead;       /* undelivered msgs queue */
-        unsigned int          f_qelements;   /* elements in queue */
+        unsigned              f_qelements;   /* elements in queue */
         size_t                f_qsize;       /* size of queue in bytes */
         struct buf_msg       *f_prevmsg;     /* last message logged */
         int                   f_prevcount;   /* repetition cnt of prevmsg */
@@ -391,14 +391,14 @@ struct TLS_Incoming_Conn {
         SLIST_ENTRY(TLS_Incoming_Conn) entries;
         struct tls_conn_settings *tls_conn;
         int socket;
-        char *inbuf;                    /* input buffer */
+        char *inbuf;                /* input buffer */
         size_t inbuflen;
-        unsigned int cur_msg_len;       /* length of current msg */
-        unsigned int cur_msg_start;     /* beginning of current msg */
-        unsigned int read_pos;          /* ring buffer position to write to */
-        unsigned int errorcount;        /* to close faulty connections */
-        bool closenow;                  /* close connection as soon as buffer processed */
-        bool dontsave;                  /* for receiving oversized messages w/o saving them */
+        unsigned cur_msg_len;       /* length of current msg */
+        unsigned cur_msg_start;     /* beginning of current msg */
+        unsigned read_pos;          /* ring buffer position to write to */
+        unsigned errorcount;        /* to close faulty connections */
+        bool closenow;              /* close connection as soon as buffer processed */
+        bool dontsave;              /* for receiving oversized messages w/o saving them */
 };
 
 #endif /* !DISABLE_TLS */

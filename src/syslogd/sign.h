@@ -113,8 +113,8 @@ STAILQ_HEAD(filed_queue_head, filed_queue);
 
 /* queue of Signature Groups */
 struct signature_group_t {
-        unsigned int                   spri;
-        unsigned int                   resendcount;
+        unsigned                       spri;
+        unsigned                       resendcount;
         uint_fast64_t                  last_msg_num;
         struct string_queue_head       hashes;
         struct filed_queue_head        files;
@@ -145,11 +145,11 @@ struct sign_global_t {
         
         EVP_MD_CTX   *mdctx;       /* hashing context */
         const EVP_MD *md;          /* hashing method/algorithm */
-        unsigned int  md_len_b64;  /* length of b64 hash value */
+        unsigned      md_len_b64;  /* length of b64 hash value */
 
         EVP_MD_CTX   *sigctx;      /* signature context */
         const EVP_MD *sig;         /* signature method/algorithm */
-        unsigned int  sig_len_b64; /* length of b64 signature */
+        unsigned      sig_len_b64; /* length of b64 signature */
 };
 
 bool sign_global_init(struct filed*);

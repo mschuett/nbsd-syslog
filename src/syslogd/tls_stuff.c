@@ -877,7 +877,7 @@ dispatch_SSL_connect(int fd, short event, void *arg)
                                         conn_info->hostname);
                                 ST_CHANGE(conn_info->state, ST_NONE);
                                 conn_info->reconnect =
-                                        5 * tls_opt.reconnect_interval;
+                                        5 * TLS_RECONNECT_SEC;
                                 schedule_event(&conn_info->event,
                                         &((struct timeval)
                                         {conn_info->reconnect, 0}),
@@ -888,7 +888,7 @@ dispatch_SSL_connect(int fd, short event, void *arg)
                 return;
         }
         /* else */
-        conn_info->reconnect = tls_opt.reconnect_interval;
+        conn_info->reconnect = TLS_RECONNECT_SEC;
         event_set(conn_info->event, fd, EV_READ, dispatch_tls_eof, conn_info);
         EVENT_ADD(conn_info->event);
 
@@ -1087,7 +1087,7 @@ parse_tls_destination(char *p, struct filed *f, const unsigned linenum)
         }
         /* default values */
         f->f_un.f_tls.tls_conn->x509verify = X509VERIFY_ALWAYS;
-        f->f_un.f_tls.tls_conn->reconnect = tls_opt.reconnect_interval;
+        f->f_un.f_tls.tls_conn->reconnect = TLS_RECONNECT_SEC;
 
         if (!(copy_string(&(f->f_un.f_tls.tls_conn->hostname), p, q))) {
                 logerror("Unable to read TLS server name"
@@ -1166,7 +1166,7 @@ tls_reconnect(int fd, short event, void *arg)
         assert(conn_info->state == ST_NONE);
 
         if (!tls_connect(conn_info)) {
-                if (conn_info->reconnect > tls_opt.reconnect_giveup) {
+                if (conn_info->reconnect > RECONNECT_GIVEUP) {
                         logerror("Unable to connect to TLS server %s, "
                                 "giving up now", conn_info->hostname);
                         message_queue_freeall(get_f_by_conninfo(conn_info));
@@ -1182,7 +1182,7 @@ tls_reconnect(int fd, short event, void *arg)
                         schedule_event(&conn_info->event,
                                 &((struct timeval){conn_info->reconnect, 0}),
                                 tls_reconnect, conn_info);
-                        RECONNECT_BACKOFF(conn_info->reconnect);
+                        TLS_RECONNECT_BACKOFF(conn_info->reconnect);
                 }
         } else {
                 assert(conn_info->state == ST_TLS_EST
@@ -1396,7 +1396,7 @@ dispatch_tls_eof(int fd, short event, void *arg)
         schedule_event(&conn_info->event,
                 &((struct timeval){conn_info->reconnect, 0}),
                 tls_reconnect, conn_info);
-        RECONNECT_BACKOFF(conn_info->reconnect);
+        TLS_RECONNECT_BACKOFF(conn_info->reconnect);
         RESTORE_SIGNALS(omask);
 }
 
@@ -1703,7 +1703,7 @@ dispatch_tls_send(int fd, short event, void *arg)
                                         &((struct timeval)
                                         {conn_info->reconnect, 0}),
                                         tls_reconnect, conn_info);
-                                RECONNECT_BACKOFF(conn_info->reconnect);
+                                TLS_RECONNECT_BACKOFF(conn_info->reconnect);
                                 break;
                         default:break;
                 }

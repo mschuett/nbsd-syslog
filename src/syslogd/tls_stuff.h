@@ -27,8 +27,8 @@
 /* reconnect to lost server after n sec (initial value) */
 #define TLS_RECONNECT_SEC 10
 /* backoff connection attempts */
-#define RECONNECT_BACKOFF_FACTOR 15/10
-#define RECONNECT_BACKOFF(x)     (x) = (x) * RECONNECT_BACKOFF_FACTOR
+#define TLS_RECONNECT_BACKOFF_FACTOR 15/10
+#define TLS_RECONNECT_BACKOFF(x)     (x) = (x) * TLS_RECONNECT_BACKOFF_FACTOR
 /* abandon connection attempts after n sec
  * This has to be <= 5h (with 10sec initial interval),
  * otherwise a daily SIGHUP from newsylog will reset

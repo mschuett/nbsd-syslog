@@ -29,7 +29,7 @@
 .\"
 .\"     from: @(#)syslog.conf.5	8.1 (Berkeley) 6/9/93
 .\"
-.Dd November 18, 2004
+.Dd August 8, 2008
 .Dt SYSLOG.CONF 5
 .Os
 .Sh NAME
@@ -405,15 +405,6 @@ Service name or port number to bind to. Default is
 but as long as no official port is assigned this has to be configured.
 .It Em tls_bindhost
 Hostname or IP to bind to.
-.It Em tls_reconnect_interval
-Initial reconnect timer in seconds; default is 10 sec.
-If the reconnect fails an exponential backoff will increase the interval.
-.It Em tls_reconnect_timeout
-The maximum reconnect interval in seconds.; default is one day.
-If a reconnect timer reaches this value then the connection is considered
-permanently unavailable and no more reconnections are tried.
-.\" should it be explicitly stated that a SIGHUP resets all state
-.\" including this timer and connection status?
 .It Em tls_gen_cert
 Automatically generate a private key and certificate.
 .It Em tls_key

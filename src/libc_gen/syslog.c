@@ -65,8 +65,6 @@ __weak_alias(openlog,_openlog)
 __weak_alias(setlogmask,_setlogmask)
 __weak_alias(syslog,_syslog)
 __weak_alias(vsyslog,_vsyslog)
-__weak_alias(syslogp,_syslogp)
-__weak_alias(vsyslogp,_vsyslogp)
 
 __weak_alias(closelog_r,_closelog_r)
 __weak_alias(openlog_r,_openlog_r)
@@ -75,10 +73,6 @@ __weak_alias(syslog_r,_syslog_r)
 __weak_alias(vsyslog_r,_vsyslog_r)
 __weak_alias(syslog_ss,_syslog_ss)
 __weak_alias(vsyslog_ss,_vsyslog_ss)
-__weak_alias(syslogp_r,_syslogp_r)
-__weak_alias(vsyslogp_r,_vsyslogp_r)
-__weak_alias(syslogp_ss,_syslogp_ss)
-__weak_alias(vsyslogp_ss,_vsyslogp_ss)
 #endif
 
 static struct syslog_data sdata = SYSLOG_DATA_INIT;

@@ -1676,8 +1676,14 @@ check_timestamp(unsigned char *from_buf, char **to_buf,
                         found_ts = true;
         }
         if (!found_ts) {
-                *to_buf = strdup(make_timestamp(NULL, to_iso));
-                return 0;
+                /* check for NILVALUE and replace it with current time */
+                if (from_buf[0] == '-' && from_buf[1] == ' ') {
+                        *to_buf = strdup(make_timestamp(NULL, to_iso));
+                        return 2;
+                } else {
+                        *to_buf = strdup(make_timestamp(NULL, to_iso));
+                        return 0;
+                }
         }
                 
         if (!from_iso && !to_iso) {

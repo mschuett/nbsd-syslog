@@ -2144,6 +2144,17 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
                 }
         }
 
+        /* no syslog-sign messages to tty/console/... */
+        if ((buffer->flags & SIGN_MSG)
+          && ((f->f_type == F_UNUSED)
+           || (f->f_type == F_TTY)
+           || (f->f_type == F_CONSOLE)
+           || (f->f_type == F_USERS)
+           || (f->f_type == F_WALL))) {
+                DELREF(buffer);
+                return;
+        }
+        
         if (!format_buffer(buffer, &line,
                 &linelen, &msglen, &tlsprefixlen, &prilen)) {
                 DPRINTF(D_CALL, "format_buffer() failed, skip message\n");
@@ -3788,6 +3799,8 @@ cfline(const unsigned linenum, char *line, struct filed *f, char *prog, char *ho
                 break;
 
         case '|':
+                if (GlobalSign.sg == 3)
+                        f->f_flags |= FFLAG_SIGN;
                 f->f_un.f_pipe.f_pid = 0;
                 (void) strlcpy(f->f_un.f_pipe.f_pname, p + 1,
                     sizeof(f->f_un.f_pipe.f_pname));

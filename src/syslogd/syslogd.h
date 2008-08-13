@@ -342,9 +342,10 @@ struct filed {
         int                   f_repeatcount; /* number of "repeated" msgs */
         int                   f_lasterror;   /* last error on writev() */
         int                   f_flags;       /* file-specific flags */
-#define FFLAG_SYNC      0x01
-#define FFLAG_FULL      0x02
-#define FFLAG_SIGN      0x04
+#define FFLAG_SYNC      0x01    /* for F_FILE: fsync after every msg */
+#define FFLAG_FULL      0x02    /* for F_FILE | F_PIPE: write PRI header */
+#define FFLAG_SIGN      0x04    /* for syslog-sign with SG="3":
+                                 * sign the messages to this destination */
 };
 
 #ifndef DISABLE_TLS

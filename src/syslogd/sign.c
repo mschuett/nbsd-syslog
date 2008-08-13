@@ -252,7 +252,7 @@ sign_get_keys()
 bool
 sign_sg_init(struct filed *Files)
 {
-        struct signature_group_t *newsg;
+        struct signature_group_t *sg, *newsg, *last_sg;
         struct filed_queue       *fq;
         struct string_queue      *sqentry, *last_sqentry;
 
@@ -278,9 +278,11 @@ sign_sg_init(struct filed *Files)
                         STAILQ_INIT(&(x)->hashes);                      \
                         STAILQ_INIT(&(x)->files);                       \
                 } while (0)
+/* alloc(fq) and add to SGs file queue */
 #define ASSIGN_FQ() do {ALLOC_OR_FALSE(fq);                             \
                         fq->f = f;                                      \
                         f->f_sg = newsg;                                \
+                        DPRINTF(D_SIGN, "SG@%p <--> f@%p\n", newsg, f); \
                         STAILQ_INSERT_TAIL(&newsg->files, fq, entries); \
                 } while (0)
 
@@ -289,13 +291,8 @@ sign_sg_init(struct filed *Files)
                 /* one SG, linked to all files */
                 ALLOC_SG(newsg);
                 newsg->spri = 0;
-                for (struct filed *f = Files; f; f = f->f_next) {
-                        if (!(f->f_flags & FFLAG_SIGN)) {
-                                f->f_sg = NULL;
-                                continue;
-                        }
+                for (struct filed *f = Files; f; f = f->f_next)
                         ASSIGN_FQ();
-                }
                 STAILQ_INSERT_TAIL(&GlobalSign.SigGroups,
                         newsg, entries);
                 break;
@@ -309,13 +306,10 @@ sign_sg_init(struct filed *Files)
                         newsg->spri = i;
 
                         /* now find all destinations associated with this SG */
-                        for (struct filed *f = Files; f; f = f->f_next) {
-                                if (!(f->f_flags & FFLAG_SIGN))
-                                        continue;
+                        for (struct filed *f = Files; f; f = f->f_next)
                                 /* check priorities */
                                 if (MATCH_PRI(f, fac, prilev))
                                         ASSIGN_FQ();
-                        }
                         STAILQ_INSERT_TAIL(&GlobalSign.SigGroups,
                                 newsg, entries);
                 }
@@ -353,21 +347,23 @@ sign_sg_init(struct filed *Files)
                 }
 
                 STAILQ_FOREACH(sqentry, &GlobalSign.sig2_delims, entries) {
+                        int min_pri = 0;
                         ALLOC_SG(newsg);
                         newsg->spri = sqentry->key;
 
+                        /* check _all_ priorities in SG */
+                        last_sg = STAILQ_LAST(&GlobalSign.SigGroups,
+                                signature_group_t, entries);
+                        if (last_sg)
+                                min_pri = last_sg->spri + 1;
+
+                        DPRINTF(D_SIGN, "sign_sg_init(): add SG@%p: SG=\"2\","
+                                " SPRI=\"%d\" -- for msgs with "
+                                "%d <= pri <= %d\n",
+                                newsg, newsg->spri, min_pri, newsg->spri);
                         /* now find all destinations associated with this SG */
                         for (struct filed *f = Files; f; f = f->f_next) {
                                 bool match = false;
-                                int  min_pri = 0;
-                                if (!(f->f_flags & FFLAG_SIGN))
-                                        continue;
-                                /* check _all_ priorities in SG */
-                                last_sqentry =
-                                        STAILQ_LAST(&GlobalSign.SigGroups,
-                                        string_queue, entries);
-                                if (last_sqentry)
-                                        min_pri = last_sqentry->key;
                                 for (int i = min_pri; i <= newsg->spri; i++) {
                                         int fac, prilev;
                                         fac = LOG_FAC(i);
@@ -380,14 +376,12 @@ sign_sg_init(struct filed *Files)
                                 if (match)
                                         ASSIGN_FQ();
                         }
-                        DPRINTF(D_SIGN, "sign_sg_init(): add SG@%p: SG=\"2\","
-                                " SPRI=\"%d\"\n", newsg, newsg->spri);
                         STAILQ_INSERT_TAIL(&GlobalSign.SigGroups,
                                 newsg, entries);
                 }
                 break;
         case 3:
-                /* every file gets one SG */ 
+                /* every file (with flag) gets one SG */
                 for (struct filed *f = Files; f; f = f->f_next) {
                         if (!(f->f_flags & FFLAG_SIGN)) {
                                 f->f_sg = NULL;
@@ -400,6 +394,16 @@ sign_sg_init(struct filed *Files)
                                 newsg, entries);
                 }
                 break;
+        }
+        DPRINTF((D_PARSE|D_SIGN), "sign_sg_init() set up these "
+                "Signature Groups:\n");
+        STAILQ_FOREACH(sg, &GlobalSign.SigGroups, entries) {
+                DPRINTF((D_PARSE|D_SIGN), "SG@%p with SG=\"%d\", SPRI=\"%d\","
+                        " associated files:\n", sg, GlobalSign.sg, sg->spri);
+                STAILQ_FOREACH(fq, &sg->files, entries) {
+                        DPRINTF((D_PARSE|D_SIGN), "    f@%p with type %d\n",
+                                fq->f, fq->f->f_type);
+                }
         }
         return true;
 }
@@ -538,12 +542,6 @@ sign_get_sg(int pri, struct filed *f)
                 case 0:
                         rc = f->f_sg;
                         break;
-                case 3:
-                        if (f->f_flags & FFLAG_SIGN)
-                                rc = f->f_sg;
-                        else
-                                rc = NULL;
-                        break;
                 case 1:
                 case 2:
                         STAILQ_FOREACH(sg, &GlobalSign.SigGroups, entries) {
@@ -552,6 +550,12 @@ sign_get_sg(int pri, struct filed *f)
                                         break;
                                 }
                         }
+                        break;
+                case 3:
+                        if (f->f_flags & FFLAG_SIGN)
+                                rc = f->f_sg;
+                        else
+                                rc = NULL;
                         break;
                 }
 

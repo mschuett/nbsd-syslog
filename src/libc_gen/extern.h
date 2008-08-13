@@ -55,6 +55,10 @@ struct syslog_data;
 void	syslog_ss(int, struct syslog_data *, const char *, ...)
     __attribute__((__format__(__printf__,3,4)));
 void	vsyslog_ss(int, struct syslog_data *, const char *, _BSD_VA_LIST_);
+void	syslogp_ss(int, struct syslog_data *, const char *, const char *,
+    const char *, ...);
+void	vsyslogp_ss(int, struct syslog_data *, const char *, const char *,
+    const char *, _BSD_VA_LIST_);
 
 int	snprintf_ss(char * __restrict, size_t, const char * __restrict, ...)
     __attribute__((__format__(__printf__, 3, 4)));

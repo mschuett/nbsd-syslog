@@ -88,7 +88,6 @@ static void	disconnectlog_r(struct syslog_data *);
 static void	connectlog_r(struct syslog_data *);
 static void     insert_fmt_m(const char *, char *, size_t *, const int,
     const int);
-static va_list	consume_va_args(const char *, va_list);
 
 #define LOG_SIGNAL_SAFE	(int)0x80000000
  
@@ -234,7 +233,7 @@ vsyslogp_r(int pri, struct syslog_data *data, const char *msgid,
 #define TBUF_LEN        2048
 #define FMT_LEN         1024
         char *stdp = NULL;      /* pacify gcc */
-        char tbuf[TBUF_LEN], fmt_cpy[FMT_LEN];
+        char tbuf[TBUF_LEN], fmt_cpy[FMT_LEN], fmt_cat[FMT_LEN] = "";
         size_t tbuf_left;
         int signal_safe = pri & LOG_SIGNAL_SAFE;
 
@@ -326,52 +325,31 @@ vsyslogp_r(int pri, struct syslog_data *data, const char *msgid,
                 prlen = snprintf_ss(p, tbuf_left, "- ");
         DEC();
 
-        /* now the special part: all three char* fields are format strings
-         * to be passed through vsprintf().
-         * Only limitation here: a "%m" in the msgid is obviously wrong
-         * and not substituted.
+        /* 
+         * concat the format strings, then use one vsnprintf()
          */
-
-        fmt = msgid;
-        if (fmt != NULL && *fmt != '\0') {
-                if (signal_safe)
-                        prlen = vsnprintf_ss(p, tbuf_left, fmt, ap);
-                else
-                        prlen = vsnprintf(p, tbuf_left, fmt, ap);
-                ap = consume_va_args(fmt, ap);
-        }
-        else
-                prlen = snprintf_ss(p, tbuf_left, "-");
-        DEC();
-
-        prlen = snprintf_ss(p, tbuf_left, " ");
-        DEC();
-
-        fmt = sdata;
-        if (fmt != NULL && *fmt != '\0') {
-                insert_fmt_m(fmt, fmt_cpy, &prlen, saved_errno, signal_safe);
-
-                if (signal_safe)
-                        prlen = vsnprintf_ss(p, tbuf_left, fmt_cpy, ap);
-                else
-                        prlen = vsnprintf(p, tbuf_left, fmt_cpy, ap);
-                ap = consume_va_args(fmt, ap);
+        if (msgid != NULL && *msgid != '\0') {
+                strlcat(fmt_cat, msgid, FMT_LEN);
+                strlcat(fmt_cat, " ", FMT_LEN);
         } else
-                prlen = snprintf_ss(p, tbuf_left, "-");
-        DEC();
+                strlcat(fmt_cat, "- ", FMT_LEN);
 
-        fmt = msgfmt;
-        if (fmt != NULL && *fmt != '\0') {
-                prlen = snprintf_ss(p, tbuf_left, " ");
-                DEC();
+        if (sdata != NULL && *sdata != '\0') {
+                strlcat(fmt_cat, sdata, FMT_LEN);
+        } else
+                strlcat(fmt_cat, "-", FMT_LEN);
 
-                insert_fmt_m(fmt, fmt_cpy, &prlen, saved_errno, signal_safe);
-                if (signal_safe)
-                        prlen = vsnprintf_ss(p, tbuf_left, fmt_cpy, ap);
-                else
-                        prlen = vsnprintf(p, tbuf_left, fmt_cpy, ap);
-                DEC();
+        if (msgfmt != NULL && *msgfmt != '\0') {
+                strlcat(fmt_cat, " ", FMT_LEN);
+                strlcat(fmt_cat, msgfmt, FMT_LEN);
         }
+        insert_fmt_m(fmt_cat, fmt_cpy, &prlen, saved_errno, signal_safe);
+
+        if (signal_safe)
+                prlen = vsnprintf_ss(p, tbuf_left, fmt_cpy, ap);
+        else
+                prlen = vsnprintf(p, tbuf_left, fmt_cpy, ap);
+        DEC();
         cnt = p - tbuf;
 
         /* Output to stderr if requested. */
@@ -588,98 +566,4 @@ insert_fmt_m(const char *fmt, char *fmt_cpy, size_t *prlen_ptr,
                 }
         }
         *t = '\0';
-}
-
-/* hack to prevent lint from complaining */
-static __inline void __use(int x, ...) { /* LINTED */ (void)x; }
-#define __USED(...) __use(0, __VA_ARGS__);
-
-#define is_digit(c) ((c) >= '0' && (c) <= '9')
-
-/*
- * reads a printf format string and
- * consumes all used arguments from
- * the va_list
- */
-static va_list
-consume_va_args(const char *fmt0, va_list ap)
-{
-        const char *fmt = fmt0;
-        char ch;
-        int i = 0;
-        double d = 0.0;
-        char *s = NULL;
-        
-        /* following the scanning rules in /src/lib/libc/stdio/vfwprintf.c */
-        for (;;) {
-                for (; (ch = *fmt) != '\0' && ch != '%'; fmt++)
-                        continue;
-                if (ch == '\0')
-                        return ap;
-                fmt++;  /* skip over '%' */
-rflag:          ch = *fmt++;
-reswitch:       switch (ch) {
-                case ' ':
-                case '#':
-                case '*':
-                case '-':
-                case '+':
-                case '\'':
-                case '0':
-                case 'L':
-                case 'h':
-                case 'j':
-                case 'l':
-                case 'q':
-                case 't':
-                case 'z':
-                        goto rflag;
-                case '1': case '2': case '3': case '4':
-                case '5': case '6': case '7': case '8': case '9':
-                        do {
-                                ch = *fmt++;
-                        } while (is_digit(ch));
-                        if (ch == '$')
-                                goto rflag;
-                        goto reswitch;
-                case '.':
-                        if ((ch = *fmt++) == '*')
-                                goto rflag;
-                        while (is_digit(ch))
-                                ch = *fmt++;
-                        goto reswitch;
-                case 'C':
-                case 'c':
-                case 'D':
-                case 'd':
-                case 'i':
-                case 'O':
-                case 'o':
-                case 'U':
-                case 'u':
-                case 'X':
-                case 'x':
-                        i = va_arg(ap, int);
-                        break;
-                case 'a':
-                case 'A':
-                case 'e':
-                case 'E':
-                case 'f':
-                case 'F':
-                case 'g':
-                case 'G':
-                        d = va_arg(ap, double);
-                        break;
-                case 'p':
-                case 'S':
-                case 's':
-                        s = va_arg(ap, char *);
-                        break;
-                case 'n':
-                default:
-                        break;
-                }
-                __USED(i, d, s);
-        }
 }

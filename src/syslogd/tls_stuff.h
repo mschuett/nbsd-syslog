@@ -133,7 +133,7 @@ bool match_fingerprint(const X509 *, const char *);
 bool match_certfile(const X509 *, const char *);
 
 /* configuration & parsing */
-bool parse_tls_destination(char *, struct filed *);
+bool parse_tls_destination(char *, struct filed *, const unsigned);
 /* event callbacks */
 void dispatch_socket_accept(int, short, void *);
 void dispatch_tls_accept(int, short, void *);

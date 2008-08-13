@@ -872,8 +872,9 @@ dispatch_SSL_connect(int fd, short event, void *arg)
                         default: /* should not happen,
                                   * ... but does if the cert is not accepted */
                                 logerror("Cannot establish TLS connection "
-                                        "to \"%s\" -- wrong certificate "
-                                        "configured?", conn_info->hostname);
+                                        "to \"%s\" -- TLS handshake aborted "
+                                        "befor certificate authentication.",
+                                        conn_info->hostname);
                                 ST_CHANGE(conn_info->state, ST_NONE);
                                 conn_info->reconnect =
                                         5 * tls_opt.reconnect_interval;
@@ -1046,7 +1047,6 @@ tls_examine_error(const char *functionname, const SSL *ssl,
                 case SSL_ERROR_SSL:
                         logerror("internal SSL error, error queue gives %s",
                                 ERR_error_string(ERR_get_error(), NULL));
-                        /* TODO: handle wrong cert */
                         return TLS_PERM_ERROR;
                         break;
                 default:
@@ -1060,17 +1060,19 @@ tls_examine_error(const char *functionname, const SSL *ssl,
 
 
 bool
-parse_tls_destination(char *p, struct filed *f)
+parse_tls_destination(char *p, struct filed *f, const unsigned linenum)
 {
         char *q;
 
         if ((*p++ != '@') || *p++ != '[') {
-                logerror("parse_tls_destination() on non-TLS action");
+                logerror("parse_tls_destination() on non-TLS action "
+                        "in config line %d", linenum);
                 return false; 
         }
         
         if (!(q = strchr(p, ']'))) {
-                logerror("Unterminated [ in configuration");
+                logerror("Unterminated [ "
+                        "in config line %d", linenum);
                 return false;
         }
 
@@ -1088,7 +1090,8 @@ parse_tls_destination(char *p, struct filed *f)
         f->f_un.f_tls.tls_conn->reconnect = tls_opt.reconnect_interval;
 
         if (!(copy_string(&(f->f_un.f_tls.tls_conn->hostname), p, q))) {
-                logerror("Unable to read TLS server name");
+                logerror("Unable to read TLS server name"
+                        "in config line %d", linenum);
                 free_tls_conn(f->f_un.f_tls.tls_conn);
                 return false;
         }
@@ -1100,7 +1103,7 @@ parse_tls_destination(char *p, struct filed *f)
                         q++;
                 if (!(copy_string(&(f->f_un.f_tls.tls_conn->port), p, q))) {
                         logerror("Unable to read TLS port or service name"
-                                " after ':'");
+                                " after ':' in config line %d", linenum);
                         free_tls_conn(f->f_un.f_tls.tls_conn);
                         return false;
                 }
@@ -1131,12 +1134,14 @@ parse_tls_destination(char *p, struct filed *f)
                                 p = q;
                         }
                         else {
-                                logerror("unknown keyword %s", p);
+                                logerror("unknown keyword %s "
+                                        "in config line %d", p, linenum);
                         }
                         while (*p == ',' || isblank(*p))
                                 p++;
                         if (*p == '\0') {
-                                logerror("unterminated (");
+                                logerror("unterminated ("
+                                        "in config line %d", linenum);
                         }
                 }
         }

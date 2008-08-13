@@ -3747,7 +3747,7 @@ cfline(const unsigned linenum, char *line, struct filed *f, char *prog, char *ho
 #ifndef DISABLE_TLS
                 if (*(p+1) == '[') {
                         /* TLS destination */
-                        if (!parse_tls_destination(p, f)) {
+                        if (!parse_tls_destination(p, f, linenum)) {
                                 logerror("Unable to parse action %s", p);
                                 break;
                         }

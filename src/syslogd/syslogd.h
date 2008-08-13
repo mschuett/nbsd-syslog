@@ -372,8 +372,6 @@ struct tls_global_options_t {
         char *bindport;     /* port/service to bind to    */
         char *server;       /* if !NULL: do not listen to incoming TLS    */
         char *gen_cert;     /* if !NULL: generate self-signed certificate */
-        char *reconnect_giveup_str;
-        char *reconnect_interval_str;
 };
 
 /* TLS needs three sets of sockets:

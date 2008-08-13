@@ -203,7 +203,8 @@ char   *cvthname(struct sockaddr_storage *);
 void    deadq_enter(pid_t, const char *);
 int     deadq_remove(pid_t);
 int     decode(const char *, CODE *);
-void    die(int fd, short event, void *ev);   /* SIGTERM kevent dispatch routine */
+void    die(int fd, short event, void *ev) /* SIGTERM kevent dispatch routine */
+    __attribute__((__noreturn__));
 void    domark(int fd, short event, void *ev);/* timer kevent dispatch routine */
 bool    format_buffer(struct buf_msg*, char**, size_t*, size_t*, size_t*, size_t*);
 void    fprintlog(struct filed *, struct buf_msg *, struct buf_queue *);
@@ -213,8 +214,10 @@ struct socketEvent* socksetup(int, const char *);
 void    read_config_file(FILE*, struct filed**);
 void    store_sign_delim_sg2(char*);
 void    init(int fd, short event, void *ev);  /* SIGHUP kevent dispatch routine */
-void    logerror(const char *, ...);
-void    loginfo(const char *, ...);
+void    logerror(const char *, ...)
+    __attribute__((__format__(__printf__,1,2)));
+void    loginfo(const char *, ...)
+    __attribute__((__format__(__printf__,1,2)));
 void    logmsg_async(const int, const char *, const char *, const int);
 void    logmsg(struct buf_msg *);
 void    log_deadchild(pid_t, int, const char *);
@@ -229,7 +232,8 @@ int     p_open(char *, pid_t *);
 void    trim_localdomain(char *);
 void    trim_anydomain(char *);
 void    reapchild(int fd, short event, void *ev); /* SIGCHLD kevent dispatch routine */
-void    usage(void);
+void    usage(void)
+    __attribute__((__noreturn__));
 void    wallmsg(struct filed *, struct iovec *, size_t);
 int     main(int, char *[]);
 void    logpath_add(char ***, int *, int *, char *);
@@ -242,7 +246,8 @@ char  *copy_utf8_ascii(char*, size_t);
 static unsigned check_sd(char*);
 static unsigned check_msgid(char *);
 
-struct event *allocev(void);
+struct event *allocev(void)
+    __attribute__((malloc));
 void schedule_event(struct event **, struct timeval *, void (*)(int, short, void *), void *);
 static void dispatch_read_klog(int fd, short event, void *ev);
 static void dispatch_read_finet(int fd, short event, void *ev);
@@ -253,7 +258,8 @@ unsigned int message_allqueues_purge(void);
 unsigned int message_allqueues_check(void);
 void send_queue(struct filed *);
 static struct buf_queue *find_qentry_to_delete(const struct buf_queue_head *, const int, const bool);
-struct buf_msg *buf_msg_new(const size_t);
+struct buf_msg *buf_msg_new(const size_t)
+    __attribute__((malloc));
 void buf_msg_free(struct buf_msg *msg);
 size_t buf_queue_obj_size(struct buf_queue*);
 bool message_queue_remove(struct filed *, struct buf_queue *);

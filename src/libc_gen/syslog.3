@@ -58,9 +58,9 @@
 .Ft void
 .Fn syslog_r "int priority" "struct syslog_data *data" "const char *message" "..."
 .Ft void
-.Fn syslogp "int priority" "const char *msgid" "const char *sdata" "const char *message" "..."
+.Fn syslogp "int priority" "const char *msgid" "const char *sdfmt" "const char *message" "..."
 .Ft void
-.Fn syslogp_r "int priority" "struct syslog_data *data" "const char *msgid" "const char *sdata" "const char *message" "..."
+.Fn syslogp_r "int priority" "struct syslog_data *data" "const char *msgid" "const char *sdfmt" "const char *message" "..."
 .\" .Ft void
 .\" .Fn syslog_ss "int priority" "struct syslog_data *data" "const char *message" "..."
 .Ft void
@@ -81,9 +81,9 @@
 .Ft void
 .Fn vsyslog_r "int priority" "struct syslog_data *data" "const char *message" "va_list args"
 .Ft void
-.Fn vsyslogp "int priority" "const char *msgid" "const char *sdata" "const char *message" "va_list args"
+.Fn vsyslogp "int priority" "const char *msgid" "const char *sdfmt" "const char *message" "va_list args"
 .Ft void
-.Fn vsyslogp_r "int priority" "struct syslog_data *data" "const char *msgid" "const char *sdata" "const char *message" "va_list args"
+.Fn vsyslogp_r "int priority" "struct syslog_data *data" "const char *msgid" "const char *sdfmt" "const char *message" "va_list args"
 .\" .Ft void
 .\" .Fn vsyslog_ss "int priority" "struct syslog_data *data" "const char *message" "va_list args"
 .Bd -literal
@@ -503,7 +503,7 @@ With
 the caller is responsible to use the right formatting for the message fields. A
 .Fa msgid
 must only contain up to 32 ASCII characters. A
-.Fa sdata
+.Fa sdfmt
 has strict rules for paranthesis and character quoting. If the
 .Fa msgfmt
 contains UTF-8 characters, then it has to start with a Byte Order Mark.

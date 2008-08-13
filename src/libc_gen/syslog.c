@@ -122,19 +122,19 @@ vsyslog(int pri, const char *fmt, va_list ap)
  *      like syslog but take additional arguments for MSGID and SD
  */
 void
-syslogp(int pri, const char *msgid, const char *sdata, const char *msgfmt, ...)
+syslogp(int pri, const char *msgid, const char *sdfmt, const char *msgfmt, ...)
 {
         va_list ap;
 
         va_start(ap, msgfmt);
-        vsyslogp(pri, msgid, sdata, msgfmt, ap);
+        vsyslogp(pri, msgid, sdfmt, msgfmt, ap);
         va_end(ap);
 }
 
 void
-vsyslogp(int pri, const char *msgid, const char *sdata, const char *msgfmt, va_list ap)
+vsyslogp(int pri, const char *msgid, const char *sdfmt, const char *msgfmt, va_list ap)
 {
-        vsyslogp_r(pri, &sdata, msgid, sdata, msgfmt, ap);
+        vsyslogp_r(pri, &sdata, msgid, sdfmt, msgfmt, ap);
 }
 
 void
@@ -170,12 +170,12 @@ syslog_r(int pri, struct syslog_data *data, const char *fmt, ...)
 
 void
 syslogp_r(int pri, struct syslog_data *data, const char *msgid,
-        const char *sdata, const char *msgfmt, ...)
+        const char *sdfmt, const char *msgfmt, ...)
 {
         va_list ap;
 
         va_start(ap, msgfmt);
-        vsyslogp_r(pri, data, msgid, sdata, msgfmt, ap);
+        vsyslogp_r(pri, data, msgid, sdfmt, msgfmt, ap);
         va_end(ap);
 }
 
@@ -191,12 +191,12 @@ syslog_ss(int pri, struct syslog_data *data, const char *fmt, ...)
 
 void
 syslogp_ss(int pri, struct syslog_data *data, const char *msgid,
-        const char *sdata, const char *msgfmt, ...)
+        const char *sdfmt, const char *msgfmt, ...)
 {
         va_list ap;
 
         va_start(ap, msgfmt);
-        vsyslogp_r(pri | LOG_SIGNAL_SAFE, data, msgid, sdata, msgfmt, ap);
+        vsyslogp_r(pri | LOG_SIGNAL_SAFE, data, msgid, sdfmt, msgfmt, ap);
         va_end(ap);
 }
 
@@ -208,9 +208,9 @@ vsyslog_ss(int pri, struct syslog_data *data, const char *fmt, va_list ap)
 
 void
 vsyslogp_ss(int pri, struct syslog_data *data, const char *msgid,
-        const char *sdata, const char *msgfmt, va_list ap)
+        const char *sdfmt, const char *msgfmt, va_list ap)
 {
-        vsyslogp_r(pri | LOG_SIGNAL_SAFE, data, msgid, sdata, msgfmt, ap);
+        vsyslogp_r(pri | LOG_SIGNAL_SAFE, data, msgid, sdfmt, msgfmt, ap);
 }
 
 
@@ -222,11 +222,10 @@ vsyslog_r(int pri, struct syslog_data *data, const char *fmt, va_list ap)
 
 void
 vsyslogp_r(int pri, struct syslog_data *data, const char *msgid,
-        const char *sdata, const char *msgfmt, va_list ap)
+        const char *sdfmt, const char *msgfmt, va_list ap)
 {
         size_t cnt, prlen;
         char *p;
-        const char *fmt;
         time_t now;
         struct tm tmnow;
         int fd, saved_errno;
@@ -334,8 +333,8 @@ vsyslogp_r(int pri, struct syslog_data *data, const char *msgid,
         } else
                 strlcat(fmt_cat, "- ", FMT_LEN);
 
-        if (sdata != NULL && *sdata != '\0') {
-                strlcat(fmt_cat, sdata, FMT_LEN);
+        if (sdfmt != NULL && *sdfmt != '\0') {
+                strlcat(fmt_cat, sdfmt, FMT_LEN);
         } else
                 strlcat(fmt_cat, "-", FMT_LEN);
 

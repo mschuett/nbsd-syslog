@@ -374,8 +374,6 @@ struct tls_global_options_t {
         char *gen_cert;     /* if !NULL: generate self-signed certificate */
         char *reconnect_giveup_str;
         char *reconnect_interval_str;
-        int64_t reconnect_giveup;    /* in seconds or 0 for none */
-        int64_t reconnect_interval;  /* in seconds */
 };
 
 /* TLS needs three sets of sockets:

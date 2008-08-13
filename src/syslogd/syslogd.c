@@ -2964,9 +2964,9 @@ read_config_file(FILE *cf, struct filed **f_ptr)
 #ifndef DISABLE_SIGN
         char *sign_sg_str = NULL;
 #endif /* !DISABLE_SIGN */
-#if (!defined(DISABLE_TLS) && !defined(DISABLE_SIGN))
+#if (!defined(DISABLE_TLS) || !defined(DISABLE_SIGN))
         char *tmp_buf = NULL;
-#endif /* (!defined(DISABLE_TLS) && !defined(DISABLE_SIGN)) */
+#endif /* (!defined(DISABLE_TLS) || !defined(DISABLE_SIGN)) */
         /* central list of recognized configuration keywords
          * and an address for their values as strings */
         const struct config_keywords {
@@ -3360,8 +3360,7 @@ init(int fd, short event, void *ev)
         read_config_file(cf, &newf);
         newf = *nextp;
         (void)fclose(cf);
-        DPRINTF(D_MISC, "read_config_file() returned newf=%p and "
-                "sign_sg_int=%d\n", newf, GlobalSign.sg);
+        DPRINTF(D_MISC, "read_config_file() returned newf=%p\n", newf);
 
 #define MOVE_QUEUE(dst, src) do {                                       \
                 struct buf_queue *buf;                                  \

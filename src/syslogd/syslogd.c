@@ -72,11 +72,6 @@ __RCSID("$NetBSD: syslogd.c,v 1.84 2006/11/13 20:24:00 christos Exp $");
 #define SYSLOG_NAMES
 #include "syslogd.h"
 
-#if (!defined(DISABLE_SIGN) && defined(DISABLE_TLS))
-/* TODO: fix this */
-#error syslog-sign currently needs TLS code, cannot DISABLE_TLS without DISABLE_SIGN
-#endif /* (!defined(DISABLE_SIGN) && defined(DISABLE_TLS)) */
-
 #ifndef DISABLE_SIGN
 #include "sign.h"
 struct sign_global_t GlobalSign = {

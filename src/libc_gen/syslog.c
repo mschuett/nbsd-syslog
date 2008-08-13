@@ -216,13 +216,14 @@ void
 vsyslogp_r(int pri, struct syslog_data *data, const char *msgid,
         const char *sdfmt, const char *msgfmt, va_list ap)
 {
-        size_t cnt, prlen;
+        size_t cnt, prlen, tries;
         char ch, *p, *t;
         time_t now;
         struct tm tmnow;
         int fd, saved_errno;
 #define TBUF_LEN        2048
 #define FMT_LEN         1024
+#define MAXTRIES        10
         char *stdp = NULL;      /* pacify gcc */
         char tbuf[TBUF_LEN], fmt_cpy[FMT_LEN], fmt_cat[FMT_LEN] = "";
         size_t tbuf_left, fmt_left;
@@ -401,37 +402,36 @@ vsyslogp_r(int pri, struct syslog_data *data, const char *msgid,
          * case #1 and keep send()ing data to cover case #2
          * to give syslogd a chance to empty its socket buffer.
          */
-        if (send(data->log_file, tbuf, cnt, 0) == -1) {
+        for (tries = 0; tries < MAXTRIES; tries++) {
+                if (send(data->log_file, tbuf, cnt, 0) != -1)
+                        break;
                 if (errno != ENOBUFS) {
                         disconnectlog_r(data);
                         connectlog_r(data);
-                }
-                do {
-                        usleep(1);
-                        if (send(data->log_file, tbuf, cnt, 0) != -1)
-                                break;
-                } while (errno == ENOBUFS);
+                } else
+                        (void)usleep(1);
         }
-        if (data == &sdata)
-                mutex_unlock(&syslog_mutex);
 
         /*
          * Output the message to the console; try not to block
          * as a blocking console should not stop other processes.
          * Make sure the error reported is the one from the syslogd failure.
          */
-        if ((data->log_stat & LOG_CONS) &&
-            (fd = open(_PATH_CONSOLE, O_WRONLY|O_NONBLOCK, 0)) >= 0) {
+        if (tries == MAXTRIES && (data->log_stat & LOG_CONS) &&
+            (fd = open(_PATH_CONSOLE, O_WRONLY|O_NONBLOCK, 0)) >= 0 &&
+            (p = strchr(tbuf, '>')) != NULL) {
                 struct iovec iov[2];
-                
-                p = strchr(tbuf, '>') + 1;
-                iov[0].iov_base = p;
+                iov[0].iov_base = ++p;
                 iov[0].iov_len = cnt - (p - tbuf);
                 iov[1].iov_base = __UNCONST("\r\n");
                 iov[1].iov_len = 2;
                 (void)writev(fd, iov, 2);
                 (void)close(fd);
         }
+
+        if (data == &sdata)
+                mutex_unlock(&syslog_mutex);
+
         if (data != &sdata)
                 closelog_r(data);
 }

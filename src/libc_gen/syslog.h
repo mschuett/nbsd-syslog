@@ -210,14 +210,18 @@ void	openlog_r(const char *, int, int, struct syslog_data *);
 int	setlogmask_r(int, struct syslog_data *);
 void	syslog_r(int, struct syslog_data *, const char *, ...)
     __attribute__((__format__(__printf__,3,4)));
-void	vsyslog_r(int, struct syslog_data *, const char *, _BSD_VA_LIST_);
-void syslogp(int, const char *, const char *, const char *, ...);
-void vsyslogp(int, const char *, const char *, const char *, _BSD_VA_LIST_);
+void	vsyslog_r(int, struct syslog_data *, const char *, _BSD_VA_LIST_)
+    __attribute__((__format__(__printf__,3,0)));
+void syslogp(int, const char *, const char *, const char *, ...)
+    __attribute__((__format__(__printf__,4,0)));
+void vsyslogp(int, const char *, const char *, const char *, _BSD_VA_LIST_)
+    __attribute__((__format__(__printf__,4,0)));
 void syslogp_r(int, struct syslog_data *, const char *, const char *,
-    const char *, ...);
+    const char *, ...)
+    __attribute__((__format__(__printf__,5,0)));
 void vsyslogp_r(int, struct syslog_data *, const char *, const char *,
-    const char *, _BSD_VA_LIST_);
-
+    const char *, _BSD_VA_LIST_)
+    __attribute__((__format__(__printf__,5,0)));
 #endif
 __END_DECLS
 

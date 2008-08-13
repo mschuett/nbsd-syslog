@@ -211,6 +211,13 @@ int	setlogmask_r(int, struct syslog_data *);
 void	syslog_r(int, struct syslog_data *, const char *, ...)
     __attribute__((__format__(__printf__,3,4)));
 void	vsyslog_r(int, struct syslog_data *, const char *, _BSD_VA_LIST_);
+void	syslogp(int, const char *, const char *, const char *, ...);
+void	vsyslogp(int, const char *, const char *, const char *, _BSD_VA_LIST_);
+void	syslogp_r(int, struct syslog_ *data, const char *, const char *,
+    const char *, ...);
+void	vsyslogp_r(int, struct syslog_ *data, const char *, const char *,
+    const char *, _BSD_VA_LIST_);
+
 #endif
 __END_DECLS
 

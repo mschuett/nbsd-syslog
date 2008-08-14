@@ -1623,17 +1623,15 @@ tls_split_messages(struct TLS_Incoming_Conn *c)
  */
 #define DEBUG_LINELENGTH 40
 bool
-tls_send(struct filed *f, struct buf_msg *buffer,
-        char *line, size_t len, struct buf_queue *qentry)
+tls_send(struct filed *f, char *line, size_t len, struct buf_queue *qentry)
 {
         struct tls_send_msg *sendmsg;
 
-        DPRINTF((D_TLS|D_CALL), "tls_send(f=%p, buffer=%p, line=\"%.*s%s\", "
-                "len=%d) to %sconnected dest.\n", f, buffer,
+        DPRINTF((D_TLS|D_CALL), "tls_send(f=%p, line=\"%.*s%s\", "
+                "len=%d) to %sconnected dest.\n", f,
                 (len > DEBUG_LINELENGTH ? DEBUG_LINELENGTH : len),
                 line, (len > DEBUG_LINELENGTH ? "..." : ""),
                 len, f->f_un.f_tls.tls_conn->sslptr ? "" : "un");
-        assert(qentry->msg == buffer);
 
         if(f->f_un.f_tls.tls_conn->state == ST_TLS_EST) {
                 /* send now */
@@ -1642,7 +1640,7 @@ tls_send(struct filed *f, struct buf_msg *buffer,
                         return false;
                 }
                 sendmsg->f = f;
-                sendmsg->buffer = NEWREF(buffer);
+                sendmsg->buffer = NEWREF(qentry->msg);
                 sendmsg->line = line;
                 sendmsg->linelen = len;
                 sendmsg->qentry = qentry;

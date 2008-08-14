@@ -2329,7 +2329,7 @@ sendagain:
                  * it will be removed when sendmsg is sent and free()d */
                 if (!qentry)
                         qentry = message_queue_add(f, NEWREF(buffer));
-                (void)tls_send(f, buffer, lineptr, len, qentry);
+                (void)tls_send(f, lineptr, len, qentry);
                 break;
 #endif /* !DISABLE_TLS */
 

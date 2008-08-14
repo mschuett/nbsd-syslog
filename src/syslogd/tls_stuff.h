@@ -146,7 +146,7 @@ void dispatch_force_tls_reconnect(int, short, void *);
 
 bool tls_connect(struct tls_conn_settings *);
 void tls_reconnect(int, short, void *);
-bool tls_send(struct filed *, struct buf_msg *, char *, size_t, struct buf_queue*);
+bool tls_send(struct filed *, char *, size_t, struct buf_queue*);
 void tls_split_messages(struct TLS_Incoming_Conn *);
 
 void free_tls_conn(struct tls_conn_settings *);

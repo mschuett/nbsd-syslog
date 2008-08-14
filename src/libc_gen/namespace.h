@@ -589,9 +589,12 @@
 #define sysctlbyname		_sysctlbyname
 #define sysctlgetmibinfo	_sysctlgetmibinfo
 #define sysctlnametomib		_sysctlnametomib
-#define syslog			_syslog
-#define syslog_r		_syslog_r
-#define syslog_ss		_syslog_ss
+#define syslog                  _syslog
+#define syslog_r                _syslog_r
+#define syslog_ss               _syslog_ss
+#define syslogp                 _syslogp
+#define syslogp_r               _syslogp_r
+#define syslogp_ss              _syslogp_ss
 #define taddr2uaddr		_taddr2uaddr
 #define tcdrain			_tcdrain
 #define tcflow			_tcflow
@@ -631,9 +634,12 @@
 #define vsnprintf		_vsnprintf
 #endif
 #define vsnprintf_ss		_vsnprintf_ss
-#define vsyslog			_vsyslog
-#define vsyslog_r		_vsyslog_r
-#define vsyslog_ss		_vsyslog_ss
+#define vsyslog                 _vsyslog
+#define vsyslog_r               _vsyslog_r
+#define vsyslog_ss              _vsyslog_ss
+#define vsyslogp                _vsyslogp
+#define vsyslogp_r              _vsyslogp_r
+#define vsyslogp_ss             _vsyslogp_ss
 #define wait			_wait
 #define wait3			_wait3
 #define waitpid			_waitpid

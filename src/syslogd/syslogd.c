@@ -257,6 +257,7 @@ int             matches_spec(const char *, const char *,
 bool            format_buffer(struct buf_msg*, char**,
                 size_t*, size_t*, size_t*, size_t*);
 void            fprintlog(struct filed *, struct buf_msg *, struct buf_queue *);
+void            udp_send(struct filed *, char *, size_t);
 void            wallmsg(struct filed *, struct iovec *, size_t);
 /* buffer & queue functions */
 struct buf_msg *buf_msg_new(const size_t) __attribute__((malloc));
@@ -2094,9 +2095,8 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
         struct buf_msg *buffer = passedbuffer;
         struct iovec iov[4];
         struct iovec *v = iov;
-        struct addrinfo *r;
         bool error = false;
-        int j, lsent, fail, retry, len = 0;
+        int len = 0;
         size_t msglen, linelen, tlsprefixlen, prilen;
         char *p, *line = NULL, *lineptr = NULL;
 #define REPBUFSIZE 80
@@ -2269,55 +2269,7 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
         case F_FORW:
                 DPRINTF(D_MISC, "Logging to %s %s\n",
                         TypeInfo[f->f_type].name, f->f_un.f_forw.f_hname);
-                if (finet) {
-                        lsent = -1;
-                        fail = 0;
-                        for (r = f->f_un.f_forw.f_addr; r; r = r->ai_next) {
-                                retry = 0;
-                                for (j = 0; j < finet->fd; j++) {
-#if 0 
-                                        /*
-                                         * should we check AF first, or just
-                                         * trial and error? FWD
-                                         */
-                                        if (r->ai_family ==
-                                            address_family_of(finet[j+1])) 
-#endif
-sendagain:
-                                        lsent = sendto(finet[j+1].fd,
-                                                lineptr, len, 0,
-                                                r->ai_addr, r->ai_addrlen);
-                                        if (lsent == -1) {
-                                                switch (errno) {
-                                                case ENOBUFS:
-                                                        /* wait/retry/drop */
-                                                        /* TODO: use event for
-                                                         * this. problem:
-                                                         * how to test?  */ 
-                                                        if (++retry < 5) {
-                                                                usleep(1000);
-                                                                goto sendagain;
-                                                        }
-                                                        break;
-                                                case EHOSTDOWN:
-                                                case EHOSTUNREACH:
-                                                case ENETDOWN:
-                                                        /* drop */
-                                                        break;
-                                                default:
-                                                        /* busted */
-                                                        fail++;
-                                                        break;
-                                                }
-                                        } else if (lsent == len) 
-                                                break;
-                                }
-                        }
-                        if (lsent != len && fail) {
-                                f->f_type = F_UNUSED;
-                                logerror("sendto() failed");
-                        }
-                }
+                udp_send(f, lineptr, len);
                 break;
                 
 #ifndef DISABLE_TLS
@@ -2470,6 +2422,57 @@ sendagain:
         /* TLS frees on its own */
         if (f->f_type != F_TLS)
                 FREEPTR(line);
+}
+
+/* send one line by UDP */
+void
+udp_send(struct filed *f, char *line, size_t len)
+{
+        int lsent, fail, retry;
+        struct addrinfo *r;
+
+        DPRINTF((D_NET|D_CALL), "udp_send(f=%p, line=\"%s\", "
+                "len=%d) to dest.\n", f, line, len);
+
+        if (!finet)
+                return;
+
+        lsent = -1;
+        fail = 0;
+        assert(f->f_type == F_FORW);
+        for (r = f->f_un.f_forw.f_addr; r; r = r->ai_next) {
+                retry = 0;
+                for (int j = 0; j < finet->fd; j++) {
+sendagain:
+                        lsent = sendto(finet[j+1].fd, line, len, 0,
+                                r->ai_addr, r->ai_addrlen);
+                        if (lsent == -1) {
+                                switch (errno) {
+                                case ENOBUFS:
+                                        /* wait/retry/drop */
+                                        if (++retry < 5) {
+                                                usleep(1000);
+                                                goto sendagain;
+                                        }
+                                        break;
+                                case EHOSTDOWN:
+                                case EHOSTUNREACH:
+                                case ENETDOWN:
+                                        /* drop */
+                                        break;
+                                default:
+                                        /* busted */
+                                        fail++;
+                                        break;
+                                }
+                        } else if (lsent == len)
+                                break;
+                }
+                if (lsent != len && fail) {
+                        f->f_type = F_UNUSED;
+                        logerror("sendto() failed");
+                }
+        }
 }
 
 /*

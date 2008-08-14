@@ -516,13 +516,16 @@ getgroup:
         }
 
 #if (!defined(DISABLE_TLS) && !defined(DISABLE_SIGN))
+        /* basic OpenSSL init */
+        SSL_load_error_strings();
+        (void) SSL_library_init();
+        OpenSSL_add_all_digests();
         /* OpenSSL PRNG needs /dev/urandom, thus initialize before chroot() */
         if (!RAND_status())
                 logerror("Unable to initialize OpenSSL PRNG");
         else {
                 DPRINTF(D_TLS, "Initializing PRNG\n");
         }
-        SLIST_INIT(&TLS_Incoming_Head);
 #endif /* (!defined(DISABLE_TLS) && !defined(DISABLE_SIGN)) */
 #ifndef DISABLE_SIGN
         /* initialize rsid -- we will use that later to determine

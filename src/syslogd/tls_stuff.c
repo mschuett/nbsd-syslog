@@ -148,9 +148,6 @@ init_global_TLS_CTX()
         if (x509verify != X509VERIFY_ALWAYS)
                 loginfo("insecure configuration, peer authentication disabled");
 
-        SSL_load_error_strings();
-        (void) SSL_library_init();
-        OpenSSL_add_all_digests();
         if (!(ctx = SSL_CTX_new(SSLv23_method()))) {
                 logerror("Unable to initialize OpenSSL: %s",
                         ERR_error_string(ERR_get_error(), NULL));
@@ -308,12 +305,12 @@ get_fingerprint(const X509 *cert, char **returnstring, const char *alg_name)
         unsigned len, memsize, i = 0;
         EVP_MD *digest;
 
-        DPRINTF(D_TLS, "get_fingerprint(cert, %p, \"%s\")\n",
-                returnstring, alg_name);
+        DPRINTF(D_TLS, "get_fingerprint(cert@%p, return@%p, alg \"%s\")\n",
+                cert, returnstring, alg_name);
         *returnstring = NULL;
-        if ((alg_name && !(digest = (EVP_MD *) EVP_get_digestbyname(alg_name)))
-            || (!alg_name && !(digest = (EVP_MD *) 
-                             EVP_get_digestbyname(DEFAULT_FINGERPRINT_ALG)))) {
+        if (!alg_name)
+                alg_name = DEFAULT_FINGERPRINT_ALG;
+        if (!(digest = (EVP_MD *) EVP_get_digestbyname(alg_name))) {
                 DPRINTF(D_TLS, "unknown digest algorithm %s\n", alg_name);
                 
                 return false;
@@ -473,7 +470,7 @@ match_fingerprint(const X509 *cert, const char *fingerprint)
         char *p;
         const char *q;
 
-        DPRINTF((D_TLS|D_CALL), "match_fingerprint(%p, \"%s\")\n",
+        DPRINTF((D_TLS|D_CALL), "match_fingerprint(cert@%p, fp \"%s\")\n",
                 cert, fingerprint);
         if (!fingerprint)
                 return false;
@@ -503,17 +500,23 @@ match_fingerprint(const X509 *cert, const char *fingerprint)
  * check if certificate matches given certificate file
  */
 bool
-match_certfile(const X509 *cert, const char *certfilename)
+match_certfile(const X509 *cert1, const char *certfilename)
 {
-        X509 *add_cert;
+        X509 *cert2;
+        char *fp1, *fp2;
         bool rc = false;
         errno = 0;
-        
-        if (read_certfile(&add_cert, certfilename)) {
-                rc = X509_cmp(cert, add_cert);
-                OPENSSL_free(add_cert);
-                DPRINTF(D_TLS, "X509_cmp() returns %d\n", rc);
-        }
+
+        if (read_certfile(&cert2, certfilename)
+         && get_fingerprint(cert1, &fp1, NULL)
+         && get_fingerprint(cert2, &fp2, NULL)) {
+                if (!strcmp(fp1, fp2))
+                        rc = true;
+                FREEPTR(fp1);
+                FREEPTR(fp2);
+         }
+        DPRINTF((D_TLS|D_CALL), "match_certfile(cert@%p, file \"%s\") "
+                "returns %d\n", cert1, certfilename, rc);
         return rc;
 }
 
@@ -1122,8 +1125,7 @@ parse_tls_destination(char *p, struct filed *f, const unsigned linenum)
                             || copy_config_value_quoted("cert=\"",
                                 &(f->f_un.f_tls.tls_conn->certfile), &p)) {
                         /* nothing */
-                        }
-                        else if (!strcmp(p, "verify=")) {
+                        } else if (!strcmp(p, "verify=")) {
                                 q = p += sizeof("verify=")-1;
                                 /* "" are optional */
                                 if (*p == '\"') { p++; q++; }
@@ -1132,8 +1134,7 @@ parse_tls_destination(char *p, struct filed *f, const unsigned linenum)
                                                         getVerifySetting(p);
                                 if (*q == '\"') q++;  /* "" are optional */
                                 p = q;
-                        }
-                        else {
+                        } else {
                                 logerror("unknown keyword %s "
                                         "in config line %d", p, linenum);
                         }
@@ -1145,11 +1146,15 @@ parse_tls_destination(char *p, struct filed *f, const unsigned linenum)
                         }
                 }
         }
+        
         DPRINTF((D_TLS|D_PARSE),
-                "got TLS config: host %s, port %s, subject: %s\n",
+                "got TLS config: host %s, port %s, "
+                "subject: %s, certfile: %s, fingerprint: %s\n",
                 f->f_un.f_tls.tls_conn->hostname,
                 f->f_un.f_tls.tls_conn->port,
-                f->f_un.f_tls.tls_conn->subject);
+                f->f_un.f_tls.tls_conn->subject,
+                f->f_un.f_tls.tls_conn->certfile,
+                f->f_un.f_tls.tls_conn->fingerprint);
         return true;
 }
 

@@ -1643,9 +1643,9 @@ tls_send(struct filed *f, char *line, size_t len, struct buf_queue *qentry)
                         return false;
                 }
                 sendmsg->f = f;
-                sendmsg->buffer = NEWREF(qentry->msg);
                 sendmsg->line = line;
                 sendmsg->linelen = len;
+                (void)NEWREF(qentry->msg);
                 sendmsg->qentry = qentry;
                 DPRINTF(D_DATA, "now sending line: \"%.*s\"\n",
                         sendmsg->linelen, sendmsg->line);
@@ -1672,7 +1672,7 @@ dispatch_tls_send(int fd, short event, void *arg)
         BLOCK_SIGNALS(omask, newmask);
         DPRINTF((D_TLS|D_CALL), "dispatch_tls_send(f=%p, buffer=%p, "
                 "line@%p, len=%d, offset=%d) to %sconnected dest.\n",
-                sendmsg->f, sendmsg->buffer, sendmsg->line,
+                sendmsg->f, sendmsg->qentry->msg, sendmsg->line,
                 sendmsg->linelen, sendmsg->offset,
                 conn_info->sslptr ? "" : "un");
         assert(conn_info->state == ST_TLS_EST
@@ -2099,8 +2099,8 @@ free_tls_send_msg(struct tls_send_msg *msg)
                 DPRINTF((D_DATA), "invalid tls_send_msg_free(NULL)\n");
                 return;
         }
+        DELREF(msg->qentry->msg);
         (void)message_queue_remove(msg->f, msg->qentry);
-        DELREF(msg->buffer);
         FREEPTR(msg->line);
         FREEPTR(msg);
 }

@@ -103,7 +103,6 @@ struct tls_conn_settings {
 /* argument struct only used for tls_send() */
 struct tls_send_msg {
         struct filed     *f;
-        struct buf_msg   *buffer;
         struct buf_queue *qentry;
         char             *line;      /* formatted message */
         size_t            linelen;

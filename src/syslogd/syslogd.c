@@ -265,7 +265,7 @@ void            buf_msg_free(struct buf_msg *msg);
 unsigned        message_queue_purge(struct filed *f, const unsigned, const int);
 unsigned        message_allqueues_purge(void);
 unsigned        message_allqueues_check(void);
-void            send_queue(struct filed *);
+void            send_queue(int __unused, short __unused, void *);
 static struct buf_queue *
                 find_qentry_to_delete(const struct buf_queue_head *, const int, const bool);
 struct buf_queue *
@@ -2863,6 +2863,7 @@ die(int fd, short event, void *ev)
                 DELREF(f->f_prevmsg);
                 FREEPTR(f->f_program);
                 FREEPTR(f->f_host);
+                DEL_EVENT(f->f_sq_event);
                 free((char *)f);
         }
 
@@ -3272,21 +3273,6 @@ init(int fd, short event, void *ev)
 #endif /* !DISABLE_SIGN */
 #ifndef DISABLE_TLS
                 free_incoming_tls_sockets();
-                /* TODO: I wonder whether TLS connections should
-                 * use a multi-step shutdown:
-                 * 1. send close notify to incoming connections
-                 * 2. receive outstanding messages/buffer
-                 * 3. receive close notify and close TLS socket
-                 * 4. close outgoing connections & files
-                 * 
-                 * Since init() is called after kevent, this would
-                 * probably require splitting it into hangup() for closing
-                 * and newinit() for opening, so that messages can still
-                 * be received between these two function calls.
-                 * 
-                 * Or we check inside init() if new kevents arrive
-                 * for the incoming sockets...
-                 */
 #endif /* !DISABLE_TLS */
                 Initialized = 0;
         }
@@ -3431,6 +3417,7 @@ init(int fd, short event, void *ev)
 #endif /* !DISABLE_TLS */
                 FREEPTR(f->f_program);
                 FREEPTR(f->f_host);
+                DEL_EVENT(f->f_sq_event);
                 free((char *)f);
         }
         Files = newf;
@@ -4191,30 +4178,61 @@ free_cred_SLIST(struct peer_cred_head *head)
  * send message queue after reconnect 
  */
 void
-send_queue(struct filed *f)
+send_queue(int fd, short event, void *arg)
 {
+        struct filed *f = (struct filed *) arg;
         struct buf_queue *qentry;
+#define SQ_CHUNK_SIZE 250
+        unsigned cnt = 0;
         
-        DPRINTF((D_DATA|D_CALL), "send_queue(f@%p with %d msgs)\n",
-                f, f->f_qelements);
+        if (f->f_type == F_TLS) {
+                /* use a flag to prevent recursive calls to send_queue() */
+                if (f->f_un.f_tls.tls_conn->send_queue)
+                        return;
+                else
+                        f->f_un.f_tls.tls_conn->send_queue = true;
+        }
+        DPRINTF((D_DATA|D_CALL), "send_queue(f@%p with %d msgs, "
+                "cnt@%p = %d)\n", f, f->f_qelements, &cnt, cnt);
 
         while ((qentry = STAILQ_FIRST(&f->f_qhead))) {
 #ifndef DISABLE_TLS
                 /* send_queue() might be called with an unconnected destination
                  * from init() or die() or one message might take longer,
-                 * leaving the connection in state ST_WAITING and thus not ready
-                 * for the next message. 
+                 * leaving the connection in state ST_WAITING and thus not
+                 * ready for the next message. 
                  * this check is a shortcut to skip these unnecessary calls */
                 if (f->f_type == F_TLS
                  && f->f_un.f_tls.tls_conn->state != ST_TLS_EST) {
-                        DPRINTF(D_TLS, "leave send_queue() on TLS connection "
-                                "in state %d\n", f->f_un.f_tls.tls_conn->state);
+                        DPRINTF(D_TLS, "abort send_queue(cnt@%p = %d) "
+                                "on TLS connection in state %d\n",
+                                &cnt, cnt, f->f_un.f_tls.tls_conn->state);
                         return;
                  }
 #endif /* !DISABLE_TLS */
-                DPRINTF((D_DATA|D_CALL), "send_queue() calls fprintlog()\n");
                 fprintlog(f, qentry->msg, qentry);
+
+                /* Sending a long queue can take some time during which
+                 * SIGHUP and SIGALRM are blocked and no events are handled.
+                 * To avoid that we only send SQ_CHUNK_SIZE messages at once
+                 * and then reschedule ourselves to continue. Thus the control
+                 * will return first from all signal-protected functions so a
+                 * possible SIGHUP/SIGALRM is handled and then back to the
+                 * main loop which can handle possible input.
+                 */
+                if (++cnt >= SQ_CHUNK_SIZE) {
+                        if (!f->f_sq_event) { /* alloc on demand */
+                                f->f_sq_event = allocev();
+                                event_set(f->f_sq_event, 0, 0, send_queue, f);
+                        }
+                        if (event_add(f->f_sq_event, &((struct timeval){0, 1})) == -1) {
+                                DPRINTF(D_EVENT, "Failure in event_add()\n");
+                        }
+                        break;
+                }
         }
+        if (f->f_type == F_TLS)
+                f->f_un.f_tls.tls_conn->send_queue = false;
 }
 
 /* 

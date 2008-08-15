@@ -92,7 +92,7 @@ extern void    loginfo(const char *, ...);
 extern void    printline(char *, char *, int);
 extern void    die(int fd, short event, void *ev);
 extern struct event *allocev(void);
-extern void    send_queue(struct filed *);
+extern void    send_queue(int __unused, short __unused, void *);
 extern void schedule_event(struct event **, struct timeval *,
         void (*)(int, short, void *), void *);
 extern char *make_timestamp(time_t *, bool);
@@ -898,7 +898,7 @@ dispatch_SSL_connect(int fd, short event, void *arg)
         DPRINTF(D_TLS, "TLS connection established.\n");
         ST_CHANGE(conn_info->state, ST_TLS_EST);
 
-        send_queue(get_f_by_conninfo(conn_info));
+        send_queue(0, 0, get_f_by_conninfo(conn_info));
         RESTORE_SIGNALS(omask);
 }
 
@@ -1728,13 +1728,15 @@ dispatch_tls_send(int fd, short event, void *arg)
                 DPRINTF((D_TLS|D_DATA), "TLS: SSL_write() complete\n");
                 ST_CHANGE(conn_info->state, ST_TLS_EST);
                 free_tls_send_msg(sendmsg);
-                send_queue(f);
+                send_queue(0, 0, f);
+
         } else {
                 /* should not be reached */
+                assert(0);
                 DPRINTF((D_TLS|D_DATA), "unreachable code after SSL_write()\n");
                 ST_CHANGE(conn_info->state, ST_TLS_EST);
                 free_tls_send_msg(sendmsg);
-                send_queue(f);
+                send_queue(0, 0, f);
         }
         if (retrying && conn_info->event->ev_events)
                 EVENT_ADD(conn_info->event);

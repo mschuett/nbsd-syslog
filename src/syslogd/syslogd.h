@@ -150,8 +150,8 @@ char *strndup(const char *str, size_t n);
 #define DPRINTF(x, ...) (void)0
 #else
 #define DPRINTF(x, ...) (Debug & (x) \
-                         ? (printf("%s:%s:%.4d\t", make_timestamp(NULL, true), \
-                                __FILE__, __LINE__), printf(__VA_ARGS__)) \
+                         ? (printf("%s:%s:%s:%.4d\t", make_timestamp(NULL, true), \
+                              __FILE__, __func__, __LINE__), printf(__VA_ARGS__)) \
                          : 0)
 #endif
 
@@ -229,7 +229,7 @@ char *strndup(const char *str, size_t n);
 
 /* small optimization to call send_queue() only if queue has elements */
 #define SEND_QUEUE(f) do { if ((f)->f_qelements)        \
-                                send_queue(f);          \
+                                send_queue(0, 0, f);          \
                          } while (0)
 
 #define MAXUNAMES               20      /* maximum number of user names */
@@ -354,6 +354,7 @@ struct filed {
         unsigned              f_qelements;   /* elements in queue */
         size_t                f_qsize;       /* size of queue in bytes */
         struct buf_msg       *f_prevmsg;     /* last message logged */
+        struct event         *f_sq_event;    /* timer for send_queue() */
         int                   f_prevcount;   /* repetition cnt of prevmsg */
         int                   f_repeatcount; /* number of "repeated" msgs */
         int                   f_lasterror;   /* last error on writev() */

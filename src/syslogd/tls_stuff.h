@@ -83,7 +83,8 @@
  *   check_peer_cert() fills in subject and fingerprint from the peer cert
  */
 struct tls_conn_settings {
-        unsigned      errorcount:4, /* counter [0;TLS_MAXERRORCOUNT] */
+        unsigned      send_queue:1, /* currently sending buffer      */
+                      errorcount:4, /* counter [0;TLS_MAXERRORCOUNT] */
                       accepted:1,   /* workaround cf. check_peer_cert*/
                       shutdown:1,   /* fast connection close on exit */ 
                       x509verify:2, /* kind of validation needed     */

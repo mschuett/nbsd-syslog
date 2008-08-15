@@ -82,6 +82,7 @@
  */
 struct tls_conn_settings {
         unsigned      accepted:1,   /* workaround cf. check_peer_cert*/
+                      shutdown:1,   /* fast connection close on exit */ 
                       x509verify:2, /* kind of validation needed     */
                       incoming:1,   /* set if we are server          */
                       state:4;      /* outgoing connection state     */

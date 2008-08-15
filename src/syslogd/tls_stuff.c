@@ -1168,6 +1168,10 @@ tls_reconnect(int fd, short event, void *arg)
 
         DPRINTF((D_TLS|D_CALL|D_EVENT), "tls_reconnect(conn_info@%p, "
                 "server %s)\n", conn_info, conn_info->hostname);
+        if (conn_info->sslptr) {
+                conn_info->shutdown = true;
+                free_tls_sslptr(conn_info);
+        }
         assert(conn_info->state == ST_NONE);
 
         if (!tls_connect(conn_info)) {
@@ -1395,7 +1399,6 @@ dispatch_tls_eof(int fd, short event, void *arg)
         DEL_EVENT(conn_info->event);
 
         free_tls_sslptr(conn_info);
-        assert(conn_info->state == ST_NONE);
 
         /* this overwrites the EV_READ event */
         schedule_event(&conn_info->event,
@@ -1747,10 +1750,11 @@ free_tls_conn(struct tls_conn_settings *conn_info)
         DPRINTF(D_MEM, "free_tls_conn(conn_info@%p) with sslptr@%p\n",
                 conn_info, conn_info->sslptr);
 
-        if (conn_info->sslptr)
+        if (conn_info->sslptr) {
+                conn_info->shutdown = true;
                 free_tls_sslptr(conn_info);
-        assert(conn_info->incoming == 1
-            || conn_info->state == ST_NONE);
+        }
+        assert(conn_info->state == ST_NONE);
 
         FREEPTR(conn_info->port);
         FREEPTR(conn_info->subject);
@@ -1812,7 +1816,13 @@ dispatch_SSL_shutdown(int fd, short event, void *arg)
                         DPRINTF(D_TLS, "Unexpected connection state %d\n",
                                 conn_info->state);
                         /* and abort here too*/
-        } else if (rc == -1) {
+        } else if (rc == -1 && conn_info->shutdown ) {
+                (void)tls_examine_error("SSL_shutdown()",
+                        conn_info->sslptr, NULL, rc);
+                DPRINTF((D_TLS|D_NET), "Ignore error in SSL_shutdown()"
+                        " and force connection shutdown.");
+                ST_CHANGE(conn_info->state, ST_TCP_EST);
+        } else if (rc == -1 && !conn_info->shutdown ) {
                 error = tls_examine_error("SSL_shutdown()",
                         conn_info->sslptr, NULL, rc);
                 switch (error) {
@@ -1823,7 +1833,8 @@ dispatch_SSL_shutdown(int fd, short event, void *arg)
                                         EV_READ, dispatch_SSL_shutdown,
                                         conn_info);
                                 EVENT_ADD(conn_info->retryevent);
-                                break;
+                                RESTORE_SIGNALS(omask);
+                                return;
                         case TLS_RETRY_WRITE:
                                 if (!retrying)
                                         event_del(conn_info->event);
@@ -1831,14 +1842,12 @@ dispatch_SSL_shutdown(int fd, short event, void *arg)
                                         EV_WRITE, dispatch_SSL_shutdown,
                                         conn_info);
                                 EVENT_ADD(conn_info->retryevent);
-                                break;
+                                RESTORE_SIGNALS(omask);
+                                return;
                         default:
-                                /* we cannot shutdown after an error in
-                                 * shutdown, can we?   %-)           */
-                                break;
+                                /* force close() on the TCP connection */
+                                ST_CHANGE(conn_info->state, ST_TCP_EST);
                 }
-                RESTORE_SIGNALS(omask);
-                return;
         }
         if ((conn_info->state != ST_TLS_EST)
          && (conn_info->state != ST_NONE)

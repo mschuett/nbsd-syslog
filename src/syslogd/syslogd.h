@@ -251,6 +251,11 @@ char *strndup(const char *str, size_t n);
                 } while (0)
 #define RESTORE_SIGNALS(omask) sigprocmask(SIG_SETMASK, &omask, NULL)
 
+/* small optimization to call send_queue() only if queue has elements */
+#define SEND_QUEUE(f) do { if ((f)->f_qelements)        \
+                                send_queue(f);          \
+                         } while (0)
+
 #define MAXUNAMES       20      /* maximum number of user names */
 #define BSD_TIMESTAMPLEN    14+1
 #define MAX_TIMESTAMPLEN    31+1

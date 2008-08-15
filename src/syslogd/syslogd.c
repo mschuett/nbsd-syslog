@@ -2157,7 +2157,17 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
                 DELREF(buffer);
                 return;
         }
-        
+
+        /* buffering works only for few types */
+        if (qentry
+          && (f->f_type != F_TLS)
+          && (f->f_type != F_PIPE)
+          && (f->f_type != F_FILE)) {
+                logerror("Warning: unexpected message in buffer");
+                DELREF(buffer);
+                return;
+        }
+
         if (!format_buffer(buffer, &line,
                 &linelen, &msglen, &tlsprefixlen, &prilen)) {
                 DPRINTF(D_CALL, "format_buffer() failed, skip message\n");
@@ -2293,14 +2303,11 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
                         if ((f->f_file = p_open(f->f_un.f_pipe.f_pname,
                                                 &f->f_un.f_pipe.f_pid)) < 0) {
                                 f->f_type = F_UNUSED;
+                                message_queue_freeall(f);
                                 logerror(f->f_un.f_pipe.f_pname);
-                                if (buffer && !qentry) {
-                                        message_queue_add(f, NEWREF(buffer));
-                                }
                                 break;
-                        }
-                        else
-                                send_queue(f);
+                        } else if (!qentry) /* prevent recursion */
+                                SEND_QUEUE(f);
                 }
                 if (writev(f->f_file, iov, v - iov) < 0) {
                         int e = errno;
@@ -2326,8 +2333,8 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
                                 if ((f->f_file = p_open(f->f_un.f_pipe.f_pname,
                                      &f->f_un.f_pipe.f_pid)) < 0) {
                                         f->f_type = F_UNUSED;
-                                        logerror(f->f_un.f_pipe.f_pname);
                                         message_queue_freeall(f);
+                                        logerror(f->f_un.f_pipe.f_pname);
                                         break;
                                 }
                                 if (writev(f->f_file, iov, v - iov) < 0) {
@@ -2338,7 +2345,7 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
                                                         f->f_un.f_pipe.f_pname);
                                         }
                                         f->f_un.f_pipe.f_pid = 0;
-                                        error = true;   /* cleanup on return */
+                                        error = true;   /* enqueue on return */
                                 } else
                                         e = 0;
                         }
@@ -2369,8 +2376,7 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
                                 f->f_lasterror = e;
                                 if (lasterror != e)
                                         logerror(f->f_un.f_fname);
-                                /* TODO: can we get an event when file is writeable again? */
-                                error = true;   /* cleanup on return */
+                                error = true;   /* enqueue on return */
                         }
                         (void)close(f->f_file);
                         /*
@@ -2397,6 +2403,13 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
                         if ((buffer->flags & SYNC_FILE)
                          && (f->f_flags & FFLAG_SYNC))
                                 (void)fsync(f->f_file);
+                        /* Problem with files: We cannot check beforehand if
+                         * they would be writeable and call send_queue() first.
+                         * So we call send_queue() after a successful write,
+                         * which means the first message will be out of order.
+                         */
+                        if (!qentry) /* prevent recursion */
+                                SEND_QUEUE(f);
                 }
                 break;
 
@@ -2808,7 +2821,7 @@ die(int fd, short event, void *ev)
                 /* flush any pending output */
                 if (f->f_prevcount)
                         fprintlog(f, NULL, NULL);
-                send_queue(f);
+                SEND_QUEUE(f);
         }
 
 #ifndef DISABLE_TLS
@@ -3250,7 +3263,7 @@ init(int fd, short event, void *ev)
                 /* flush any pending output */
                 if (f->f_prevcount)
                         fprintlog(f, NULL, NULL);
-                send_queue(f);
+                SEND_QUEUE(f);
         }
         /* some actions only on SIGHUP and not on first start */
         if (Initialized) {
@@ -3934,7 +3947,7 @@ socksetup(int af, const char *hostname)
         /* Count max number of sockets we may open */
         for (maxs = 0, r = res; r; r = r->ai_next, maxs++)
                 continue;
-        socks = malloc((maxs+1) * sizeof(*socks));
+        socks = calloc(maxs+1, sizeof(*socks));
         if (!socks) {
                 logerror("Couldn't allocate memory for sockets");
                 die(0, 0, NULL);
@@ -3960,21 +3973,21 @@ socksetup(int af, const char *hostname)
                                 logerror("bind() failed");
                                 close(s->fd);
                                 continue;
+                        }
+                        s->ev = allocev();
+                        event_set(s->ev, s->fd, EV_READ | EV_PERSIST,
+                                dispatch_read_finet, s->ev);
+                        if (event_add(s->ev, NULL) == -1) {
+                                DPRINTF((D_EVENT|D_NET),
+                                        "Failure in event_add()\n");
                         } else {
-                                s->ev = allocev();
-                                event_set(s->ev, s->fd, EV_READ | EV_PERSIST,
-                                        dispatch_read_finet, s->ev);
-                                if (event_add(s->ev, NULL) == -1) {
-                                        DPRINTF((D_EVENT|D_NET),
-                                                "Failure in event_add()\n");
-                                } else {
-                                        DPRINTF((D_EVENT|D_NET),
-                                                "Listen on UDP port\n");
-                                }
+                                DPRINTF((D_EVENT|D_NET),
+                                        "Listen on UDP port "
+                                        "(event@%p)\n", s->ev);
                         }
                 }
 
-                socks->fd = socks->fd + 1;  /* num counter */
+                socks->fd++;  /* num counter */
                 s++;
         }
 
@@ -4194,7 +4207,7 @@ send_queue(struct filed *f)
                  * this check is a shortcut to skip these unnecessary calls */
                 if (f->f_type == F_TLS
                  && f->f_un.f_tls.tls_conn->state != ST_TLS_EST) {
-                        DPRINTF(D_TLS, "leave send_queue() on connection "
+                        DPRINTF(D_TLS, "leave send_queue() on TLS connection "
                                 "in state %d\n", f->f_un.f_tls.tls_conn->state);
                         return;
                  }

@@ -100,40 +100,6 @@
 } while (0)
 #endif /* !TAILQ_CONCAT */
 
-/* message buffer container used for processing, formatting, and queueing */
-struct buf_msg {
-        unsigned refcount;
-        int      pri;
-        int      flags;
-        char    *timestamp;
-        char    *recvhost;
-        char    *host;
-        char    *prog;
-        char    *pid;
-        char    *msgid;
-        char    *sd;        /* structured data */
-        char    *msg;       /* message content */
-        char    *msgorig;   /* in case we advance *msg beyond header fields
-                                   we still want to free() the original ptr  */
-        size_t   msglen;    /* strlen(msg) */
-        size_t   msgsize;   /* allocated memory size   */
-        unsigned tlsprefixlen; /* bytes for the TLS length prefix */
-        unsigned prilen;       /* bytes for priority and version  */
-};
-
-/* queue of messages */
-struct buf_queue {
-        struct buf_msg* msg;
-        STAILQ_ENTRY(buf_queue) entries;
-};
-STAILQ_HEAD(buf_queue_head, buf_queue);
-
-/* keeps track of UDP sockets and event objects */
-struct socketEvent {
-        int fd;
-        struct event *ev;
-};
-
 #include "pathnames.h"
 #include <sys/syslog.h>
 
@@ -176,7 +142,8 @@ char *strndup(const char *str, size_t n);
 #define D_MEM2  1024    /* every single malloc/free */
 #define D_SIGN  2048    /* -sign */
 #define D_MISC  4096    /* everything else */
-#define D_ALL   (D_CALL | D_MEM | D_MEM2 | D_DATA | D_NET | D_FILE | D_TLS | D_EVENT | D_BUFFER | D_SIGN | D_MISC) 
+#define D_ALL   (D_CALL | D_DATA | D_NET | D_FILE | D_TLS | D_PARSE |  \
+                 D_EVENT | D_BUFFER | D_MEM | D_MEM2 | D_SIGN | D_MISC)
 
 /* build with -DNDEBUG to remove all assert()s and DPRINTF()s */
 #ifdef NDEBUG
@@ -189,41 +156,50 @@ char *strndup(const char *str, size_t n);
 #endif
 
 /* shortcuts for libevent */
-#define EVENT_ADD(x) do { DPRINTF(D_EVENT, "event_add(%s@%p)\n", #x, x); \
-                        if (event_add(x, NULL) == -1) \
-                                DPRINTF(D_EVENT, "Failure in event_add()\n"); \
-                        } while (0)
-#define RETRYEVENT_ADD(x) do { DPRINTF(D_EVENT, "retryevent_add(%s@%p)\n", #x, x); \
-                        if (event_add(x, &((struct timeval){0, TLS_RETRY_EVENT_USEC})) == -1) \
-                                DPRINTF(D_EVENT, "Failure in event_add()\n"); \
-                        } while (0)
+#define EVENT_ADD(x) do {                                               \
+                DPRINTF(D_EVENT, "event_add(%s@%p)\n", #x, x);          \
+                if (event_add(x, NULL) == -1) {                         \
+                        DPRINTF(D_EVENT, "Failure in event_add()\n");   \
+                } } while (0)
+#define RETRYEVENT_ADD(x) do {                                          \
+                DPRINTF(D_EVENT, "retryevent_add(%s@%p)\n", #x, x);     \
+                if (event_add(x, &((struct timeval)                     \
+                        {0, TLS_RETRY_EVENT_USEC})) == -1) {            \
+                        DPRINTF(D_EVENT, "Failure in event_add()\n");   \
+                } } while (0)
+#define DEL_EVENT(x) do {                                               \
+                DPRINTF(D_MEM2, "DEL_EVENT(%s@%p)\n", #x, x);           \
+                if ((x) && (event_del(x) == -1)) {                      \
+                        DPRINTF(D_EVENT, "Failure in event_del()\n");   \
+                } } while (0)
 
-#define FREEPTR(x)      if (x)     { DPRINTF(D_MEM2, "free(%s@%p)\n", #x, x); \
-                                     free(x);         x = NULL; }
-#define FREE_SSL(x)     if (x)     { DPRINTF(D_MEM2, "SSL_free(%s@%p)\n", #x, x); \
-                                     SSL_free(x);     x = NULL; }
-#define FREE_SSL_CTX(x) if (x)     { DPRINTF(D_MEM2, "SSL_CTX_free(%s@%p)\n", #x, x); \
-                                     SSL_CTX_free(x); x = NULL; }
+/* safe calls to free() */
+#define FREEPTR(x)      if (x) {                                        \
+                DPRINTF(D_MEM2, "free(%s@%p)\n", #x, x);                \
+                free(x);         x = NULL; }
+#define FREE_SSL(x)     if (x) {                                        \
+                DPRINTF(D_MEM2, "SSL_free(%s@%p)\n", #x, x);            \
+                SSL_free(x);     x = NULL; }
+#define FREE_SSL_CTX(x) if (x) {                                        \
+                DPRINTF(D_MEM2, "SSL_CTX_free(%s@%p)\n", #x, x);        \
+                SSL_CTX_free(x); x = NULL; }
 
-#define DEL_EVENT(x) do { DPRINTF(D_MEM2, "DEL_EVENT(%s@%p)\n", #x, x);      \
-                           if ((x) && (event_del(x) == -1)) {                  \
-                               DPRINTF(D_EVENT, "Failure in event_del()\n");   \
-                      } } while (0)
-
-/* generic for all structs with refcount */ 
+/* reference counting macros for buffers */ 
 #define NEWREF(x) ((x) ? (DPRINTF(D_BUFFER, "inc refcount of " #x \
                         " @ %p: %d --> %d\n", (x), (x)->refcount, \
                         (x)->refcount + 1), (x)->refcount++, (x))\
                        : (DPRINTF(D_BUFFER, "inc refcount of NULL!\n"), NULL))
-/* only for struct msg_buf() because of buf_msg_free(x) */
 #define DELREF(x) ((x) ? (DPRINTF(D_BUFFER, "dec refcount of " #x \
                         " @ %p: %d --> %d\n", (x), (x)->refcount, \
                         (x)->refcount - 1), buf_msg_free(x), NULL) \
-                       : (DPRINTF(D_BUFFER, "dec refcount of NULL!\n"), NULL) )
+                       : (DPRINTF(D_BUFFER, "dec refcount of NULL!\n"), NULL))
 
-/* assumption: once init() has set up all global variables etc.
- * the bulk of available memory is used for buffer and can be freed
- * if necessary */
+/* assumption: 
+ * - malloc()/calloc() only fails if not enough memory available
+ * - once init() has set up all global variables etc.
+ *   the bulk of available memory is used for buffers
+ *   and can be freed if necessary
+ */
 #define MALLOC(ptr, size) \
         do { while(!(ptr = malloc(size))) {                             \
                 DPRINTF(D_MEM, "Unable to allocate memory");            \
@@ -239,7 +215,7 @@ char *strndup(const char *str, size_t n);
            DPRINTF(D_MEM2, "CALLOC(%s@%p, %d)\n", #ptr, ptr, size);     \
         } while (0)
 
-/* strlen(NULL) does not work? */
+/* define strlen(NULL) to be 0 */
 #define SAFEstrlen(x) ((x) ? strlen(x) : 0)
 
 /* shorthand to block/restore signals for the duration of one function */
@@ -256,9 +232,9 @@ char *strndup(const char *str, size_t n);
                                 send_queue(f);          \
                          } while (0)
 
-#define MAXUNAMES       20      /* maximum number of user names */
-#define BSD_TIMESTAMPLEN    14+1
-#define MAX_TIMESTAMPLEN    31+1
+#define MAXUNAMES               20      /* maximum number of user names */
+#define BSD_TIMESTAMPLEN        14+1
+#define MAX_TIMESTAMPLEN        31+1
 
 /* maximum field lengths in syslog-protocol */
 #define PRI_MAX       5
@@ -273,20 +249,55 @@ char *strndup(const char *str, size_t n);
 /* allowed number of priorities by IETF standards */
 #define IETF_NUM_PRIVALUES  192
 
+/* check if message with fac/sev belogs to a destination f */ 
 #define MATCH_PRI(f, fac, sev) \
            (  (((f)->f_pcmp[fac] & PRI_EQ) && ((f)->f_pmask[fac] == (sev))) \
             ||(((f)->f_pcmp[fac] & PRI_LT) && ((f)->f_pmask[fac]  < (sev)))  \
             ||(((f)->f_pcmp[fac] & PRI_GT) && ((f)->f_pmask[fac]  > (sev)))  \
            )
 
+/* shorthand to test Byte Order Mark which indicates UTF-8 content */
 #define IS_BOM(p) ( *(p) != '\0' &&     *(p) == (char) 0xEF \
              && *((p)+1) != '\0' && *((p)+1) == (char) 0xBB \
              && *((p)+2) != '\0' && *((p)+2) == (char) 0xBF)
 
+/* message buffer container used for processing, formatting, and queueing */
+struct buf_msg {
+        unsigned refcount;
+        int      pri;
+        int      flags;
+        char    *timestamp;
+        char    *recvhost;
+        char    *host;
+        char    *prog;
+        char    *pid;
+        char    *msgid;
+        char    *sd;        /* structured data */
+        char    *msg;       /* message content */
+        char    *msgorig;   /* in case we advance *msg beyond header fields
+                                   we still want to free() the original ptr  */
+        size_t   msglen;    /* strlen(msg) */
+        size_t   msgsize;   /* allocated memory size   */
+        unsigned tlsprefixlen; /* bytes for the TLS length prefix */
+        unsigned prilen;       /* bytes for priority and version  */
+};
+
+/* queue of messages */
+struct buf_queue {
+        struct buf_msg* msg;
+        STAILQ_ENTRY(buf_queue) entries;
+};
+STAILQ_HEAD(buf_queue_head, buf_queue);
+
+/* a pair of a socket and an associated event object */
+struct socketEvent {
+        int fd;
+        struct event *ev;
+};
+
 /*
  * Flags to logmsg().
  */
-
 #define IGN_CONS        0x001   /* don't print on console */
 #define SYNC_FILE       0x002   /* do fsync on file after printing */
 #define ADDDATE         0x004   /* add a date to the message */
@@ -355,7 +366,7 @@ struct filed {
 
 #ifndef DISABLE_TLS
 
-/* linked list for allowed peer credentials
+/* linked list for allowed TLS peer credentials
  * (one for fingerprint, one for cert-files)
  */
 SLIST_HEAD(peer_cred_head, peer_cred);

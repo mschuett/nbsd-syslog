@@ -34,30 +34,25 @@
 /* redundancy options */
 /* 
  * note on the implementation of redundancy:
- * - certificate blocks: first CB is sent immediately on session (re)boot.
- *   resends are called by domark() until resend count is reached.
- *   alternative: put extra timer for this into signature_group_t
- *   --> for now it works. final decision when other SG algorithms are implemented
+ * - certificate blocks: sending the first CB just before first SB.
+ *   after that domark() triggers resends until resend count is reached.
  * - signature blocks: to send every hash n times I use a sliding window.
  *   the hashes in every SB are grouped into n divisions:
  *   * the 1st hashcount/n hashes are sent for the 1st time
  *   * the 2nd hashcount/n hashes are sent for the 2nd time
  *   * ...
- *   * the n-th hashcount/n hashes are sent for the n-th time and deleted thereafter
+ *   * the n-th hashcount/n hashes are sent for the n-th time
+ *     (and deleted thereafter)
  */ 
 #define SIGN_RESENDCOUNT_CERTBLOCK  2
 #define SIGN_RESENDCOUNT_HASHES     3
 
-/* maximum length of syslog-sign messages 
- * should be <= 2048 by standard and should
- * be >= 1024 to be long enough.
- * be careful with small values because there
- * is no check for a lower bound and derived
- * values below will underflow .
+/* maximum length of syslog-sign messages should be <= 2048 by standard
+ * and should be >= 1024 to be long enough.
+ * be careful with small values because there is no check for a lower bound
+ * thus the following derived values would become negative.
  */
 #define SIGN_MAX_LENGTH 2048
-// 2048 by standard, I only use smaller values to test correct fragmentation
-// #define SIGN_MAX_LENGTH 800
 /* the length we can use for the SD and keep the
  * message length with header below 2048 octets */
 #define SIGN_MAX_SD_LENGTH (SIGN_MAX_LENGTH - 1 - HEADER_LEN_MAX)
@@ -75,7 +70,8 @@
 #define SIGN_HASH_NUM_WANT 100
 /* make sure to consider SIGN_MAX_HASH_NUM and
  * to have a SIGN_HASH_NUM that is a multiple of SIGN_HASH_DIVISION_NUM */
-#define SIGN_HASH_DIVISION_NUM (MIN(SIGN_HASH_NUM_WANT, SIGN_MAX_HASH_NUM) / SIGN_RESENDCOUNT_HASHES)
+#define SIGN_HASH_DIVISION_NUM (MIN(SIGN_HASH_NUM_WANT, SIGN_MAX_HASH_NUM) \
+                                / SIGN_RESENDCOUNT_HASHES)
 #define SIGN_HASH_NUM (SIGN_HASH_DIVISION_NUM * SIGN_RESENDCOUNT_HASHES) 
 
 /* the length of payload strings
@@ -87,7 +83,7 @@
 /* length of generated DSA keys for signing */
 #define SIGN_GENCERT_BITS 1024
 
-#define SSL_CHECK_ONE(exp) do if ((exp) != 1) {                                  \
+#define SSL_CHECK_ONE(exp) do if ((exp) != 1) {                              \
                        DPRINTF(D_SIGN, #exp " failed in %d: %s\n", __LINE__, \
                              ERR_error_string(ERR_get_error(), NULL));       \
                        return 1;                                             \
@@ -152,21 +148,21 @@ struct sign_global_t {
         unsigned      sig_len_b64; /* length of b64 signature */
 };
 
-bool sign_global_init(struct filed*);
-bool sign_sg_init(struct filed*);
-bool sign_get_keys();
-void sign_global_free();
-struct signature_group_t *sign_get_sg(int, struct filed*);
-bool sign_send_certificate_block(struct signature_group_t*);
+bool     sign_global_init(struct filed*);
+bool     sign_sg_init(struct filed*);
+bool     sign_get_keys();
+void     sign_global_free();
+struct signature_group_t* sign_get_sg(int, struct filed*);
+bool     sign_send_certificate_block(struct signature_group_t*);
 unsigned sign_send_signature_block(struct signature_group_t*, bool);
-void sign_free_hashes(struct signature_group_t*);
-void sign_free_string_queue(struct string_queue_head*);
-bool sign_msg_hash(char*, char**);
-bool sign_append_hash(char*, struct signature_group_t*);
-bool sign_msg_sign(struct buf_msg**, char*, size_t);
-bool sign_string_sign(char*, char**);
-void sign_new_reboot_session(void);
-void sign_inc_gbc(void);
+void     sign_free_hashes(struct signature_group_t*);
+void     sign_free_string_queue(struct string_queue_head*);
+bool     sign_msg_hash(char*, char**);
+bool     sign_append_hash(char*, struct signature_group_t*);
+bool     sign_msg_sign(struct buf_msg**, char*, size_t);
+bool     sign_string_sign(char*, char**);
+void     sign_new_reboot_session(void);
+void     sign_inc_gbc(void);
 uint_fast64_t sign_assign_msg_num(struct signature_group_t*);
 
 #endif /* SIGN_H_ */

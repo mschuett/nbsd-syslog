@@ -9,9 +9,6 @@
 #include <openssl/rand.h>
 #include <openssl/pem.h>
 
-#define TLSBACKLOG 4
-#define TLS_MAXERRORCOUNT 4
-
 /* initial size for TLS inbuf, minimum prefix + linelength
  * guaranteed to be accepted */
 #define TLS_MIN_LINELENGTH         (2048 + 5) 
@@ -46,14 +43,14 @@
 #define DEFAULT_X509_KEYFILE "/etc/openssl/default.key"
 
 /* options for peer certificate verification */
-#define X509VERIFY_ALWAYS 0
-#define X509VERIFY_IFPRESENT 1
-#define X509VERIFY_NONE 2
+#define X509VERIFY_ALWAYS       0
+#define X509VERIFY_IFPRESENT    1
+#define X509VERIFY_NONE         2
 
 /* attributes for self-generated keys/certificates */
-#define TLS_GENCERT_BITS  1024
-#define TLS_GENCERT_SERIAL   1
-#define TLS_GENCERT_DAYS   365
+#define TLS_GENCERT_BITS     1024
+#define TLS_GENCERT_SERIAL      1
+#define TLS_GENCERT_DAYS    5*365
 
 /* TLS connection states */
 #define ST_NONE       0
@@ -68,20 +65,26 @@
 #define ST_CLOSING1   9
 #define ST_CLOSING2  10
 
+/* backlog for listen */
+#define TLSBACKLOG 4
+/* close TLS connection after multiple 'soft' errors */
+#define TLS_MAXERRORCOUNT 4
+
 /*
  * holds TLS related settings for one connection to be
  * included in the SSL object and available in callbacks
  * 
- * It serves two different purposes:
+ * Many fields have a slightly different semantic for
+ * incoming and outgoing connections:
  * - for outgoing connections it contains the values from syslog.conf and
  *   the server's cert is checked against these values by check_peer_cert()
  * - for incoming connections it is not used for checking, instead
  *   dispatch_tls_accept() fills in the connected hostname/port and
- *   check_peer_cert() fills in the actual values as read from the peer cert
- * 
+ *   check_peer_cert() fills in subject and fingerprint from the peer cert
  */
 struct tls_conn_settings {
-        unsigned      accepted:1,   /* workaround cf. check_peer_cert*/
+        unsigned      errorcount:4, /* counter [0;TLS_MAXERRORCOUNT] */
+                      accepted:1,   /* workaround cf. check_peer_cert*/
                       shutdown:1,   /* fast connection close on exit */ 
                       x509verify:2, /* kind of validation needed     */
                       incoming:1,   /* set if we are server          */
@@ -93,19 +96,18 @@ struct tls_conn_settings {
         char         *port;         /* service name or port number   */
         char         *subject;      /* configured hostname in cert   */
         char         *fingerprint;  /* fingerprint of peer cert      */
-        char         *certfile;     /* copy of peer cert             */
+        char         *certfile;     /* filename of peer cert         */
         unsigned      reconnect;    /* seconds between reconnects    */
-        char          errorcount;   /* to close conn. after errors   */
 };
 
 /* argument struct only used for tls_send() */
 struct tls_send_msg {
-        struct filed   *f;
-        struct buf_msg *buffer;
+        struct filed     *f;
+        struct buf_msg   *buffer;
         struct buf_queue *qentry;
-        char           *line;      /* formatted message */
-        size_t          linelen;
-        unsigned        offset;    /* in case of partial writes */
+        char             *line;      /* formatted message */
+        size_t            linelen;
+        unsigned          offset;    /* in case of partial writes */
 };
 
 /* return values for TLS_examine_error() */

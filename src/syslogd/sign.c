@@ -14,6 +14,11 @@
  *    This implementation sends public keys in DER encoding.
  * 4. This current implementation uses high-level OpenSSL API.
  *    I am not sure if these completely implement the FIPS/ANSI standards.
+ * Update after WG discussion in August:
+ * 1. check; next draft will be clearer and specify the format as implemented.
+ * 2. check; definitely only DSA in this version.
+ * 3. remains a problem, so far no statement from authors or WG.
+ * 4. check; used EVP_dss1 method implements FIPS.  
  */
 /* 
  * Limitations of this implementation:
@@ -22,6 +27,7 @@
  *   are reformatted (e.g. if it receives a message with two spaces between
  *   fields it might even be parsed, but the output will have only one space).
  */
+ 
 #ifndef DISABLE_SIGN
 #include "syslogd.h"
 #ifndef DISABLE_TLS

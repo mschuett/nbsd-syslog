@@ -2096,7 +2096,7 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
         struct iovec iov[4];
         struct iovec *v = iov;
         bool error = false;
-        int len = 0;
+        int e = 0, len = 0;
         size_t msglen, linelen, tlsprefixlen, prilen;
         char *p, *line = NULL, *lineptr = NULL;
 #define REPBUFSIZE 80
@@ -2310,7 +2310,7 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
                                 SEND_QUEUE(f);
                 }
                 if (writev(f->f_file, iov, v - iov) < 0) {
-                        int e = errno;
+                        e = errno;
                         if (f->f_un.f_pipe.f_pid > 0) {
                                 (void) close(f->f_file);
                                 deadq_enter(f->f_un.f_pipe.f_pid,
@@ -2353,6 +2353,9 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
                                 errno = e;
                                 logerror(f->f_un.f_pipe.f_pname);
                         }
+                }
+                if (e == 0 && qentry) { /* sent buffered msg */
+                        message_queue_remove(f, qentry);
                 }
                 break;
 
@@ -2410,6 +2413,8 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
                          */
                         if (!qentry) /* prevent recursion */
                                 SEND_QUEUE(f);
+                        else if (qentry) /* sent buffered msg */
+                                message_queue_remove(f, qentry);
                 }
                 break;
 

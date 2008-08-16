@@ -224,8 +224,9 @@ vsyslogp_r(int pri, struct syslog_data *data, const char *msgid,
 {
         size_t cnt, prlen, tries;
         char ch, *p, *t;
-        time_t now;
+        struct timeval tv;
         struct tm tmnow;
+        time_t now;
         int fd, saved_errno;
 #define TBUF_LEN        2048
 #define FMT_LEN         1024
@@ -271,20 +272,16 @@ vsyslogp_r(int pri, struct syslog_data *data, const char *msgid,
         prlen = snprintf_ss(p, tbuf_left, "<%d>1 ", pri);
         DEC();
 
-        if (!signal_safe) {
-                struct timeval tv;
-                (void)time(&now);
+        if (!signal_safe && (gettimeofday(&tv, NULL) != -1)) {
                 /* strftime() implies tzset(), localtime_r() doesn't. */
                 tzset();
+                now = (time_t) tv.tv_sec;
                 localtime_r(&now, &tmnow);
 
                 prlen = strftime(p, tbuf_left, "%FT%T", &tmnow);
                 DEC();
-                if (gettimeofday(&tv, NULL) != -1) {
-                        prlen = snprintf(p, tbuf_left, ".%06ld",
-                            tv.tv_usec);
-                        DEC();
-                }
+                prlen = snprintf(p, tbuf_left, ".%06ld", tv.tv_usec);
+                DEC();
                 prlen = strftime(p, tbuf_left-1, "%z", &tmnow);
                 /* strftime gives eg. "+0200", but we need "+02:00" */
                 if (prlen == 5) {

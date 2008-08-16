@@ -653,12 +653,9 @@ log_get_format(struct conf_entry *log)
 
         /* read 2nd line */
         line = fgetln(fd, &linelen);
-        free(line);
-        if ((line = fgetln(fd, &linelen)) != NULL) {
-                if (line[10] == 'T')
-                        log->flags |= CE_SYSLPROTOCOL;
-                free(line);
-        }
+        if ((line = fgetln(fd, &linelen)) != NULL
+          && line[10] == 'T')
+                log->flags |= CE_SYSLPROTOCOL;
         (void)fclose(fd);
 }
 

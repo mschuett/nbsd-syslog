@@ -92,6 +92,8 @@ __RCSID("$NetBSD: newsyslog.c,v 1.53 2007/12/21 06:46:31 dogcow Exp $");
 #define	CE_NOSIGNAL	0x04	/* Don't send a signal when trimmed */
 #define	CE_CREATE	0x08	/* Create log file if none exists */
 #define	CE_PLAIN0	0x10	/* Do not compress zero'th history file */
+#define CE_SYSLPROTOCOL 0x20    /* log in syslog-protocol format,
+                                   not configurable but detected at runtime */
 
 struct conf_entry {
 	uid_t	uid;			/* Owner of log */
@@ -127,7 +129,7 @@ static struct compressor compress[] =
 static int	verbose;			/* Be verbose */
 static int	noaction;			/* Take no action */
 static int	nosignal;			/* Do not send signals */
-static char	hostname[MAXHOSTNAMELEN + 1];	/* Hostname, no domain */
+static char	hostname[MAXHOSTNAMELEN + 1];	/* Hostname, with domain */
 static uid_t	myeuid;				/* EUID we are running with */
 static int	ziptype;			/* compression type, if any */
 
@@ -144,7 +146,8 @@ static void	log_compress(struct conf_entry *, const char *);
 static void	log_create(struct conf_entry *);
 static void	log_examine(struct conf_entry *, int);
 static void	log_trim(struct conf_entry *);
-static void	log_trimmed(struct conf_entry *);
+static void     log_trimmed(struct conf_entry *);
+static void     log_get_format(struct conf_entry *);
 
 /*
  * Program entry point.
@@ -154,7 +157,6 @@ main(int argc, char **argv)
 {
 	struct conf_entry log;
 	FILE *fd;
-	char *p;
 	const char *cfile;
 	int c, needroot, i, force;
 	size_t lineno;
@@ -166,10 +168,6 @@ main(int argc, char **argv)
 
 	(void)gethostname(hostname, sizeof(hostname));
 	hostname[sizeof(hostname) - 1] = '\0';
-
-	/* Truncate domain. */
-	if ((p = strchr(hostname, '.')) != NULL)
-		*p = '\0';
 
 	/* Parse command line options. */
 	while ((c = getopt(argc, argv, "f:nrsvF")) != -1) {
@@ -583,7 +581,7 @@ log_trim(struct conf_entry *log)
 			log_compress(log, file1);
 		}
 	}
-
+        log_get_format(log);
 	log_trimmed(log);
 
 	/* Create the historical log file if we're maintaining history. */
@@ -637,6 +635,33 @@ log_trim(struct conf_entry *log)
 	}
 }
 
+static void
+log_get_format(struct conf_entry *log)
+{
+        FILE *fd;
+        char *line;
+        size_t linelen;
+
+        if ((log->flags & CE_BINARY) != 0)
+                return;
+        PRINFO(("(read line format of %s)\n", log->logfile));
+        if (noaction)
+                return;
+
+        if ((fd = fopen(log->logfile, "r")) == NULL)
+                return;
+
+        /* read 2nd line */
+        line = fgetln(fd, &linelen);
+        free(line);
+        if ((line = fgetln(fd, &linelen)) != NULL) {
+                if (line[10] == 'T')
+                        log->flags |= CE_SYSLPROTOCOL;
+                free(line);
+        }
+        (void)fclose(fd);
+}
+
 /* 
  * Write an entry to the log file recording the fact that it was trimmed.
  */
@@ -644,8 +669,9 @@ static void
 log_trimmed(struct conf_entry *log)
 {
 	FILE *fd;
-	time_t now;
+        time_t now;
 	char *daytime;
+        char  trim_message[] = "log file turned over";
 
 	if ((log->flags & CE_BINARY) != 0)
 		return;
@@ -656,12 +682,54 @@ log_trimmed(struct conf_entry *log)
 	if ((fd = fopen(log->logfile, "at")) == NULL)
 		err(EXIT_FAILURE, "%s", log->logfile);
 
-	now = time(NULL);
-	daytime = ctime(&now) + 4;
-	daytime[15] = '\0';
-		
-	(void)fprintf(fd, "%s %s newsyslog[%lu]: log file turned over\n",
-	    daytime, hostname, (u_long)getpid());
+        if ((log->flags & CE_SYSLPROTOCOL) == 0) {
+                char *shorthostname;
+                char *p;
+                
+                /* Truncate domain. */
+                shorthostname = strdup(hostname);
+                if ((p = strchr(shorthostname, '.')) != NULL)
+                        *p = '\0';
+
+                now = time(NULL);
+        	daytime = ctime(&now) + 4;
+        	daytime[15] = '\0';
+        
+        	(void)fprintf(fd, "%s %s newsyslog[%lu]: %s\n",
+        	    daytime, hostname, (u_long)getpid(), trim_message);
+        } else {
+                struct tm *tmnow;
+                struct timeval tv;
+                char timestamp[35];
+                unsigned i, j;
+                
+                if (gettimeofday(&tv, NULL) == -1) {
+                        daytime = "-";
+                } else {
+                        tzset();
+                        now = (time_t) tv.tv_sec;
+                        tmnow = localtime(&now);
+        
+                        i = strftime(timestamp, sizeof(timestamp),
+                                "%FT%T", tmnow);
+                        i += snprintf(timestamp+i, sizeof(timestamp)-i,
+                                ".%06ld", tv.tv_usec);
+                        i += j = strftime(timestamp+i, sizeof(timestamp)-i-1,
+                                "%z", tmnow);
+                        /* strftime gives eg. "+0200", but we need "+02:00" */
+                        if (j == 5) {
+                                timestamp[i+1] = timestamp[i];
+                                timestamp[i]   = timestamp[i-1];
+                                timestamp[i-1] = timestamp[i-2];
+                                timestamp[i-2] = ':';
+                                i += 1;
+                        }
+                        daytime = timestamp;
+                }
+                (void)fprintf(fd, "%s %s newsyslog %lu - - %s\n",
+                        daytime, hostname, (u_long)getpid(), trim_message);
+                
+        }
 	(void)fclose(fd);
 }
 

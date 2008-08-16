@@ -167,8 +167,6 @@ int     daemonized = 0;         /* we are not daemonized yet */
 char    *LocalFQDN = NULL;             /* our FQDN */
 char    *oldLocalFQDN = NULL;          /* our previous FQDN */
 char    LocalHostName[MAXHOSTNAMELEN]; /* our hostname */
-char    *LocalDomain;           /* our local domain name */
-size_t  LocalDomainLen;         /* length of LocalDomain */
 struct socketEvent *finet;      /* Internet datagram sockets and events */
 int   *funix;                   /* Unix domain datagram sockets */
 #ifndef DISABLE_TLS
@@ -3310,14 +3308,10 @@ init(int fd, short event, void *ev)
         FREEPTR(oldLocalFQDN);
         oldLocalFQDN = LocalFQDN;
         LocalFQDN = getLocalFQDN();
-        if ((p = strchr(LocalFQDN, '.')) != NULL) {
-                LocalDomain = p;
+        if ((p = strchr(LocalFQDN, '.')) != NULL)
                 (void)strlcpy(LocalHostName, LocalFQDN, 1+p-LocalFQDN);
-        } else {
-                LocalDomain = "";
+        else
                 (void)strlcpy(LocalHostName, LocalFQDN, sizeof(LocalHostName));
-        }
-        LocalDomainLen = strlen(LocalDomain);
 
         /*
          *  Reset counter of forwarding actions

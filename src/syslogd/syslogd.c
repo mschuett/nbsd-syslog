@@ -213,7 +213,6 @@ struct socketEvent*
                 socksetup(int, const char *);
 int             getmsgbufsize(void);
 char           *getLocalFQDN(void);
-void            trim_localdomain(char *);
 void            trim_anydomain(char *);
 /* pipe & subprocess handling */
 int             p_open(char *, pid_t *);
@@ -2579,7 +2578,7 @@ reapchild(int fd, short event, void *ev)
 }
 
 /*
- * Return a printable representation of a host address.
+ * Return a printable representation of a host address (FQDN if available)
  */
 char *
 cvthname(struct sockaddr_storage *f)
@@ -2608,26 +2607,7 @@ cvthname(struct sockaddr_storage *f)
                 return (ip);
         }
 
-        trim_localdomain(host);
-
         return (host);
-}
-
-void
-trim_localdomain(char *host)
-{
-        size_t hl;
-
-        if (!BSDOutputFormat)
-                return;
-
-        hl = strlen(host);
-        if (hl > 0 && host[hl - 1] == '.')
-                host[--hl] = '\0';
-
-        if (hl > LocalDomainLen && host[hl - LocalDomainLen - 1] == '.' &&
-            strcasecmp(&host[hl - LocalDomainLen], LocalDomain) == 0)
-                host[hl - LocalDomainLen - 1] = '\0';
 }
 
 void

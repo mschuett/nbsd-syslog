@@ -4465,6 +4465,9 @@ message_queue_add(struct filed *f, struct buf_msg *buffer)
 {
         struct buf_queue *qentry;
         
+        /* check on every call or only every n-th time? */
+        message_queue_purge(f, 0, PURGE_BY_PRIORITY);
+                        
         while (!(qentry = malloc(sizeof(*qentry)))
               && message_queue_purge(f, 1, PURGE_OLDEST))
              /* try allocating memory */;

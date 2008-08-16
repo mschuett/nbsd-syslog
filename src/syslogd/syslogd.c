@@ -4548,7 +4548,6 @@ make_timestamp(time_t *in_now, bool iso)
 {
         const int frac_digits = 6;
         struct timeval tv;
-        struct timeval *tvptr = NULL;
         time_t mytime;
         struct tm *ltime;
         int len = 0;
@@ -4557,10 +4556,9 @@ make_timestamp(time_t *in_now, bool iso)
 
         if (in_now) {
                 mytime = *in_now;
-                tvptr = NULL;
         } else {
-                mytime = time(&now);
-                tvptr = &tv;
+                gettimeofday(&tv, NULL);
+                mytime = now = (time_t) tv.tv_sec;
         }
 
         if (!iso) {
@@ -4568,17 +4566,12 @@ make_timestamp(time_t *in_now, bool iso)
                 timestamp[BSD_TIMESTAMPLEN] = '\0';
                 return timestamp;
         }
-        if (tvptr)
-                gettimeofday(tvptr, NULL);
 
         ltime = localtime(&mytime);
         len += strftime(timestamp, TIMESTAMPBUFSIZE, "%FT%T", ltime);
-
-        if (tvptr) {
-                snprintf(&(timestamp[len]), frac_digits+2,
-                        ".%.*ld", frac_digits, tvptr->tv_usec);
-                len += frac_digits+1;
-        }
+        snprintf(&(timestamp[len]), frac_digits+2, ".%.*ld",
+                frac_digits, tv.tv_usec);
+        len += frac_digits+1;
         tzlen = strftime(&(timestamp[len]), TIMESTAMPBUFSIZE-len, "%z", ltime);
         len += tzlen;
         

@@ -337,7 +337,7 @@ main(int argc, char *argv[])
                         bindhostname = optarg;
                         break;
                 case 'd':               /* debug */
-                        Debug = D_ALL;
+                        Debug = D_DEFAULT;
                         /* is there a way to read the integer value
                          * for Debug as an optional argument? */
                         break;

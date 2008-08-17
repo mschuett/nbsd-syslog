@@ -144,6 +144,8 @@ char *strndup(const char *str, size_t n);
 #define D_MISC  4096    /* everything else */
 #define D_ALL   (D_CALL | D_DATA | D_NET | D_FILE | D_TLS | D_PARSE |  \
                  D_EVENT | D_BUFFER | D_MEM | D_MEM2 | D_SIGN | D_MISC)
+#define D_DEFAULT (D_CALL | D_NET | D_FILE | D_TLS | D_MISC)
+
 
 /* build with -DNDEBUG to remove all assert()s and DPRINTF()s */
 #ifdef NDEBUG

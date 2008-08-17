@@ -2508,17 +2508,12 @@ wallmsg(struct filed *f, struct iovec *iov, size_t iovcnt)
         static int reenter;                     /* avoid calling ourselves */
         int i;
         char *p;
-        static struct utmpentry *ohead = NULL;
         struct utmpentry *ep;
 
         if (reenter++)
                 return;
 
         (void)getutentries(NULL, &ep);
-        if (ep != ohead) {
-                freeutentries(ohead);
-                ohead = ep;
-        }
         /* NOSTRICT */
         for (; ep; ep = ep->next) {
                 if (f->f_type == F_WALL) {

@@ -921,7 +921,8 @@ get_utf8_value(const char *c) {
                                 goto all_syslog_msg;                    \
                        }
 #define FORCE2ASCII(c) ((iscntrl((unsigned char)(c)) && (c) != '\t')    \
-                        ? '?' : (c) & 0177)
+                        ? ((c) == '\n' ? ' ' : '?')                     \
+                        : (c) & 0177)
 
 /* following syslog-protocol */
 #define printusascii(ch) (ch >= 33 && ch <= 126)
@@ -1216,9 +1217,13 @@ copy_utf8_ascii(char *p, size_t p_len)
                         isrc++;
                 } else if (i == 1) { /* check printable */
                         if (iscntrl((unsigned char)p[isrc])
-                          && p[isrc] != '\t') {
-                                dst[idst++] = '^';
-                                dst[idst++] = p[isrc++] ^ 0100;
+                         && p[isrc] != '\t') {
+                                if (p[isrc] == '\n') {
+                                        dst[idst++] = ' ';
+                                } else {
+                                        dst[idst++] = '^';
+                                        dst[idst++] = p[isrc++] ^ 0100;
+                                }
                         } else
                                 dst[idst++] = p[isrc++];
                 } else {  /* convert UTF-8 to ASCII */

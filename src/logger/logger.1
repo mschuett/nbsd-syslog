@@ -29,7 +29,7 @@
 .\"
 .\"	@(#)logger.1	8.1 (Berkeley) 6/6/93
 .\"
-.Dd June 6, 1993
+.Dd August 17, 2008
 .Dt LOGGER 1
 .Os
 .Sh NAME
@@ -37,10 +37,12 @@
 .Nd make entries in the system log
 .Sh SYNOPSIS
 .Nm
-.Op Fl is
+.Op Fl ins
 .Op Fl f Ar file
 .Op Fl p Ar pri
 .Op Fl t Ar tag
+.Op Fl m Ar msgid
+.Op Fl d Ar SD
 .Op Ar message ...
 .Sh DESCRIPTION
 .Nm
@@ -54,10 +56,23 @@ Options:
 .It Fl i
 Log the process id of the logger process
 with each line.
+.It Fl n
+When reading from file or stdin then every line is in partial syslog-protocol
+format with the fields
+.Sq MSGID SD MSG .
 .It Fl s
 Log the message to standard error, as well as the system log.
+.It Fl d Ar sd
+Log this in the structured data (SD) field.
+.Po
+.Ar sd
+has to be passed as one argument and will require careful quoting when used from
+the shell.
+.Pc
 .It Fl f Ar file
 Log the specified file.
+.It Fl m Ar msgid
+The MSGID used for the message.
 .It Fl p Ar pri
 Enter the message with the specified priority.
 The priority may be specified numerically or as a ``facility.level''

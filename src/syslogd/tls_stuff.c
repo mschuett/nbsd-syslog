@@ -2038,10 +2038,12 @@ mk_x509_cert(X509 **x509p, EVP_PKEY **pkeyp, int bits, int serial, int days)
          * the return value for errors...
          */
         name = X509_get_subject_name(cert);
+        /*
         X509_NAME_add_entry_by_txt(name, "O", MBSTRING_ASC,
                 (unsigned char *)"The NetBSD Project", -1, -1, 0);
         X509_NAME_add_entry_by_txt(name, "OU", MBSTRING_ASC,
                 (unsigned char *)"syslogd", -1, -1, 0);
+        */
         X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
                 (unsigned char *) LocalFQDN, -1, -1, 0);
         X509_set_issuer_name(cert, name);

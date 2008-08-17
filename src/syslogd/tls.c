@@ -560,10 +560,15 @@ int
 accept_cert(const char* reason, struct tls_conn_settings *conn_info,
         char *cur_fingerprint, char *cur_subjectline)
 {
-        loginfo("Established connection and accepted %s certificate "
-                "from %s due to %s. Subject is \"%s\", fingerprint is "
-                "\"%s\"", conn_info->incoming ? "server" : "client", 
-                conn_info->hostname, reason, cur_subjectline, cur_fingerprint);
+        /* When using DSA keys the callback gets called twice.
+         * This flag avoids multiple log messages for the same connection.
+         */
+        if (!conn_info->accepted)
+                loginfo("Established connection and accepted %s certificate "
+                        "from %s due to %s. Subject is \"%s\", fingerprint is"
+                        " \"%s\"", conn_info->incoming ? "server" : "client", 
+                        conn_info->hostname, reason, cur_subjectline,
+                        cur_fingerprint);
 
         if (cur_fingerprint && !conn_info->fingerprint)
                 conn_info->fingerprint = cur_fingerprint;
@@ -576,17 +581,24 @@ accept_cert(const char* reason, struct tls_conn_settings *conn_info,
                 FREEPTR(cur_subjectline);
 
         conn_info->accepted = true;
-        return 1;        
+        return 1;
 }
 int
 deny_cert(struct tls_conn_settings *conn_info,
         char *cur_fingerprint, char *cur_subjectline)
 {
-        loginfo("Deny %s certificate from %s. "
-                "Subject is \"%s\", fingerprint is \"%s\"",
-                conn_info->incoming ? "client" : "server", 
-                conn_info->hostname,
-                cur_subjectline, cur_fingerprint);
+        if (!conn_info->accepted)
+	        loginfo("Deny %s certificate from %s. "
+	                "Subject is \"%s\", fingerprint is \"%s\"",
+	                conn_info->incoming ? "client" : "server", 
+	                conn_info->hostname,
+	                cur_subjectline, cur_fingerprint);
+        else
+                logerror("Error with TLS %s certificate authentication, "
+                        "already approved certificate became invalid. "
+                        "Subject is \"%s\", fingerprint is \"%s\"",
+                        conn_info->incoming ? "client" : "server", 
+                        cur_subjectline, cur_fingerprint);
         FREEPTR(cur_fingerprint);
         FREEPTR(cur_subjectline);
         return 0;
@@ -675,14 +687,6 @@ check_peer_cert(int preverify_ok, X509_STORE_CTX *ctx)
                 FREEPTR(cur_subjectline);
                 return 1;
         }
-
-
-        /* When using DSA keys this callback gets called twice.
-         * I have no idea why, but this shortcut avoids
-         * multiple log messages for every new connection.
-         */
-        if (conn_info->accepted)
-                return 1;
 
         if (conn_info->x509verify == X509VERIFY_NONE)
                 return accept_cert("disabled verification", conn_info,

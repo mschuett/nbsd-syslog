@@ -91,7 +91,9 @@ main(int argc, char *argv[])
 		case 'm':		/* msgid field */
 			msgid = optarg;
 			break;
-		case 'n':		/* 'new' syslog-protocol from stdin */
+		case 'n':	/* 'new' syslog-protocol from file/stdin
+				 * expected input format: "MSGID SD MSG\n"
+				 */
 			sysl_protocol++;
 			break;
 		case 'p':		/* priority */
@@ -136,13 +138,9 @@ main(int argc, char *argv[])
 		}
 		if (p != buf)
 			syslog(pri, "%s", buf);
-	} else if (sysl_protocol)
-		/* expected input format: 'MSGID SD MSG\n" */
+	} else
 		while (fgets(buf, sizeof(buf), stdin) != NULL)
-			syslogp(pri, "%s", NULL, NULL, buf);
-	else
-		while (fgets(buf, sizeof(buf), stdin) != NULL)
-			syslog(pri, "%s", buf);
+			syslogp(pri, "%s", msgid, sd, buf);
 
 	exit(EXIT_SUCCESS);
 	/* NOTREACHED */

@@ -67,16 +67,16 @@ void	usage(void);
 int
 main(int argc, char *argv[])
 {
-	int ch, logflags, pri, sysl_protocol = 0;
+	int ch, logflags, pri;
 	const char *tag;
-	const char *sd = NULL;
-	const char *msgid = NULL;
+	const char *sd = "-";
+	const char *msgid = "-";
 	char buf[1024];
 
 	tag = NULL;
 	pri = LOG_NOTICE;
 	logflags = 0;
-	while ((ch = getopt(argc, argv, "d:f:im:np:st:")) != -1)
+	while ((ch = getopt(argc, argv, "d:f:im:p:st:")) != -1)
 		switch((char)ch) {
 		case 'd':		/* structured data field */
 			sd = optarg;
@@ -90,11 +90,6 @@ main(int argc, char *argv[])
 			break;
 		case 'm':		/* msgid field */
 			msgid = optarg;
-			break;
-		case 'n':	/* 'new' syslog-protocol from file/stdin
-				 * expected input format: "MSGID SD MSG\n"
-				 */
-			sysl_protocol++;
 			break;
 		case 'p':		/* priority */
 			pri = pencode(optarg);
@@ -124,11 +119,11 @@ main(int argc, char *argv[])
 		for (p = buf, endp = buf + sizeof(buf) - 2; *argv != NULL;) {
 			len = strlen(*argv);
 			if (p + len > endp && p > buf) {
-				syslog(pri, "%s", buf);
+				syslogp(pri, "%s", "%s", "%s", msgid, sd, buf);
 				p = buf;
 			}
 			if (len > sizeof(buf) - 1)
-				syslog(pri, "%s", *argv++);
+				syslogp(pri, "%s", "%s", "%s", msgid, sd, *argv++);
 			else {
 				if (p != buf)
 					*p++ = ' ';
@@ -137,10 +132,13 @@ main(int argc, char *argv[])
 			}
 		}
 		if (p != buf)
-			syslog(pri, "%s", buf);
-	} else
+			syslogp(pri, "%s", "%s", "%s", msgid, sd, buf);
+	} else	/* TODO: allow syslog-protocol messages from file/stdin
+		 *       but that will require parsing the line to split
+		 *       it into three fields.
+		 */
 		while (fgets(buf, sizeof(buf), stdin) != NULL)
-			syslogp(pri, "%s", msgid, sd, buf);
+			syslogp(pri, "%s", "%s", "%s", msgid, sd, buf);
 
 	exit(EXIT_SUCCESS);
 	/* NOTREACHED */
@@ -193,7 +191,7 @@ usage(void)
 {
 
 	(void)fprintf(stderr,
-	    "%s: [-ins] [-f file] [-p pri] [-t tag] "
+	    "%s: [-is] [-f file] [-p pri] [-t tag] "
 	    "[-m msgid] [-d SD] [ message ... ]\n",
 	    getprogname());
 	exit(EXIT_FAILURE);

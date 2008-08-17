@@ -575,7 +575,7 @@ accept_cert(const char* reason, struct tls_conn_settings *conn_info,
         else
                 FREEPTR(cur_subjectline);
 
-        conn_info->accepted = 1;
+        conn_info->accepted = true;
         return 1;        
 }
 int
@@ -1796,6 +1796,7 @@ dispatch_SSL_shutdown(int fd, short event, void *arg)
                 DPRINTF((D_TLS|D_NET), "Closed TLS connection to %s\n",
                         conn_info->hostname);
                 ST_CHANGE(conn_info->state, ST_TCP_EST);  /* check this */
+                conn_info->accepted = false;
                 /* closing TCP comes below */
         } else if (rc == 0) { /* unidirectional, now call a 2nd time */
                 /* problem: when connecting as a client to rsyslogd this
@@ -1824,6 +1825,7 @@ dispatch_SSL_shutdown(int fd, short event, void *arg)
                 DPRINTF((D_TLS|D_NET), "Ignore error in SSL_shutdown()"
                         " and force connection shutdown.");
                 ST_CHANGE(conn_info->state, ST_TCP_EST);
+                conn_info->accepted = false;
         } else if (rc == -1 && !conn_info->shutdown ) {
                 error = tls_examine_error("SSL_shutdown()",
                         conn_info->sslptr, NULL, rc);
@@ -1849,6 +1851,7 @@ dispatch_SSL_shutdown(int fd, short event, void *arg)
                         default:
                                 /* force close() on the TCP connection */
                                 ST_CHANGE(conn_info->state, ST_TCP_EST);
+                                conn_info->accepted = false;
                 }
         }
         if ((conn_info->state != ST_TLS_EST)

@@ -1220,6 +1220,7 @@ copy_utf8_ascii(char *p, size_t p_len)
                          && p[isrc] != '\t') {
                                 if (p[isrc] == '\n') {
                                         dst[idst++] = ' ';
+                                        isrc++;
                                 } else {
                                         dst[idst++] = '^';
                                         dst[idst++] = p[isrc++] ^ 0100;

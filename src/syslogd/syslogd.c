@@ -1701,15 +1701,21 @@ check_timestamp(unsigned char *from_buf, char **to_buf,
                  && islower(from_buf[2]))
                         found_ts = true;
         }
-        if (!found_ts) {
-                /* check for NILVALUE and replace it with current time */
-                if (from_buf[0] == '-' && from_buf[1] == ' ') {
-                        *to_buf = strdup(make_timestamp(NULL, to_iso));
-                        return 2;
+        if (!found_ts && from_buf[0] == '-' && from_buf[1] == ' ') {
+                /* NILVALUE */
+                if (to_iso) {
+                        /* with ISO = syslog-protocol output leave
+                         * it as is, because it is better to have
+                         * no timestamp than a wrong one.
+                         */
+                        *to_buf = strdup("-");
                 } else {
-                        *to_buf = strdup(make_timestamp(NULL, to_iso));
-                        return 0;
+                        /* with BSD Syslog the field is reqired
+                         * so replace it with current time
+                         */
+                         *to_buf = strdup(make_timestamp(NULL, false));
                 }
+                return 2;
         }
                 
         if (!from_iso && !to_iso) {

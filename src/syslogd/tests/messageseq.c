@@ -28,6 +28,9 @@ main()
                 if (h % 8 == 0) printf("\n%d\t", h/8);
                 for (int i = 0; i < num; i++) {
                         snprintf(buf, sizeof(buf), "msg%d", i);
+                        syslogp(i % 8, "test", "[invalid num=\"%d\"]", "%s", i, buf);
+                        syslogp(i % 8, NULL, "[invalid num=\"%d\"]", "%s", i, buf);
+                        syslogp(i % 8, "test", NULL, "%s", buf);
                         syslog(i % 8, "%s", buf);
                         if (i % 20 == 0 && j) {
                                 /* create some repeated lines */

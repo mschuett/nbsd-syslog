@@ -67,48 +67,48 @@ void	usage(void);
 int
 main(int argc, char *argv[])
 {
-        int ch, logflags, pri, sysl_protocol = 0;
-        const char *tag;
-        const char *sd = NULL;
-        const char *msgid = NULL;
-        char buf[1024];
+	int ch, logflags, pri, sysl_protocol = 0;
+	const char *tag;
+	const char *sd = NULL;
+	const char *msgid = NULL;
+	char buf[1024];
 
-        tag = NULL;
-        pri = LOG_NOTICE;
-        logflags = 0;
-        while ((ch = getopt(argc, argv, "d:f:im:np:st:")) != -1)
-                switch((char)ch) {
-                case 'd':               /* structured data field */
-                        sd = optarg;
-                        break;
-                case 'f':               /* file to log */
-                        if (freopen(optarg, "r", stdin) == NULL)
-                                err(EXIT_FAILURE, "%s", optarg);
-                        break;
-                case 'i':               /* log process id also */
-                        logflags |= LOG_PID;
-                        break;
-                case 'm':               /* msgid field */
-                        msgid = optarg;
-                        break;
-                case 'n':               /* 'new' syslog-protocol from stdin */
-                        sysl_protocol++;
-                        break;
-                case 'p':               /* priority */
-                        pri = pencode(optarg);
-                        break;
-                case 's':               /* log to standard error */
-                        logflags |= LOG_PERROR;
-                        break;
-                case 't':               /* tag */
-                        tag = optarg;
-                        break;
-                case '?':
-                default:
-                        usage();
-                }
-        argc -= optind;
-        argv += optind;
+	tag = NULL;
+	pri = LOG_NOTICE;
+	logflags = 0;
+	while ((ch = getopt(argc, argv, "d:f:im:np:st:")) != -1)
+		switch((char)ch) {
+		case 'd':		/* structured data field */
+			sd = optarg;
+			break;
+		case 'f':		/* file to log */
+			if (freopen(optarg, "r", stdin) == NULL)
+				err(EXIT_FAILURE, "%s", optarg);
+			break;
+		case 'i':		/* log process id also */
+			logflags |= LOG_PID;
+			break;
+		case 'm':		/* msgid field */
+			msgid = optarg;
+			break;
+		case 'n':		/* 'new' syslog-protocol from stdin */
+			sysl_protocol++;
+			break;
+		case 'p':		/* priority */
+			pri = pencode(optarg);
+			break;
+		case 's':		/* log to standard error */
+			logflags |= LOG_PERROR;
+			break;
+		case 't':		/* tag */
+			tag = optarg;
+			break;
+		case '?':
+		default:
+			usage();
+		}
+	argc -= optind;
+	argv += optind;
 
 	/* setup for logging */
 	openlog(tag != NULL ? tag : getlogin(), logflags, 0);
@@ -136,13 +136,13 @@ main(int argc, char *argv[])
 		}
 		if (p != buf)
 			syslog(pri, "%s", buf);
-        } else if (sysl_protocol)
-                /* expected input format: 'MSGID SD MSG\n" */
-                while (fgets(buf, sizeof(buf), stdin) != NULL)
-                        syslogp(pri, "%s", NULL, NULL, buf);
-        else
-                while (fgets(buf, sizeof(buf), stdin) != NULL)
-                        syslog(pri, "%s", buf);
+	} else if (sysl_protocol)
+		/* expected input format: 'MSGID SD MSG\n" */
+		while (fgets(buf, sizeof(buf), stdin) != NULL)
+			syslogp(pri, "%s", NULL, NULL, buf);
+	else
+		while (fgets(buf, sizeof(buf), stdin) != NULL)
+			syslog(pri, "%s", buf);
 
 	exit(EXIT_SUCCESS);
 	/* NOTREACHED */
@@ -195,7 +195,8 @@ usage(void)
 {
 
 	(void)fprintf(stderr,
-	    "%s: [-is] [-f file] [-p pri] [-t tag] [ message ... ]\n",
+	    "%s: [-ins] [-f file] [-p pri] [-t tag] "
+	    "[-m msgid] [-d SD] [ message ... ]\n",
 	    getprogname());
 	exit(EXIT_FAILURE);
 }

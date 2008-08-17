@@ -9,7 +9,7 @@
 
 #ifndef DISABLE_TLS
 #include "syslogd.h"
-#include "tls_stuff.h"
+#include "tls.h"
 #include <netinet/in.h>
 #include <ifaddrs.h>
 

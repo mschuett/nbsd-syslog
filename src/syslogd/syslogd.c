@@ -81,7 +81,7 @@ struct sign_global_t GlobalSign = {
 #endif /* !DISABLE_SIGN */
 
 #ifndef DISABLE_TLS
-#include "tls_stuff.h"
+#include "tls.h"
 #endif /* !DISABLE_TLS */
 
 #ifdef LIBWRAP

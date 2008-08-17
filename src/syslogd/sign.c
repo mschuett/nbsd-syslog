@@ -31,7 +31,7 @@
 #ifndef DISABLE_SIGN
 #include "syslogd.h"
 #ifndef DISABLE_TLS
-#include "tls_stuff.h"
+#include "tls.h"
 extern struct tls_global_options_t tls_opt;
 #endif /* !DISABLE_TLS */
 #include "sign.h"

@@ -37,7 +37,7 @@
 .Nd make entries in the system log
 .Sh SYNOPSIS
 .Nm
-.Op Fl ins
+.Op Fl is
 .Op Fl f Ar file
 .Op Fl p Ar pri
 .Op Fl t Ar tag
@@ -56,10 +56,6 @@ Options:
 .It Fl i
 Log the process id of the logger process
 with each line.
-.It Fl n
-When reading from file or stdin then every line is in partial syslog-protocol
-format with the fields
-.Sq MSGID SD MSG .
 .It Fl s
 Log the message to standard error, as well as the system log.
 .It Fl d Ar sd

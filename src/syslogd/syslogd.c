@@ -3867,7 +3867,7 @@ getmsgbufsize(void)
         }
         return (msgbufsize);
 #else
-        return 16368;  /* value on my NetBSD/i386 */
+        return MAXLINE;
 #endif /* __NetBSD_Version__ */
 }
 

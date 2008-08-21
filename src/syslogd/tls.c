@@ -1,5 +1,5 @@
 /*
- * tls_stuff.c TLS related code for syslogd
+ * tls.c TLS related code for syslogd
  *
  * implements the TLS init and handshake callbacks with all required
  * checks from http://tools.ietf.org/html/draft-ietf-syslog-transport-tls-13

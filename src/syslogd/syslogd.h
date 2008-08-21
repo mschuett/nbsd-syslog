@@ -2,7 +2,7 @@
 #define SYSLOGD_H_
 /*
  * hold common data structures and prototypes 
- * for syslogd.c and tls_stuff.c
+ * for syslogd.c and tls.c
  * 
  */
  

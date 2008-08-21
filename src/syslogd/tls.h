@@ -1,9 +1,9 @@
 /*
- * tls_stuff.h
+ * tls.h
  * 
  */
-#ifndef _TLS_STUFF_H
-#define _TLS_STUFF_H
+#ifndef _TLS_H
+#define _TLS_H
 #include <openssl/x509v3.h>
 #include <openssl/err.h>
 #include <openssl/rand.h>
@@ -156,4 +156,4 @@ void free_tls_conn(struct tls_conn_settings *);
 void free_tls_sslptr(struct tls_conn_settings *);
 void free_tls_send_msg(struct tls_send_msg *);
 
-#endif /* !_TLS_STUFF_H */
+#endif /* !_TLS_H */

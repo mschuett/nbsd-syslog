@@ -1590,10 +1590,10 @@ matches_spec(const char *name, const char *spec,
         size_t len;
 
         if (name[0] == '\0')
-                return (0);
+                return 0;
 
         if (strchr(name, ',')) /* sanity */
-                return (0);
+                return 0;
 
         len = strlen(name);
         cursor = spec;
@@ -1603,10 +1603,10 @@ matches_spec(const char *name, const char *spec,
                 next = *cursor;
 
                 if (prev == ',' && (next == '\0' || next == ','))
-                        return (1);
+                        return 1;
         }
 
-        return (0);
+        return 0;
 }
 
 /* 
@@ -2599,20 +2599,20 @@ cvthname(struct sockaddr_storage *f)
 
         if (error) {
                 DPRINTF(D_NET, "Malformed from address %s\n", gai_strerror(error));
-                return ("???");
+                return "???";
         }
 
         if (!UseNameService)
-                return (ip);
+                return ip;
 
         error = getnameinfo((struct sockaddr*)f, ((struct sockaddr*)f)->sa_len,
                         host, sizeof host, NULL, 0, niflag);
         if (error) {
                 DPRINTF(D_NET, "Host name for your address (%s) unknown\n", ip);
-                return (ip);
+                return ip;
         }
 
-        return (host);
+        return host;
 }
 
 void
@@ -3832,7 +3832,7 @@ decode(const char *name, CODE *codetab)
         char *p, buf[40];
 
         if (isdigit((unsigned char)*name))
-                return (atoi(name));
+                return atoi(name);
 
         for (p = buf; *name && p < &buf[sizeof(buf) - 1]; p++, name++) {
                 if (isupper((unsigned char)*name))
@@ -3843,9 +3843,9 @@ decode(const char *name, CODE *codetab)
         *p = '\0';
         for (c = codetab; c->c_name; c++)
                 if (!strcmp(buf, c->c_name))
-                        return (c->c_val);
+                        return c->c_val;
 
-        return (-1);
+        return -1;
 }
 
 /*
@@ -3863,9 +3863,9 @@ getmsgbufsize(void)
         size = sizeof msgbufsize;
         if (sysctl(mib, 2, &msgbufsize, &size, NULL, 0) == -1) {
                 DPRINTF(D_MISC, "Couldn't get kern.msgbufsize\n");
-                return (0);
+                return 0;
         }
-        return (msgbufsize);
+        return msgbufsize;
 #else
         return MAXLINE;
 #endif /* __NetBSD_Version__ */
@@ -3904,7 +3904,7 @@ socksetup(int af, const char *hostname)
         struct socketEvent *s, *socks;
 
         if(SecureMode && !NumForwards)
-                return(NULL);
+                return NULL;
 
         memset(&hints, 0, sizeof(hints));
         hints.ai_flags = AI_PASSIVE;
@@ -3969,11 +3969,11 @@ socksetup(int af, const char *hostname)
         if (socks->fd == 0) {
                 free (socks);
                 if(Debug)
-                        return(NULL);
+                        return NULL;
                 else
                         die(0, 0, NULL);
         }
-        return(socks);
+        return socks;
 }
 
 /*
@@ -3989,16 +3989,16 @@ p_open(char *prog, pid_t *rpid)
         char errmsg[200];
 
         if (pipe(pfd) == -1)
-                return (-1);
+                return -1;
         if ((nulldesc = open(_PATH_DEVNULL, O_RDWR)) == -1) {
                 /* We are royally screwed anyway. */
-                return (-1);
+                return -1;
         }
 
         switch ((pid = fork())) {
         case -1:
                 (void) close(nulldesc);
-                return (-1);
+                return -1;
 
         case 0:
                 argv[0] = "sh";
@@ -4047,7 +4047,7 @@ p_open(char *prog, pid_t *rpid)
                 logerror(errmsg);
         }
         *rpid = pid;
-        return (pfd[1]);
+        return pfd[1];
 }
 
 void
@@ -4089,10 +4089,10 @@ deadq_remove(pid_t pid)
                 if (q->dq_pid == pid) {
                         TAILQ_REMOVE(&deadq_head, q, dq_entries);
                         free(q);
-                        return (1);
+                        return 1;
                 }
         }
-        return (0);
+        return 0;
 }
 
 void

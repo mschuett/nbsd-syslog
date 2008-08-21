@@ -63,12 +63,12 @@ get_dh1024()
                 };
         DH *dh;
 
-        if ((dh=DH_new()) == NULL) return(NULL);
+        if ((dh=DH_new()) == NULL) return NULL;
         dh->p=BN_bin2bn(dh1024_p,sizeof(dh1024_p),NULL);
         dh->g=BN_bin2bn(dh1024_g,sizeof(dh1024_g),NULL);
         if ((dh->p == NULL) || (dh->g == NULL))
-                { DH_free(dh); return(NULL); }
-        return(dh);
+                { DH_free(dh); return NULL; }
+        return dh;
 }
 
 #define ST_CHANGE(x, y) do { if ((x) != (y)) { \
@@ -763,7 +763,7 @@ socksetup_tls(const int af, const char *bindhostname, const char *port)
 
         if(!tls_opt.server
         || !tls_opt.global_TLS_CTX)
-                return(NULL);
+                return NULL;
 
         memset(&hints, 0, sizeof(hints));
         hints.ai_flags = AI_PASSIVE;
@@ -831,14 +831,14 @@ socksetup_tls(const int af, const char *bindhostname, const char *port)
         if (socks->fd == 0) {
                 free (socks);
                 if(Debug)
-                        return(NULL);
+                        return NULL;
                 else
                         die(0, 0, NULL);
         }
         if (res)
                 freeaddrinfo(res);
 
-        return(socks);
+        return socks;
 }
 
 /*

@@ -134,16 +134,16 @@ int     repeatinterval[] = { 30, 120, 600 };    /* # of secs before flush */
 #define F_TLS           8 
 
 struct TypeInfo {
-        char *name;
-        char *queue_length_string;
-        char *default_length_string;
-        char *queue_size_string;
-        char *default_size_string;
-        int64_t queue_length;
-        int64_t queue_size;
-        int   max_msg_length;
+        const char *name;
+        char       *queue_length_string;
+        const char *default_length_string;
+        char       *queue_size_string;
+        const char *default_size_string;
+        int64_t     queue_length;
+        int64_t     queue_size;
+        const int   max_msg_length;
 } TypeInfo[] = {
-        /* values are set in init() 
+        /* numeric values are set in init() 
          * -1 in length/size or max_msg_length means infinite */
         {"UNUSED",  NULL,    "0", NULL,   "0", 0, 0,     0}, 
         {"FILE",    NULL, "1024", NULL,  "1M", 0, 0, 16384}, 
@@ -1733,7 +1733,7 @@ check_timestamp(unsigned char *from_buf, char **to_buf,
         } else if (from_iso && !to_iso) {
                 /* convert ISO->BSD */
                 struct tm parsed;
-                time_t p;
+                time_t timeval;
                 char tsbuf[MAX_TIMESTAMPLEN];
                 int i = 0;
 
@@ -1754,15 +1754,15 @@ check_timestamp(unsigned char *from_buf, char **to_buf,
                         tsbuf[i] = from_buf[i]; /* copy TZ */
 
                 (void)strptime(tsbuf, "%FT%T%z", &parsed);
-                p = mktime(&parsed);
+                timeval = mktime(&parsed);
 
-                *to_buf = strndup(make_timestamp(&p, false), BSD_TIMESTAMPLEN);
+                *to_buf = strndup(make_timestamp(&timeval, false), BSD_TIMESTAMPLEN);
                 return i;
         } else if (!from_iso && to_iso) {
                 /* convert BSD->ISO */
                 struct tm parsed;
                 struct tm *current;
-                time_t p;
+                time_t timeval;
                 char *rc;
 
                 DPRINTF(D_CALL, "check_timestamp(): convert BSD->ISO\n");
@@ -1776,8 +1776,8 @@ check_timestamp(unsigned char *from_buf, char **to_buf,
                 if (current->tm_mon == 0 && parsed.tm_mon == 11)
                         parsed.tm_year--;
 
-                p = mktime(&parsed);
-                rc = make_timestamp(&p, true);
+                timeval = mktime(&parsed);
+                rc = make_timestamp(&timeval, true);
                 *to_buf = strndup(rc, MAX_TIMESTAMPLEN-1);
 
                 return BSD_TIMESTAMPLEN;
@@ -2382,7 +2382,7 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
                         TypeInfo[f->f_type].name, f->f_un.f_fname);
         again:
                 if (writev(f->f_file, iov, v - iov) < 0) {
-                        int e = errno;
+                        e = errno;
                         if (f->f_type == F_FILE && e == ENOSPC) {
                                 int lasterror = f->f_lasterror;
                                 f->f_lasterror = e;
@@ -2818,7 +2818,7 @@ die(int fd, short event, void *ev)
         free_incoming_tls_sockets();
 #endif /* !DISABLE_TLS */
 #ifndef DISABLE_SIGN
-        sign_global_free(Files);
+        sign_global_free();
 #endif /* !DISABLE_SIGN */
 
         /*
@@ -2986,7 +2986,7 @@ read_config_file(FILE *cf, struct filed **f_ptr)
         /* central list of recognized configuration keywords
          * and an address for their values as strings */
         const struct config_keywords {
-                char *keyword;
+                const char *keyword;
                 char **variable;
         } config_keywords[] = {
 #ifndef DISABLE_TLS
@@ -3259,7 +3259,7 @@ init(int fd, short event, void *ev)
         /* some actions only on SIGHUP and not on first start */
         if (Initialized) {
 #ifndef DISABLE_SIGN
-                sign_global_free(Files);
+                sign_global_free();
 #endif /* !DISABLE_SIGN */
 #ifndef DISABLE_TLS
                 free_incoming_tls_sockets();
@@ -3332,7 +3332,6 @@ init(int fd, short event, void *ev)
 
         /* open the configuration file */
         if ((cf = fopen(ConfFile, "r")) == NULL) {
-                struct filed **nextp = &newf;
                 DPRINTF(D_FILE, "Cannot open `%s'\n", ConfFile);
                 *nextp = (struct filed *)calloc(1, sizeof(*f));
                 cfline(0, "*.ERR\t/dev/console", *nextp, "*", "*");

@@ -150,8 +150,8 @@ struct sign_global_t {
 
 bool     sign_global_init(struct filed*);
 bool     sign_sg_init(struct filed*);
-bool     sign_get_keys();
-void     sign_global_free();
+bool     sign_get_keys(void);
+void     sign_global_free(void);
 struct signature_group_t* sign_get_sg(int, struct filed*);
 bool     sign_send_certificate_block(struct signature_group_t*);
 unsigned sign_send_signature_block(struct signature_group_t*, bool);

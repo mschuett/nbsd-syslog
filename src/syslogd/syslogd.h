@@ -128,6 +128,8 @@ char *strndup(const char *str, size_t n);
 
 #define FDMASK(fd)      (1 << (fd))
 
+#define A_CNT(x)        (sizeof((x)) / sizeof((x)[0]))
+
 /* debug messages with categories */
 #define D_NONE     0
 #define D_CALL     1    /* function calls */

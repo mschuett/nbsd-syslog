@@ -301,8 +301,6 @@ size_t linebufsize;
 
 static const char *bindhostname = NULL;
 
-#define A_CNT(x)        (sizeof((x)) / sizeof((x)[0]))
-
 #ifndef DISABLE_TLS
 struct TLS_Incoming TLS_Incoming_Head = \
         SLIST_HEAD_INITIALIZER(TLS_Incoming_Head);

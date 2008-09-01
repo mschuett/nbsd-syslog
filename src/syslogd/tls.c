@@ -293,7 +293,8 @@ init_global_TLS_CTX()
 /*
  * get fingerprint of cert
  * returnstring will be allocated and should be free()d by the caller
- * alg_name selects an algorithm, if it is NULL then SHA-1 will be used
+ * alg_name selects an algorithm, if it is NULL then DEFAULT_FINGERPRINT_ALG
+ * (should be "sha-1") will be used
  * return value and non-NULL *returnstring indicate success
  */
 bool
@@ -302,32 +303,67 @@ get_fingerprint(const X509 *cert, char **returnstring, const char *alg_name)
 #define MAX_ALG_NAME_LENGTH 8
         unsigned char md[EVP_MAX_MD_SIZE];
         char fp_val[4];
-        unsigned len, memsize, i = 0;
+        unsigned len, memsize;
         EVP_MD *digest;
+        const char *openssl_algname;
+        /* RFC nnnn uses hash function names from 
+         * http://www.iana.org/assignments/hash-function-text-names/
+         * in certificate fingerprints.
+         * We have to map them to the hash function names used by OpenSSL.
+         * Actually we use the union of both namespaces to be RFC compliant
+         * and to let the user use "openssl -fingerprint ..."
+         * 
+         * Intended behaviour is to prefer the IANA names,
+         * but allow the user to use OpenSSL names as well
+         * (e.g. for "RIPEMD160" wich has no IANA name)
+         */
+        const struct hash_alg_namemap {
+                const char *iana;
+                const char *openssl;
+        } hash_alg_namemap[] = {
+                {"md2",     "MD2"   },
+                {"md5",     "MD5"   },
+                {"sha-1",   "SHA1"  },
+                {"sha-224", "SHA224"},
+                {"sha-256", "SHA256"},
+                {"sha-384", "SHA384"},
+                {"sha-512", "SHA512"}
+        };
 
         DPRINTF(D_TLS, "get_fingerprint(cert@%p, return@%p, alg \"%s\")\n",
                 cert, returnstring, alg_name);
         *returnstring = NULL;
+
         if (!alg_name)
                 alg_name = DEFAULT_FINGERPRINT_ALG;
-        if (!(digest = (EVP_MD *) EVP_get_digestbyname(alg_name))) {
-                DPRINTF(D_TLS, "unknown digest algorithm %s\n", alg_name);
-                
+        openssl_algname = alg_name;
+        for (int i = 0; i < A_CNT(hash_alg_namemap); i++)
+                if (!strcasecmp(alg_name, hash_alg_namemap[i].iana))
+                        openssl_algname = hash_alg_namemap[i].openssl;
+
+        if (!(digest = (EVP_MD *) EVP_get_digestbyname(openssl_algname))) {
+                DPRINTF(D_TLS, "unknown digest algorithm %s\n", openssl_algname);
                 return false;
         }
         if (!X509_digest(cert, digest, md, &len)) {
-                DPRINTF(D_TLS, "cannot get %s digest\n", alg_name);
+                DPRINTF(D_TLS, "cannot get %s digest\n", openssl_algname);
                 return false;
         }
-        /* needed memory. 3 string bytes for every binary byte with delimiter
-         * + alg_name with delimiter */
-        memsize = (len * 3) + strlen(OBJ_nid2sn(EVP_MD_type(digest))) + 1;
+
+        /* 'normalise' and translate back to IANA name */
+        alg_name = openssl_algname = OBJ_nid2sn(EVP_MD_type(digest));
+        for (int i = 0; i < A_CNT(hash_alg_namemap); i++)
+                if (!strcasecmp(openssl_algname, hash_alg_namemap[i].openssl))
+                        alg_name = hash_alg_namemap[i].iana;
+
+        /* needed memory: 3 string bytes for every binary byte with delimiter
+         *                + max_iana_strlen with delimiter  */
+        memsize = (len * 3) + strlen(alg_name) + 1;
         MALLOC(*returnstring, memsize);
-        /* 'normalise' the algorithm name */
-        (void)strlcpy(*returnstring, OBJ_nid2sn(EVP_MD_type(digest)), memsize);
+        (void)strlcpy(*returnstring, alg_name, memsize);
         (void)strlcat(*returnstring, ":", memsize);
         /* append the fingeprint data */
-        for (i = 0; i < len; i++) {
+        for (int i = 0; i < len; i++) {
                 (void)snprintf(fp_val, sizeof(fp_val),
                         "%02X:", (unsigned) md[i]);
                 (void)strlcat(*returnstring, fp_val, memsize);

@@ -36,7 +36,7 @@
 #define TLS_RECONNECT_GIVEUP         60*60*2
 
 /* default algorithm for certificate fingerprints */
-#define DEFAULT_FINGERPRINT_ALG "SHA1"
+#define DEFAULT_FINGERPRINT_ALG "sha-1"
 
 /* default X.509 files */
 #define DEFAULT_X509_CERTFILE "/etc/openssl/default.crt"

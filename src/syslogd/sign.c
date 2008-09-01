@@ -35,28 +35,7 @@
 extern struct tls_global_options_t tls_opt;
 #endif /* !DISABLE_TLS */
 #include "sign.h"
-
-/* definitions in syslogd.c */
-extern short    Debug;
-extern bool     BSDOutputFormat;
-extern unsigned GlobalMsgCounter;
-extern time_t   now;
-extern char     timestamp[];
-extern char     appname[];
-extern char    *LocalFQDN;
-extern char    *include_pid;
-extern struct sign_global_t        GlobalSign;
-extern struct tls_global_options_t tls_opt;
-
-extern void  logerror(const char *, ...);
-extern void  loginfo(const char *, ...);
-extern bool  format_buffer(struct buf_msg*, char**, size_t*, size_t*, size_t*, size_t*);
-extern void  fprintlog(struct filed *, struct buf_msg *, struct buf_queue *);
-extern void  buf_msg_free(struct buf_msg *msg);
-extern char *make_timestamp(time_t*, bool);
-extern struct buf_msg 
-            *buf_msg_new(const size_t);
-extern unsigned message_allqueues_purge(void);
+#include "extern.h"
 
 /*
  * init all SGs for a given algorithm 

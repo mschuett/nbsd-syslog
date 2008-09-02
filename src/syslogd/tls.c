@@ -780,7 +780,7 @@ socksetup_tls(const int af, const char *bindhostname, const char *port)
         hints.ai_family = af;
         hints.ai_socktype = SOCK_STREAM;
         
-        error = getaddrinfo(bindhostname, (port ? port : "syslog"),
+        error = getaddrinfo(bindhostname, (port ? port : "syslog-tls"),
                 &hints, &res);
         if (error) {
                 logerror(gai_strerror(error));
@@ -940,7 +940,7 @@ tls_connect(struct tls_conn_settings *conn_info)
         hints.ai_protocol = 0;
         hints.ai_flags = AI_CANONNAME;
         error = getaddrinfo(conn_info->hostname,
-                (conn_info->port ? conn_info->port : "syslog"), &hints, &res);
+                (conn_info->port ? conn_info->port : "syslog-tls"), &hints, &res);
         if (error) {
                 logerror(gai_strerror(error));
                 return false;

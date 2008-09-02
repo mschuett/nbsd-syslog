@@ -1291,7 +1291,6 @@ printline_bsdsyslog(const char *hname, char *msg,
                 for (start = p;; p++) {
                         if (*p == ' ' || *p == '\0') { /* error */
                                 goto all_bsd_msg;
-                                break;
                         } else if (*p == '[' || (*p == ':'
                                 && (*(p+1) == ' ' || *(p+1) == '\0'))) {
                                 buffer->prog = strndup(start, p - start);
@@ -1311,7 +1310,6 @@ printline_bsdsyslog(const char *hname, char *msg,
                 for (start = p;; p++) {
                         if (*p == ' ' || *p == '\0') { /* error */
                                 goto all_bsd_msg;
-                                break;
                         } else if (*p == ']') {
                                 buffer->pid = strndup(start, p - start);
                                 break;

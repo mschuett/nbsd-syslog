@@ -28,7 +28,7 @@ extern char    *include_pid;
 /* functions */
 extern void     logerror(const char *, ...);
 extern void     loginfo(const char *, ...);
-extern void     printline(char *, char *, int);
+extern void     parseline(char *, char *, int);
 extern void     die(int fd, short event, void *ev);
 extern struct event *allocev(void);
 extern void     send_queue(int __unused, short __unused, void *);

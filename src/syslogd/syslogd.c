@@ -221,10 +221,10 @@ void            reapchild(int fd, short event, void *ev); /* SIGCHLD kevent disp
 /* input message parsing & formatting */
 char           *cvthname(struct sockaddr_storage *);
 void            printsys(char *);
-void            printline(const char *, char *, const int);
-struct buf_msg *printline_syslogprotocol(const char*, char*, const int, const int);
-struct buf_msg *printline_bsdsyslog(const char*, char*, const int, const int);
-struct buf_msg *printline_kernelprintf(const char*, char*, const int, const int);
+void            parseline(const char *, char *, const int);
+struct buf_msg *parseline_syslogprotocol(const char*, char*, const int, const int);
+struct buf_msg *parseline_bsdsyslog(const char*, char*, const int, const int);
+struct buf_msg *parseline_kernelprintf(const char*, char*, const int, const int);
 unsigned        check_timestamp(unsigned char *, char **, const bool, const bool);
 char           *make_timestamp(time_t *, bool);
 char           *copy_utf8_ascii(char*, size_t);
@@ -673,7 +673,7 @@ usage(void)
  *       - read_klog() might give multiple messages in linebuf and
  *         leaves the task of splitting them to printsys()
  *       - all other read functions receive one message and
- *         then call printline() with one buffer.
+ *         then call parseline() with one buffer.
  */
 static void
 dispatch_read_klog(int fd, short event, void *ev)
@@ -729,7 +729,7 @@ dispatch_read_funix(int fd, short event, void *ev)
             (struct sockaddr *)&fromunix, &sunlen);
         if (rv > 0) {
                 linebuf[rv] = '\0';
-                printline(LocalFQDN, linebuf, 0);
+                parseline(LocalFQDN, linebuf, 0);
         } else if (rv < 0 && errno != EINTR) {
                 logerror("recvfrom() unix `%.*s'",
                         myname.sun_len, myname.sun_path);
@@ -774,7 +774,7 @@ dispatch_read_finet(int fd, short event, void *ev)
 
         linebuf[rv] = '\0';
         if (!reject)
-                printline(cvthname(&frominet), linebuf,
+                parseline(cvthname(&frominet), linebuf,
                           RemoteAddDate ? ADDDATE : 0);
 }
 
@@ -1032,7 +1032,7 @@ check_sd(char* p)
 }
 
 struct buf_msg *
-printline_syslogprotocol(const char *hname, char *msg,
+parseline_syslogprotocol(const char *hname, char *msg,
         const int flags, const int pri)
 {
         struct buf_msg *buffer;
@@ -1244,7 +1244,7 @@ copy_utf8_ascii(char *p, size_t p_len)
 }
 
 struct buf_msg *
-printline_bsdsyslog(const char *hname, char *msg,
+parseline_bsdsyslog(const char *hname, char *msg,
         const int flags, const int pri)
 {
         struct buf_msg *buffer;
@@ -1404,7 +1404,7 @@ all_bsd_msg:
 }
 
 struct buf_msg *
-printline_kernelprintf(const char *hname, char *msg,
+parseline_kernelprintf(const char *hname, char *msg,
         const int flags, const int pri)
 {
         struct buf_msg *buffer;
@@ -1452,7 +1452,7 @@ printline_kernelprintf(const char *hname, char *msg,
  * right message parsing function, then call logmsg().
  */
 void
-printline(const char *hname, char *msg, const int flags)
+parseline(const char *hname, char *msg, const int flags)
 {
         struct buf_msg *buffer;
         int pri;
@@ -1492,9 +1492,9 @@ printline(const char *hname, char *msg, const int flags)
                 pri = LOG_MAKEPRI(LOG_USER, LOG_PRI(pri));
 
         if (bsdsyslog) {
-                buffer = printline_bsdsyslog(hname, p, flags, pri);
+                buffer = parseline_bsdsyslog(hname, p, flags, pri);
         } else {
-                buffer = printline_syslogprotocol(hname, p, flags, pri);
+                buffer = parseline_syslogprotocol(hname, p, flags, pri);
         }
         logmsg(buffer);
         DELREF(buffer);
@@ -1547,14 +1547,14 @@ printsys(char *msg)
 
                 /* allow all kinds of input from kernel */
                 if (is_printf)
-                        buffer = printline_kernelprintf(
+                        buffer = parseline_kernelprintf(
                                         LocalFQDN, p, flags, pri);
                 else {
                         if (bsdsyslog)
-                                buffer = printline_bsdsyslog(
+                                buffer = parseline_bsdsyslog(
                                         LocalFQDN, p, flags, pri);
                         else
-                                buffer = printline_syslogprotocol(
+                                buffer = parseline_syslogprotocol(
                                         LocalFQDN, p, flags, pri);
                 }
 

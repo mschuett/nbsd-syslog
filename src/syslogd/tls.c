@@ -1587,7 +1587,7 @@ tls_split_messages(struct TLS_Incoming_Conn *c)
                  * so this avoids a complete copy */
                 buf_char = c->inbuf[MSG_END_OFFSET];
                 c->inbuf[MSG_END_OFFSET] = '\0';
-                printline(c->tls_conn->hostname, &c->inbuf[c->cur_msg_start],
+                parseline(c->tls_conn->hostname, &c->inbuf[c->cur_msg_start],
                         RemoteAddDate ? ADDDATE : 0);
                 c->inbuf[MSG_END_OFFSET] = buf_char;
 

@@ -109,11 +109,11 @@ STAILQ_HEAD(filed_queue_head, filed_queue);
 
 /* queue of Signature Groups */
 struct signature_group_t {
-        unsigned                       spri;
-        unsigned                       resendcount;
-        uint_fast64_t                  last_msg_num;
-        struct string_queue_head       hashes;
-        struct filed_queue_head        files;
+        unsigned                        spri;
+        unsigned                        resendcount;
+        uint_fast64_t                   last_msg_num;
+        struct string_queue_head        hashes;
+        struct filed_queue_head         files;
         STAILQ_ENTRY(signature_group_t) entries;
 };
 STAILQ_HEAD(signature_group_head, signature_group_t);

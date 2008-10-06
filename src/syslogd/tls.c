@@ -45,6 +45,8 @@ const char *TLS_CONN_STATES[] = {
 #ifndef HEADER_DH_H
 #include <openssl/dh.h>
 #endif
+DH *get_dh1024(void);
+
 DH *
 get_dh1024()
 {
@@ -524,7 +526,7 @@ match_certfile(const X509 *cert1, const char *certfilename)
                         rc = true;
                 FREEPTR(fp1);
                 FREEPTR(fp2);
-         }
+        }
         DPRINTF((D_TLS|D_CALL), "match_certfile(cert@%p, file \"%s\") "
                 "returns %d\n", cert1, certfilename, rc);
         return rc;

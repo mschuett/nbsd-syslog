@@ -392,7 +392,7 @@ struct tls_global_options_t {
         char *x509verify;   /* level of peer verification */
         char *bindhost;     /* hostname/IP to bind to     */ 
         char *bindport;     /* port/service to bind to    */
-        char *server;       /* if !NULL: do not listen to incoming TLS    */
+        char *server;       /* if !NULL: listen to incoming TLS connections */
         char *gen_cert;     /* if !NULL: generate self-signed certificate */
 };
 

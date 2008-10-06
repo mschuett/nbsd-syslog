@@ -220,7 +220,7 @@ void            log_deadchild(pid_t, int, const char *);
 void            reapchild(int fd, short event, void *ev); /* SIGCHLD kevent dispatch routine */
 /* input message parsing & formatting */
 char           *cvthname(struct sockaddr_storage *);
-void            printsys(char *);
+void            parsesys(char *);
 void            parseline(const char *, char *, const int);
 struct buf_msg *parseline_syslogprotocol(const char*, char*, const int, const int);
 struct buf_msg *parseline_bsdsyslog(const char*, char*, const int, const int);
@@ -671,7 +671,7 @@ usage(void)
  * 
  * Note: slightly different semantic in dispatch_read functions:
  *       - read_klog() might give multiple messages in linebuf and
- *         leaves the task of splitting them to printsys()
+ *         leaves the task of splitting them to parsesys()
  *       - all other read functions receive one message and
  *         then call parseline() with one buffer.
  */
@@ -687,7 +687,7 @@ dispatch_read_klog(int fd, short event, void *ev)
         rv = read(fd, linebuf, linebufsize - 1);
         if (rv > 0) {
                 linebuf[rv] = '\0';
-                printsys(linebuf);
+                parsesys(linebuf);
         } else if (rv < 0 && errno != EINTR) {
                 /*
                  * /dev/klog has croaked.  Disable the event
@@ -1504,7 +1504,7 @@ parseline(const char *hname, char *msg, const int flags)
  * Take a raw input line from /dev/klog, split and format similar to syslog().
  */
 void
-printsys(char *msg)
+parsesys(char *msg)
 {
         int n, is_printf, pri, flags;
         char *p, *q;

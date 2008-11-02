@@ -2245,7 +2245,7 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
                         *p = FORCE2ASCII(*p);
                         p++;
                 }
-                v->iov_base = line;
+                v->iov_base = line + tlsprefixlen + prilen;
                 v->iov_len = linelen - tlsprefixlen - prilen;
                 ADDEV();
                 v->iov_base = "\r\n";
@@ -2266,7 +2266,7 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
                         *p = FORCE2ASCII(*p);
                         p++;
                 }
-                v->iov_base = line;
+                v->iov_base = line + tlsprefixlen + prilen;
                 v->iov_len = linelen - tlsprefixlen - prilen;
                 ADDEV();
                 v->iov_base = "\n";

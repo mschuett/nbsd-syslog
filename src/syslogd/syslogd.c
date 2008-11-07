@@ -2252,7 +2252,6 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
                 v->iov_len = 2;
                 ADDEV();
                 break;
-        case F_USERS:
         case F_WALL:
                 v->iov_base = greetings;
                 v->iov_len = snprintf(greetings, sizeof(greetings),
@@ -2260,6 +2259,7 @@ fprintlog(struct filed *f, struct buf_msg *passedbuffer, struct buf_queue *qentr
                         (buffer->host ? buffer->host : buffer->recvhost),
                         buffer->timestamp);
                 ADDEV();
+        case F_USERS: /* fallthrough */
                 /* filter non-ASCII */
                 p = line;
                 while (*p) {

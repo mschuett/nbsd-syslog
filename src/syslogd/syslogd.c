@@ -71,6 +71,7 @@ __RCSID("$NetBSD: syslogd.c,v 1.84 2006/11/13 20:24:00 christos Exp $");
  */
 #define SYSLOG_NAMES
 #include "syslogd.h"
+#include "extern.h"
 
 #ifndef DISABLE_SIGN
 #include "sign.h"
@@ -221,62 +222,40 @@ void            reapchild(int fd, short event, void *ev); /* SIGCHLD kevent disp
 /* input message parsing & formatting */
 char           *cvthname(struct sockaddr_storage *);
 void            parsesys(char *);
-void            parseline(const char *, char *, const int);
-struct buf_msg *parseline_syslogprotocol(const char*, char*, const int, const int);
-struct buf_msg *parseline_bsdsyslog(const char*, char*, const int, const int);
-struct buf_msg *parseline_kernelprintf(const char*, char*, const int, const int);
+struct buf_msg *parseline_syslogprotocol(const char*, char*, int, int);
+struct buf_msg *parseline_bsdsyslog(const char*, char*, int, int);
+struct buf_msg *parseline_kernelprintf(const char*, char*, int, int);
 unsigned        check_timestamp(unsigned char *, char **, const bool, const bool);
-char           *make_timestamp(time_t *, bool);
 char           *copy_utf8_ascii(char*, size_t);
 uint_fast32_t   get_utf8_value(const char*);
 unsigned        valid_utf8(const char *);
 static unsigned check_sd(char*);
 static unsigned check_msgid(char *);
 /* event handling */
-struct event   *allocev(void) __attribute__((malloc));
-void            schedule_event(struct event **, struct timeval *,
-                        void (*)(int, short, void *), void *);
 static void     dispatch_read_klog(int fd, short event, void *ev);
 static void     dispatch_read_finet(int fd, short event, void *ev);
 static void     dispatch_read_funix(int fd, short event, void *ev);
 static void     domark(int fd, short event, void *ev); /* timer kevent dispatch routine */
-void            die(int fd, short event, void *ev)
-                __attribute__((__noreturn__)); /* SIGTERM kevent dispatch routine */
 /* log messages */
-void            logerror(const char *, ...)
-                __attribute__((__format__(__printf__,1,2)));
-void            loginfo(const char *, ...)
-                __attribute__((__format__(__printf__,1,2)));
 void            logmsg_async(const int, const char *, const char *, const int);
 void            logmsg(struct buf_msg *);
 int             matches_spec(const char *, const char *,
                 char *(*)(const char *, const char *));
-bool            format_buffer(struct buf_msg*, char**,
-                size_t*, size_t*, size_t*, size_t*);
-void            fprintlog(struct filed *, struct buf_msg *, struct buf_queue *);
 void            udp_send(struct filed *, char *, size_t);
 void            wallmsg(struct filed *, struct iovec *, size_t);
 /* buffer & queue functions */
-struct buf_msg *buf_msg_new(const size_t) __attribute__((malloc));
-void            buf_msg_free(struct buf_msg *msg);
 unsigned        message_queue_purge(struct filed *f, const unsigned, const int);
-unsigned        message_allqueues_purge(void);
 unsigned        message_allqueues_check(void);
-void            send_queue(int __unused, short __unused, void *);
 static struct buf_queue *
                 find_qentry_to_delete(const struct buf_queue_head *, const int, const bool);
 struct buf_queue *
                 message_queue_add(struct filed *, struct buf_msg *);
-bool            message_queue_remove(struct filed *, struct buf_queue *);
-void            message_queue_freeall(struct filed *);
 size_t          buf_queue_obj_size(struct buf_queue*);
 /* configuration & parsing */
 void            cfline(const unsigned, char *, struct filed *, char *, char *);
 void            read_config_file(FILE*, struct filed**);
 void            store_sign_delim_sg2(char*);
 int             decode(const char *, CODE *);
-bool            copy_string(char **, const char *, const char *);
-bool            copy_config_value_quoted(const char *, char **, char **);
 bool            copy_config_value(const char *, char **, char **, const char *, const int);
 bool            copy_config_value_word(char **, char **);
 
@@ -285,7 +264,6 @@ bool            copy_config_value_word(char **, char **);
 void            free_cred_SLIST(struct peer_cred_head *);
 static inline void
                 free_incoming_tls_sockets(void);
-struct filed   *get_f_by_conninfo(struct tls_conn_settings *conn_info);
 #endif /* !DISABLE_TLS */
 
 /* for make_timestamp() */
@@ -1033,7 +1011,7 @@ check_sd(char* p)
 
 struct buf_msg *
 parseline_syslogprotocol(const char *hname, char *msg,
-        const int flags, const int pri)
+        int flags, int pri)
 {
         struct buf_msg *buffer;
         char *p, *start;
@@ -1245,7 +1223,7 @@ copy_utf8_ascii(char *p, size_t p_len)
 
 struct buf_msg *
 parseline_bsdsyslog(const char *hname, char *msg,
-        const int flags, const int pri)
+        int flags, int pri)
 {
         struct buf_msg *buffer;
         char *p, *start;
@@ -1405,7 +1383,7 @@ all_bsd_msg:
 
 struct buf_msg *
 parseline_kernelprintf(const char *hname, char *msg,
-        const int flags, const int pri)
+        int flags, int pri)
 {
         struct buf_msg *buffer;
         char *p;
@@ -1452,7 +1430,7 @@ parseline_kernelprintf(const char *hname, char *msg,
  * right message parsing function, then call logmsg().
  */
 void
-parseline(const char *hname, char *msg, const int flags)
+parseline(const char *hname, char *msg, int flags)
 {
         struct buf_msg *buffer;
         int pri;

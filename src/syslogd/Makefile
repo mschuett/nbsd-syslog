@@ -15,8 +15,8 @@ LIBS+= -L/usr/local/lib
 
 all: syslogd syslogd.cat8 syslog.conf.cat5
 
-syslogd: syslogd.o tls_stuff.o dehumanize_number.o strndup.o sign.o
-	$(CC) $(LIBS) -o syslogd syslogd.o tls_stuff.o dehumanize_number.o strndup.o sign.o
+syslogd: syslogd.o tls.o dehumanize_number.o strndup.o sign.o
+	$(CC) $(LIBS) -o syslogd syslogd.o tls.o dehumanize_number.o strndup.o sign.o
 
 syslogd.cat8: syslogd.8
 	nroff -mandoc syslogd.8 > syslogd.cat8

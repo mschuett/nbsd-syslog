@@ -105,7 +105,12 @@
 #undef _PATH_UNIX
 #define _PATH_UNIX "kernel"
 #define HAVE_STRNDUP 0
+// same as <machine/int_fmtio.h> on NetBSD:
+#include <machine/_inttypes.h>
 #endif /* __FreeBSD_version */
+#ifndef __UNCONST
+#define __UNCONST(a)    ((void *)(unsigned long)(const void *)(a))
+#endif /* !__UNCONST */
 
 #ifdef __NetBSD_Version__
 #define HAVE_STRNDUP 1

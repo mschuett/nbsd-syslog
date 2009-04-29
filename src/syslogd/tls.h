@@ -5,7 +5,7 @@
  * All rights reserved.
  *
  * This code is derived from software contributed to The NetBSD Foundation
- * by Martin Schuette.
+ * by Martin Sch?tte.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -37,7 +37,7 @@
  */
 /*
  * tls.h
- * 
+ *
  */
 #ifndef _TLS_H
 #define _TLS_H
@@ -48,12 +48,12 @@
 
 /* initial size for TLS inbuf, minimum prefix + linelength
  * guaranteed to be accepted */
-#define TLS_MIN_LINELENGTH         (2048 + 5) 
+#define TLS_MIN_LINELENGTH	   (2048 + 5)
 /* usually the inbuf is enlarged as needed and then kept.
  * if bigger than TLS_PERSIST_LINELENGTH, then shrink
- * to TLS_LARGE_LINELENGTH immediately  */
-#define TLS_LARGE_LINELENGTH      8192
-#define TLS_PERSIST_LINELENGTH   32768
+ * to TLS_LARGE_LINELENGTH immediately	*/
+#define TLS_LARGE_LINELENGTH	  8192
+#define TLS_PERSIST_LINELENGTH	 32768
 
 /* timeout to call non-blocking TLS operations again */
 #define TLS_RETRY_EVENT_USEC 20000
@@ -67,10 +67,10 @@
  * This has to be <= 5h (with 10sec initial interval),
  * otherwise a daily SIGHUP from newsylog will reset
  * all timers and the giveup time will never be reached
- * 
- * set here: 2h, reached after ca. 7h of reconnecting 
+ *
+ * set here: 2h, reached after ca. 7h of reconnecting
  */
-#define TLS_RECONNECT_GIVEUP         60*60*2
+#define TLS_RECONNECT_GIVEUP	     60*60*2
 
 /* default algorithm for certificate fingerprints */
 #define DEFAULT_FINGERPRINT_ALG "sha-1"
@@ -80,24 +80,24 @@
 #define DEFAULT_X509_KEYFILE "/etc/openssl/default.key"
 
 /* options for peer certificate verification */
-#define X509VERIFY_ALWAYS       0
-#define X509VERIFY_IFPRESENT    1
-#define X509VERIFY_NONE         2
+#define X509VERIFY_ALWAYS	0
+#define X509VERIFY_IFPRESENT	1
+#define X509VERIFY_NONE		2
 
 /* attributes for self-generated keys/certificates */
 #define TLS_GENCERT_BITS     1024
-#define TLS_GENCERT_SERIAL      1
+#define TLS_GENCERT_SERIAL	1
 #define TLS_GENCERT_DAYS    5*365
 
 /* TLS connection states */
-#define ST_NONE       0
+#define ST_NONE	      0
 #define ST_TLS_EST    1
 #define ST_TCP_EST    2
 #define ST_CONNECTING 3
-#define ST_ACCEPTING  4  
+#define ST_ACCEPTING  4
 #define ST_READING    5
 #define ST_WRITING    6
-#define ST_EOF        7
+#define ST_EOF	      7
 #define ST_CLOSING0   8
 #define ST_CLOSING1   9
 #define ST_CLOSING2  10
@@ -110,7 +110,7 @@
 /*
  * holds TLS related settings for one connection to be
  * included in the SSL object and available in callbacks
- * 
+ *
  * Many fields have a slightly different semantic for
  * incoming and outgoing connections:
  * - for outgoing connections it contains the values from syslog.conf and
@@ -120,39 +120,39 @@
  *   check_peer_cert() fills in subject and fingerprint from the peer cert
  */
 struct tls_conn_settings {
-        unsigned      send_queue:1, /* currently sending buffer      */
-                      errorcount:4, /* counter [0;TLS_MAXERRORCOUNT] */
-                      accepted:1,   /* workaround cf. check_peer_cert*/
-                      shutdown:1,   /* fast connection close on exit */
-                      x509verify:2, /* kind of validation needed     */
-                      incoming:1,   /* set if we are server          */
-                      state:4;      /* outgoing connection state     */
-        struct event *event;        /* event for read/write activity */
-        struct event *retryevent;   /* event for retries             */
-        SSL          *sslptr;       /* active SSL object             */
-        char         *hostname;     /* hostname or IP we connect to  */
-        char         *port;         /* service name or port number   */
-        char         *subject;      /* configured hostname in cert   */
-        char         *fingerprint;  /* fingerprint of peer cert      */
-        char         *certfile;     /* filename of peer cert         */
-        unsigned      reconnect;    /* seconds between reconnects    */
+	unsigned      send_queue:1, /* currently sending buffer	     */
+		      errorcount:4, /* counter [0;TLS_MAXERRORCOUNT] */
+		      accepted:1,   /* workaround cf. check_peer_cert*/
+		      shutdown:1,   /* fast connection close on exit */
+		      x509verify:2, /* kind of validation needed     */
+		      incoming:1,   /* set if we are server	     */
+		      state:4;	    /* outgoing connection state     */
+	struct event *event;	    /* event for read/write activity */
+	struct event *retryevent;   /* event for retries	     */
+	SSL	     *sslptr;	    /* active SSL object	     */
+	char	     *hostname;	    /* hostname or IP we connect to  */
+	char	     *port;	    /* service name or port number   */
+	char	     *subject;	    /* configured hostname in cert   */
+	char	     *fingerprint;  /* fingerprint of peer cert	     */
+	char	     *certfile;	    /* filename of peer cert	     */
+	unsigned      reconnect;    /* seconds between reconnects    */
 };
 
 /* argument struct only used for tls_send() */
 struct tls_send_msg {
-        struct filed     *f;
-        struct buf_queue *qentry;
-        char             *line;      /* formatted message */
-        size_t            linelen;
-        unsigned          offset;    /* in case of partial writes */
+	struct filed	 *f;
+	struct buf_queue *qentry;
+	char		 *line;	     /* formatted message */
+	size_t		  linelen;
+	size_t	  	  offset;    /* in case of partial writes */
 };
 
 /* return values for TLS_examine_error() */
-#define TLS_OK          0        /* no real problem, just ignore */
-#define TLS_RETRY_READ  1        /* just retry, non-blocking operation not finished yet */
-#define TLS_RETRY_WRITE 2        /* just retry, non-blocking operation not finished yet */
-#define TLS_TEMP_ERROR  4        /* recoverable error condition, but try again */
-#define TLS_PERM_ERROR  8        /* non-recoverable error condition, closed TLS and socket */
+#define TLS_OK		0	 /* no real problem, just ignore */
+#define TLS_RETRY_READ	1	 /* just retry, non-blocking operation not finished yet */
+#define TLS_RETRY_WRITE 2	 /* just retry, non-blocking operation not finished yet */
+#define TLS_TEMP_ERROR	4	 /* recoverable error condition, but try again */
+#define TLS_PERM_ERROR	8	 /* non-recoverable error condition, closed TLS and socket */
 
 /* global TLS setup and utility */
 char *init_global_TLS_CTX(void);
@@ -173,7 +173,7 @@ bool match_fingerprint(const X509 *, const char *);
 bool match_certfile(const X509 *, const char *);
 
 /* configuration & parsing */
-bool parse_tls_destination(char *, struct filed *, const unsigned);
+bool parse_tls_destination(const char *, struct filed *, size_t);
 /* event callbacks */
 void dispatch_socket_accept(int, short, void *);
 void dispatch_tls_accept(int, short, void *);

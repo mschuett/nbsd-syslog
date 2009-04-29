@@ -5,7 +5,7 @@
  * All rights reserved.
  *
  * This code is derived from software contributed to The NetBSD Foundation
- * by Martin Schte.
+ * by Martin Sch?tte.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -37,9 +37,9 @@
  */
 /*
  * extern.h
- * 
+ *
  * declarations for variables and functions from syslogd.c
- * that are used in tls.c and sign.c 
+ * that are used in tls.c and sign.c
  */
 #ifndef EXTERN_H_
 #define EXTERN_H_
@@ -52,12 +52,12 @@ extern struct TLS_Incoming TLS_Incoming_Head;
 extern struct sign_global_t GlobalSign;
 extern char  *linebuf;
 extern size_t linebufsize;
-extern int    RemoteAddDate; 
+extern int    RemoteAddDate;
 
-extern bool     BSDOutputFormat;
-extern time_t   now;
-extern char     timestamp[];
-extern char     appname[];
+extern bool	BSDOutputFormat;
+extern time_t	now;
+extern char	timestamp[];
+extern char	appname[];
 extern char    *LocalFQDN;
 extern char    *include_pid;
 
@@ -66,19 +66,19 @@ extern void	logerror(const char *, ...)
     __attribute__((__format__(__printf__,1,2)));
 extern void	loginfo(const char *, ...)
     __attribute__((__format__(__printf__,1,2)));
-extern void	parseline(const char *, char *, int);
+extern void	printline(const char *, char *, int);
 extern void	die(int fd, short event, void *ev)
     __attribute__((__noreturn__));
 extern struct event *allocev(void);
-extern void     send_queue(int __unused, short __unused, void *);
-extern void     schedule_event(struct event **, struct timeval *,
-                                void (*)(int, short, void *), void *);
+extern void	send_queue(int __unused, short __unused, void *);
+extern void	schedule_event(struct event **, struct timeval *,
+    void (*)(int, short, void *), void *);
 extern char    *make_timestamp(time_t *, bool);
 extern struct filed *get_f_by_conninfo(struct tls_conn_settings *conn_info);
-extern bool     message_queue_remove(struct filed *, struct buf_queue *);
-extern void     buf_msg_free(struct buf_msg *msg);
-extern void     message_queue_freeall(struct filed *);
-extern bool     copy_string(char **, const char *, const char *);
+extern bool	message_queue_remove(struct filed *, struct buf_queue *);
+extern void	buf_msg_free(struct buf_msg *msg);
+extern void	message_queue_freeall(struct filed *);
+extern bool	copy_string(char **, const char *, const char *);
 extern bool	copy_config_value_quoted(const char *, char **, const char **);
 extern size_t message_allqueues_purge(void);
 extern bool  format_buffer(struct buf_msg*, char**, size_t*, size_t*, size_t*,

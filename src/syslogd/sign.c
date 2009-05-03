@@ -247,27 +247,73 @@ sign_get_keys()
 		GlobalSign.keytype = 'K';  /* public/private keys used */
 		GlobalSign.privkey = privkey;
 		GlobalSign.pubkey = privkey;
-
-		/* pubkey base64 encoding */
-		der_len = i2d_DSA_PUBKEY(dsa, NULL);
-		if (!(ptr_der_pubkey = der_pubkey = malloc(der_len))
-		 || !(pubkey_b64 = malloc(der_len*2))) {
-			free(der_pubkey);
-			logerror("malloc() failed");
-			return false;
-		}
-		if (i2d_DSA_PUBKEY(dsa, &ptr_der_pubkey) <= 0) {
-			logerror("i2d_DSA_PUBKEY() failed");
-			return false;
-		}
-		b64_ntop(der_pubkey, der_len, pubkey_b64, der_len*2);
-		free(der_pubkey);
-		/* try to resize memory object as needed */
-		GlobalSign.pubkey_b64 = realloc(pubkey_b64,
-		    strlen(pubkey_b64) + 1);
-		if (!GlobalSign.pubkey_b64)
-			GlobalSign.pubkey_b64 = pubkey_b64;
+		return sign_encode_key_dsa(dsa, &GlobalSign.pubkey_b64);
 	}
+	return true;
+}
+
+/*
+ * convert a DSA signature
+ * from Dss-Sig-Value-structure as returned by EVP_SignFinal()
+ * into OpenPGP MPIs for values r and s and
+ * allocates memory and stores base64 representation at *destination
+ */
+bool
+sign_encode_sig_dsa(char *der_sig, long der_siglen, char **destination)
+{
+	BPG_BUF *bgp_buf;
+	char *sig_b64 = NULL;
+	DSA_SIG *dsasig = NULL;
+	unsigned char *p = der_sig;
+
+	if (!(bgp_buf = BPG_BUF_new(0))) {
+		return false;
+	}
+
+	if (!d2i_DSA_SIG(&dsasig, (const unsigned char **)&p, der_siglen)) {
+		return false;
+	}
+
+	push_mpi(bgp_buf, dsasig->r);
+	push_mpi(bgp_buf, dsasig->s);
+
+	MALLOC(sig_b64, 2*bgp_buf->len);
+	b64_ntop(bgp_buf->body, bgp_buf->len, sig_b64, 2*bgp_buf->len);
+	BPG_BUF_free(bgp_buf);
+	*destination = sig_b64;
+	return true;
+}
+
+/*
+ * encode DSA public key as four OpenPGP MPIs
+ * allocates memory and stores base64 representation at *destination
+ */
+bool
+sign_encode_key_dsa(DSA *dsa, char **destination)
+{
+	BPG_BUF *bpg_buf;
+	char *pubkey_b64 = NULL;
+
+	if (!(bpg_buf = BPG_BUF_new(0))) {
+		return false;
+	}
+	push_mpi(bpg_buf, dsa->p); // prime
+	push_mpi(bpg_buf, dsa->q); // group order
+	push_mpi(bpg_buf, dsa->g); // group generator
+	push_mpi(bpg_buf, dsa->pub_key); // y
+
+	if (!(pubkey_b64 = malloc(2*bpg_buf->len))) {
+		logerror("malloc() failed");
+		return false;
+	}
+	b64_ntop(bpg_buf->body, bpg_buf->len, pubkey_b64, 2*bpg_buf->len);
+	/* try to shrink memory object as needed */
+	*destination = realloc(pubkey_b64,
+		strlen(pubkey_b64) + 1);
+	if (!*destination)
+		*destination = pubkey_b64;
+
+	BPG_BUF_free(bpg_buf);
 	return true;
 }
 
@@ -854,7 +900,6 @@ sign_string_sign(char *line, char **signature)
 {
 	char buf[SIGN_MAX_LENGTH+1];
 	unsigned char sig_value[SIGN_B64SIGLEN_DSS];
-	unsigned char sig_b64[SIGN_B64SIGLEN_DSS];
 	unsigned sig_len = 0;
 	char *p, *q;
 	/*
@@ -877,14 +922,19 @@ sign_string_sign(char *line, char **signature)
 	}
 	*q = '\0';
 
+	/* EVP is quite nice and generic, but eventually the specification
+	 * is only for DSA and requires us to output DSA-specific values.
+	 *
+	 * It might be better to rewrite this and use only DSA functions.
+	 */
 	SSL_CHECK_ONE(EVP_SignInit(GlobalSign.sigctx, GlobalSign.sig));
 	SSL_CHECK_ONE(EVP_SignUpdate(GlobalSign.sigctx, buf, q-buf));
 	assert(GlobalSign.privkey);
 	SSL_CHECK_ONE(EVP_SignFinal(GlobalSign.sigctx, sig_value, &sig_len,
 	    GlobalSign.privkey));
 
-	b64_ntop(sig_value, sig_len, (char *)sig_b64, sizeof(sig_b64));
-	*signature = strdup((char *)sig_b64);
+	sign_encode_sig_dsa(sig_value, (long) sig_len, signature);
+	assert(strlen(*signature) <= SIGN_B64SIGLEN_DSS);
 
 	DPRINTF((D_CALL|D_SIGN), "sign_string_sign('%s') --> '%s'\n",
 	    buf, *signature);

@@ -42,6 +42,7 @@
 #ifndef SIGN_H_
 #define SIGN_H_
 
+#include "bpg.h"
 #include <netinet/in.h>
 #include <resolv.h>
 #include <openssl/x509v3.h>
@@ -203,5 +204,7 @@ bool	 sign_string_sign(char*, char**);
 void	 sign_new_reboot_session(void);
 void	 sign_inc_gbc(void);
 uint_fast64_t sign_assign_msg_num(struct signature_group_t*);
+bool     sign_encode_key_dsa(DSA *, char **);
+bool     sign_encode_sig_dsa(char *, long, char **);
 
 #endif /* SIGN_H_ */
